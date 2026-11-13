@@ -12,6 +12,8 @@ is a stand-in here, so the test starts no Python.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -67,3 +69,98 @@ def test_stop_then_start_closes_once(worker: WorkerServer):
     asyncio.run(scenario())
     assert len(STARTED) == 2
     assert all(p.closed for p in STARTED)
+
+
+def test_an_event_stream_open_while_the_worker_stops_ends_cleanly(
+    worker: WorkerServer,
+):
+    class Response:
+        def __init__(self) -> None:
+            self.open = True
+            self.content = self
+
+        async def iter_chunks(self):
+            while self.open:
+                yield b"event", True
+                await asyncio.sleep(0)
+
+        def close(self) -> None:
+            self.open = False
+
+    class Session:
+        def __init__(self) -> None:
+            self.response = Response()
+
+        def request(self, *_args: object, **_kwargs: object):
+            response = self.response
+
+            class Opened:
+                async def __aenter__(self) -> Response:
+                    return response
+
+                async def __aexit__(self, *_exc: object) -> None:
+                    pass
+
+            return Opened()
+
+        async def close(self) -> None:
+            pass
+
+    async def scenario() -> list[bytes]:
+        worker._session = cast(Any, Session())
+        request = cast(Any, SimpleNamespace(method="GET", headers={}, body=b""))
+        received: list[bytes] = []
+        async for data in worker.get_sse(request):
+            received.append(data)
+            if len(received) == 1:
+                await worker.stop()
+        return received
+
+    assert asyncio.run(scenario()) == [b"event"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "kills"),
+    [
+        ([("success", 0.0), ("no-executor", 0.0)], 2),  # a run: Stop, then its end
+        ([("no-executor", 0.0)], 1),  # no run
+        ([("success", 10.0)], 1),  # a Stop that hangs: given up after the timeout
+    ],
+    ids=["run", "idle", "hung"],
+)
+def test_stopping_the_run_before_closing_the_worker(
+    worker: WorkerServer, answers: list[tuple[str, float]], kills: int
+):
+    posted: list[str] = []
+
+    class Response:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+
+        async def json(self) -> dict[str, str]:
+            return {"type": self.kind}
+
+    class Session:
+        def post(self, path: str, **_kwargs: object):
+            posted.append(path)
+            kind, delay = answers[min(len(posted), len(answers)) - 1]
+
+            class Opened:
+                async def __aenter__(self) -> Response:
+                    await asyncio.sleep(delay)
+                    return Response(kind)
+
+                async def __aexit__(self, *_exc: object) -> None:
+                    pass
+
+            return Opened()
+
+    async def scenario() -> float:
+        worker._session = cast(Any, Session())
+        start = asyncio.get_running_loop().time()
+        await worker.stop_run(timeout=0.5)
+        return asyncio.get_running_loop().time() - start
+
+    elapsed = asyncio.run(scenario())
+    assert posted == ["/kill"] * kills
+    assert elapsed < 1

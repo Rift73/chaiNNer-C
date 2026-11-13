@@ -13,12 +13,18 @@ import {
     OutputId,
     SchemaId,
 } from '../../src/common/common-types';
+import { checkNodeValidity } from '../../src/common/nodes/checkNodeValidity';
 import { getFirstPossibleInput } from '../../src/common/nodes/connectedInputs';
 import { ChainLineage } from '../../src/common/nodes/lineage';
 import { parseFunctionDefinitions } from '../../src/common/nodes/parseFunctionDefinitions';
 import { TypeState } from '../../src/common/nodes/TypeState';
 import { SchemaMap } from '../../src/common/SchemaMap';
-import { EMPTY_MAP, stringifySourceHandle, stringifyTargetHandle } from '../../src/common/util';
+import {
+    EMPTY_MAP,
+    parseTargetHandle,
+    stringifySourceHandle,
+    stringifyTargetHandle,
+} from '../../src/common/util';
 import { canConnect } from '../../src/renderer/helpers/canConnect';
 
 // A VapourSynth family node: Method picks whether Clip also takes an image, Other follows Clip's
@@ -28,6 +34,7 @@ const METHOD = 1 as InputId;
 const OTHER = 2 as InputId;
 const PLAIN = 3 as InputId;
 const NAMES_OTHER = 4 as InputId;
+const IMAGE_ONLY = 5 as InputId;
 const OUT = 0 as OutputId;
 
 const socket = (id: InputId, label: string, type: string, followsInputs = false): Input => ({
@@ -104,6 +111,7 @@ const schemata = new SchemaMap([
             // As Dither's palette: names another input, but connects whatever that holds and
             // shows the error after, as every node does but those that take images for clips.
             socket(NAMES_OTHER, 'Names other', 'match Input3 { Image => Image, _ => Audio }'),
+            socket(IMAGE_ONLY, 'Image only', 'Image'),
         ],
         [output('match Input0 { Image => Image, _ => VideoClip }')]
     ),
@@ -165,7 +173,28 @@ test('Clip takes an image only under a method that looks at one frame', () => {
 
     const refused = state('degrain', []).connect(IMAGE, MAIN);
     if (refused.isValid) throw new Error('An image connected to a temporal method.');
-    expect(refused.reason).toContain('Input Clip');
+    expect(refused.reason).toBe(
+        'This input takes a clip, not single images: the node works on the clip as a whole or looks at other frames. Open the video with Load Clip, or turn images into a clip with Frames to Clip.'
+    );
+});
+
+test('a refused wire between clips and images says which node converts them', () => {
+    const { connect } = state('blur', []);
+    expect(connect(CLIP, IMAGE_ONLY)).toEqual({
+        isValid: false,
+        reason: 'This input takes an image. Add Clip Frames to turn the clip into images.',
+    });
+    // an input that takes images among other things too
+    expect(connect(CLIP, PLAIN)).toEqual({
+        isValid: false,
+        reason: 'This input takes an image. Add Clip Frames to turn the clip into images.',
+    });
+    // a mismatch without a clip keeps the general text
+    const audio = connect(AUDIO, IMAGE_ONLY);
+    if (audio.isValid) throw new Error('Audio connected to an image input.');
+    expect(audio.reason).toMatch(
+        /^Input Image only cannot be connected with an incompatible value\./
+    );
 });
 
 test('a connection can replace one of the other kind on the same input', () => {
@@ -215,4 +244,34 @@ test('an edge dropped onto a node goes by what the node accepts now', () => {
     expect(getFirstPossibleInput(degrain.definition, image, false, degrain)).toBe(PLAIN);
     // A node not yet made has only its definition.
     expect(getFirstPossibleInput(degrain.definition, image, false)).toBe(MAIN);
+});
+
+test("the node's error mark names the input and the node that converts clips and images", () => {
+    const validity = (picked: InputValue, edges: Edge<EdgeData>[]) =>
+        checkNodeValidity({
+            schema: schemata.get('family' as SchemaId),
+            inputData: { [METHOD]: picked },
+            connectedInputs: new Set(edges.map((e) => parseTargetHandle(e.targetHandle!).inputId)),
+            functionInstance: state(picked, edges).family,
+            chainLineage: undefined,
+            nodeId: id(FAMILY),
+        });
+
+    // an image connected, then a method that takes only clips
+    expect(validity('degrain', [edge(IMAGE, MAIN)])).toEqual({
+        isValid: false,
+        reason: 'Clip takes a clip, not single images: the node works on the clip as a whole or looks at other frames. Open the video with Load Clip, or turn images into a clip with Frames to Clip.',
+    });
+    expect(validity('blur', [edge(CLIP, IMAGE_ONLY)])).toEqual({
+        isValid: false,
+        reason: 'Image only takes an image. Add Clip Frames to turn the clip into images.',
+    });
+    expect(validity('blur', [edge(CLIP, PLAIN)])).toEqual({
+        isValid: false,
+        reason: 'Plain takes an image. Add Clip Frames to turn the clip into images.',
+    });
+    // every other mismatch keeps the trace
+    const other = validity('blur', [edge(AUDIO, IMAGE_ONLY)]);
+    if (other.isValid) throw new Error('Audio connected to an image input.');
+    expect(other.reason).toMatch(/^Input Image only was connected with an incompatible value\./);
 });

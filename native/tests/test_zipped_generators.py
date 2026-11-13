@@ -6,9 +6,7 @@ A loop that needs another loop's collector runs after that loop, whatever the ch
 from __future__ import annotations
 
 import gc
-import importlib
 import subprocess
-import sys
 import weakref
 from collections.abc import Callable
 from pathlib import Path
@@ -17,7 +15,7 @@ from typing import Any, cast
 
 import pytest
 from bounded import run_python
-from engine_differential import KINDS, execute, load_registry_errors
+from engine_differential import KINDS, execute
 from scratch_storage import NO_FFMPEG, STORAGE
 from test_engine_scenarios import Builder, assert_same, items
 from verify_runtime import edge, make_node
@@ -31,11 +29,19 @@ from nodes.impl.ffmpeg import get_executable_path
 from nodes.impl.item_window import ITEM_WINDOW_VARIABLE, register_phases
 
 ROOT = Path(__file__).resolve().parents[2]
-BACKEND = ROOT / "backend" / "src"
 FFMPEG = get_executable_path(STORAGE / "ffmpeg")[0]
 VALUES: list[object] = [1, 2, 3]
 ORDERS = [("first", "second"), ("second", "first")]
 NOT_RUN = "A collector was not run before another node needed it."
+
+
+def reads_its_own_collector(node: str) -> str:
+    """The refusal of a node of the numbers loop that also reads its collector, total."""
+    return (
+        f"Input0 of {node} comes from the items of numbers, one value per item, but"
+        f" {node} also depends on total, which has its result only after the loop of"
+        " numbers has ended. Connect a value to Input0 that does not change per item."
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -552,8 +558,10 @@ def test_a_loop_reading_its_own_collector_reports_it(tmp_path: Path):
         b.edge("total", 0, "sink", 1)
         return b.chain
 
-    errors = {str(execute(kind, chain(), storage=tmp_path).error) for kind in KINDS}
-    assert errors == {NOT_RUN}
+    # Refused before anything runs, on both engines, on the node that reads the item.
+    results = [execute(kind, chain(), storage=tmp_path) for kind in KINDS]
+    assert [getattr(r.error, "node_id", None) for r in results] == ["sink"] * len(KINDS)
+    assert {str(r.error) for r in results} == {reads_its_own_collector("sink")}
 
 
 def test_a_phased_sink_reading_its_own_collector(
@@ -573,26 +581,12 @@ def test_a_phased_sink_reading_its_own_collector(
         return b.chain
 
     monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "4")
-    errors = {kind: deferred_errors(kind, chain(), tmp_path) for kind in KINDS}
-    assert errors["native"] == errors["python"] == [f"- {NOT_RUN}"] * 8
-
-
-@pytest.fixture(scope="module")
-def schemas():
-    main = sys.modules["__main__"]
-    previous = getattr(main, "__file__", None)
-    main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
-    errors = load_registry_errors(BACKEND / "server.py")
-    assert not errors, [e.module for e in errors]
-    yield {
-        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
-        for schema, (data, _) in api.registry.nodes.items()
-    }
-    if previous is None:
-        del main.__file__
-    else:
-        main.__file__ = previous
+    # Refused before any item, its prepare phase included, rather than failing each item.
+    results = [execute(kind, chain(), storage=tmp_path) for kind in KINDS]
+    assert [getattr(r.error, "node_id", None) for r in results] == ["own save"] * len(
+        KINDS
+    )
+    assert {str(r.error) for r in results} == {reads_its_own_collector("own save")}
 
 
 @pytest.mark.parametrize("loaded_first", [True, False])

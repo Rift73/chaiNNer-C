@@ -5,15 +5,13 @@ An item's deferred error explains the end itself, so it gives no warning."""
 
 from __future__ import annotations
 
-import importlib
 import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from engine_differential import KINDS, Result, execute, load_registry_errors
+from engine_differential import KINDS, Result, execute
 from scratch_storage import NO_FFMPEG, STORAGE
 from test_engine_scenarios import Builder, items
 from verify_runtime import edge, make_node
@@ -25,7 +23,6 @@ from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.video import VideoLoader
 from packages.chaiNNer_standard.image.video_frames.load_video import shortfall
 
-BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 FFMPEG = get_executable_path(STORAGE / "ffmpeg")[0]
 
 
@@ -35,24 +32,6 @@ def test_package(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         api.registry, "get_package", lambda _: SimpleNamespace(id="test")
     )
-
-
-@pytest.fixture(scope="module")
-def schemas():
-    main = sys.modules["__main__"]
-    previous = getattr(main, "__file__", None)
-    main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
-    errors = load_registry_errors(BACKEND / "server.py")
-    assert not errors, [e.module for e in errors]
-    yield {
-        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
-        for schema, (data, _) in api.registry.nodes.items()
-    }
-    if previous is None:
-        del main.__file__
-    else:
-        main.__file__ = previous
 
 
 def warnings(result: Result) -> list[str]:

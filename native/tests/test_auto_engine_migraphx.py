@@ -415,8 +415,8 @@ def test_a_wrong_scale_falls_back(amd_pc):
 
 def test_cpu_mode_stays_on_pytorch_and_says_why(amd_pc):
     _fakes, _root = amd_pc
-    assert auto._no_engine_here(torch.device("cpu")) == "PyTorch is set to the CPU."
-    assert auto._no_engine_here(GPU) is None
+    assert auto.no_engine_here(torch.device("cpu")) == "PyTorch is set to the CPU."
+    assert auto.no_engine_here(GPU) is None
 
 
 def test_a_package_that_is_not_installed_says_so(
@@ -428,7 +428,7 @@ def test_a_package_that_is_not_installed_says_so(
     )
     with package_imports():
         import_package(monkeypatch, tmp_path, Here(dependencies=[ABSENT]))
-        assert "not installed" in str(auto._no_engine_here(GPU))
+        assert "not installed" in str(auto.no_engine_here(GPU))
 
 
 def test_a_package_that_did_not_load_says_why(
@@ -440,7 +440,7 @@ def test_a_package_that_did_not_load_says_why(
     )
     with package_imports():
         import_package(monkeypatch, tmp_path, Here(load_error=OSError("no HIP")))
-        assert "no HIP" in str(auto._no_engine_here(GPU))
+        assert "no HIP" in str(auto.no_engine_here(GPU))
 
 
 def test_a_failing_session_gives_the_whole_image_to_pytorch(amd_pc, monkeypatch):
@@ -618,3 +618,126 @@ def test_duals_identity_follows_triton_for_windows(monkeypatch: pytest.MonkeyPat
         identities.append(dual_route.build_identity())
     dual_route.build_identity.cache_clear()
     assert identities[0] != identities[1]
+
+
+def test_duals_identity_follows_the_vendored_exporter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A program kept by the weights is not read for a graph a later exporter writes."""
+    names = {path.name for path in dual_route.EXPORTER_SOURCES}
+    assert {"export.py", "dynamic.py", "graph.py", "spec.py", "dual_arch.py"} <= names
+    exporter = tmp_path / "graph.py"
+    monkeypatch.setattr(dual_route, "EXPORTER_SOURCES", (exporter,))
+    identities = []
+    for content in (b"one", b"two"):
+        exporter.write_bytes(content)
+        dual_route.build_identity.cache_clear()
+        identities.append(dual_route.build_identity())
+    dual_route.build_identity.cache_clear()
+    assert identities[0] != identities[1]
+
+
+NA_MANIFEST = {
+    "specialization": {"dynamic": True, "factory": "dual_s", "scale": 2},
+    "context": "na-v1",
+    "local": "na-v1",
+    "retrieval": "na-v1",
+}
+
+
+@pytest.mark.parametrize(
+    ("keys", "named"),
+    [
+        (("local", "retrieval"), "local and retrieval"),
+        (("local",), "local"),
+        (("retrieval",), "retrieval"),
+    ],
+)
+def test_a_dual_onnx_with_local_or_retrieval_na_has_no_program(
+    monkeypatch: pytest.MonkeyPatch, keys: tuple[str, ...], named: str
+):
+    monkeypatch.setattr(dual_route, "run_child", pytest.fail)
+    manifest = {"specialization": NA_MANIFEST["specialization"], "context": "na-v1"}
+    manifest.update(dict.fromkeys(keys, "na-v1"))
+    with pytest.raises(ValueError, match="has no MIGraphX program") as refused:
+        dual_route.build_program(b"onnx", manifest, 0, (64, 64))
+    assert f"ONNX's {named} neighborhood attention" in str(refused.value)
+
+
+def test_a_dual_onnx_from_before_local_and_retrieval_na_builds_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    def child(args: list[str], *_: object, **__: object) -> str:
+        Path(args[3]).write_bytes(b"lowered")
+        return ""
+
+    library = tmp_path / dual_route.OP_LIBRARY.name
+    library.write_bytes(b"library")
+    monkeypatch.setattr(dual_route, "OP_LIBRARY", library)
+    monkeypatch.setattr(dual_route, "run_child", child)
+    monkeypatch.setattr(dual_route, "gfx_of", lambda _gpu: "gfx1100")
+    monkeypatch.setattr(
+        dual_route.program, "compile_in_child", lambda *_a, **_kw: b"program"
+    )
+    for manifest in (
+        {"specialization": {"dynamic": False, "height": 64, "width": 64}},
+        {
+            "specialization": {"dynamic": False, "height": 64, "width": 64},
+            "context": "na-v1",
+        },
+    ):
+        caplog.clear()
+        assert dual_route.build_program(b"onnx", manifest, 0, None) == b"program"
+        warned = [
+            r
+            for r in caplog.records
+            if "old local windows and retrieval blocks" in r.getMessage()
+        ]
+        assert len(warned) == 1
+
+
+def test_the_vendored_exporter_writes_local_and_retrieval_na():
+    dual_route.exported_tensorrt_only_keys.cache_clear()
+    assert dual_route.exported_tensorrt_only_keys() == ["local", "retrieval"]
+
+
+def test_a_dual_falls_back_before_exporting_with_one_warning(
+    amd_pc, monkeypatch: pytest.MonkeyPatch
+):
+    """The exporter's every ONNX has local and retrieval NA, which Build Program refuses:
+    the model runs on PyTorch on ROCm, said once in the chain, and nothing is exported."""
+    fakes, root = amd_pc
+    monkeypatch.setattr(fakes.imported.dual, "tensorrt_only", ["local", "retrieval"])
+    context, model = Context(root), Model(arch="DUAL")
+    for _ in range(3):
+        np.testing.assert_array_equal(run(context, model), IMAGE * 3)
+    (warning,) = context.warnings
+    assert "runs this DUAL model on PyTorch, not through a MIGraphX program" in warning
+    assert "local and retrieval: no program" in warning
+    assert fakes.conversions == 0
+    assert kept_files(root) == []
+
+
+def test_a_dual_onnx_with_local_and_retrieval_na_falls_back_with_one_warning(
+    amd_pc, monkeypatch: pytest.MonkeyPatch
+):
+    """An exporter that writes no such keys exports; an ONNX that still holds them lowers
+    to no program (dual.build_program refuses it before any child), so the model runs on
+    PyTorch, said once in the chain."""
+    fakes, root = amd_pc
+    monkeypatch.setattr(
+        fakes.imported.nodes["utility.build_program"],
+        "model_facts",
+        lambda _m: SimpleNamespace(drft_manifest=None, dual_manifest=NA_MANIFEST),
+    )
+    monkeypatch.setattr(fakes.imported.dual, "build_program", dual_route.build_program)
+    monkeypatch.setattr(dual_route, "run_child", pytest.fail)
+    context, model = Context(root), Model(arch="DUAL")
+    for _ in range(3):
+        np.testing.assert_array_equal(run(context, model), IMAGE * 3)
+    (warning,) = context.warnings
+    assert "runs this DUAL model on PyTorch, not through a MIGraphX program" in warning
+    assert "local and retrieval neighborhood attention" in warning
+    assert fakes.conversions == 1
+    assert fakes.compiles == []
+    assert kept_files(root) == []

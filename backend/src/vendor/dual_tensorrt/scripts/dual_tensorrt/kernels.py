@@ -47,7 +47,8 @@ def cell_stats(
         y, x = cy * 16 + t // 16, cx * 16 + t % 16
         q = convolve(X, WEIGHT, y, x, head * 32 + c, H, W, C)
         k = convolve(X, WEIGHT, y, x, C + head * 32 + c, H, W, C)
-        gram += tl.dot(q, tl.trans(k))
+        # chained through the MMA accumulator: BT-pixel steps keep the tiles in registers
+        gram = tl.dot(q, tl.trans(k), gram)
         qf, kf = q.to(tl.float32), k.to(tl.float32)
         qn += tl.sum(qf * qf, 1)
         kn += tl.sum(kf * kf, 1)

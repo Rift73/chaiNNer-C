@@ -115,29 +115,12 @@ CN_EXPORT cn_status cn_threshold_f32(const float *src, const float *binary,
     return cn_parallel_for(count, 65536, threshold_range, &job);
 }
 
-/* F26: saturate before the existing byte rounding, as the shared converter does.
+/* Saturate before the existing byte rounding, as the shared converter does.
  * Keep the NaN-to-zero result and in-range rounding unchanged. */
 static uint8_t quantize(float value) {
     float scaled = cn_numpy_clip_f32(value, 0.0f, 1.0f) * 255.0f;
     if (!isfinite(scaled)) return 0;
     return (uint8_t)nearbyintf(scaled);
-}
-
-typedef struct quantize_job {
-    const float *src;
-    uint8_t *dst;
-} quantize_job;
-
-static void quantize_range(void *opaque, size_t begin, size_t end) {
-    const quantize_job *job = opaque;
-    for (size_t i = begin; i < end; ++i) job->dst[i] = quantize(job->src[i]);
-}
-
-CN_EXPORT cn_status cn_quantize_u8(const float *src, uint8_t *dst, size_t count) {
-    if (valid_floats(count) != CN_OK) return CN_SIZE_OVERFLOW;
-    if (count && (!src || !dst)) return CN_INVALID_ARGUMENT;
-    quantize_job job = {src, dst};
-    return cn_parallel_for(count, 65536, quantize_range, &job);
 }
 
 typedef struct histogram_job {

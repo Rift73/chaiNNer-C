@@ -9,12 +9,10 @@ import reference_blend as reference
 
 from nodes.impl.blend import (
     BlendMode,
-    ImageBlender,
     blend_images,
-    blend_mode_normalized,
 )
 from nodes.impl.native import lib, ptr
-from nodes.impl.native_blend import composite
+from nodes.impl.native_blend import composite, raw_blend
 
 # The modes of the frozen snapshot; test_blend_non_separable.py has the others.
 SEPARABLE = [BlendMode(mode.value) for mode in reference.BlendMode]
@@ -134,7 +132,7 @@ def test_raw_modes(mode, channels, layout):
     expected = reference.ImageBlender().apply_blend(
         a, b, reference.BlendMode(mode.value)
     )
-    actual = ImageBlender().apply_blend(a, b, mode)
+    actual = raw_blend(a, b, mode.value)
     assert_parity(actual, expected)
     np.testing.assert_array_equal(a, before_a)
     np.testing.assert_array_equal(b, before_b)
@@ -174,7 +172,7 @@ def test_boundaries_and_transparency(mode, channels):
 @pytest.mark.parametrize("mode", SEPARABLE)
 @pytest.mark.parametrize("channels", list(itertools.product([1, 3, 4], repeat=2)))
 def test_composition_signed_zero_and_specials(mode, channels):
-    # Consult 11 D-17.1: every clip is np.clip(x, 0, 1), which keeps -0 and NaN.
+    # Every clip is np.clip(x, 0, 1), which keeps -0 and NaN.
     levels = np.array(
         [0.0, -0.0, 0.0001, 0.5, 1.0, -0.5, 1.5, np.nan, np.inf, -np.inf],
         dtype=np.float32,
@@ -200,7 +198,7 @@ def test_raw_nan_infinity_and_signed_zero(mode):
         expected = reference.ImageBlender().apply_blend(
             a, b, reference.BlendMode(mode.value)
         )
-        actual = ImageBlender().apply_blend(a, b, mode)
+        actual = raw_blend(a, b, mode.value)
     assert_parity(actual, expected)
 
 
@@ -210,7 +208,7 @@ def test_xor_bankers_rounding():
     expected = reference.ImageBlender().apply_blend(
         values, other, reference.BlendMode.XOR
     )
-    actual = ImageBlender().apply_blend(values, other, BlendMode.XOR)
+    actual = raw_blend(values, other, BlendMode.XOR.value)
     np.testing.assert_array_equal(actual, expected)
 
 
@@ -229,17 +227,10 @@ def test_normal_alias_semantics():
         a = np.ones(shape, dtype=np.float32)
         b = np.zeros(shape, dtype=np.float32)
         a.setflags(write=False)
-        assert ImageBlender().apply_blend(a, b, BlendMode.NORMAL) is a
+        assert raw_blend(a, b, BlendMode.NORMAL.value) is a
         result = blend_images(a, b, BlendMode.NORMAL)
         assert np.shares_memory(result, a)
         assert not result.flags.writeable
-
-
-def test_normalization_metadata_unchanged():
-    for mode in SEPARABLE:
-        assert blend_mode_normalized(mode) == reference.blend_mode_normalized(
-            reference.BlendMode(mode.value)
-        )
 
 
 def test_shape_and_channel_errors():

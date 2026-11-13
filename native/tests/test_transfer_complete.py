@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import ast
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from runpy import run_path
 
 import numpy as np
 import pytest
+from node_bodies import load_body
 
 from nodes.impl import native_transfer_complete as native
 from nodes.impl.color_transfer.linear_histogram import linear_histogram_transfer
@@ -67,7 +66,7 @@ def fixtures(seed, dtype, size, kind="random"):
 
 def assert_exact(actual, expected):
     assert actual.dtype == expected.dtype and actual.shape == expected.shape
-    # Upstream's layout too (Consult 11 D-16): Linear's planar result, np.dstack's
+    # Upstream's layout too: Linear's planar result, np.dstack's
     # order K.
     assert actual.strides == expected.strides
     # Compare values and zero signs; NaN payloads are not transformed parameters.
@@ -211,31 +210,11 @@ def test_invalid_bridge_shapes_do_not_dispatch(monkeypatch, bad):
         native.parameters(bad, bad, np.ones((2, 3), bool), np.ones((2, 3), bool), False)
 
 
-def load_node(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
-
-
-NODE = load_node(
+NODE = load_body(
     Path(__file__).resolve().parents[2]
     / "backend/src/packages/chaiNNer_standard/image_filter/correction/color_transfer.py"
 )
-ORIGINAL_NODE = load_node(REFERENCE / "color_transfer_node.py")
+ORIGINAL_NODE = load_body(REFERENCE / "color_transfer_node.py")
 ORIGINAL_MEAN = run_path(
     str(
         Path(__file__).with_name("reference_analysis")

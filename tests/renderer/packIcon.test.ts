@@ -25,6 +25,8 @@ vi.mock('react', async (importOriginal) => ({
 
 type Props = Record<string, unknown>;
 type Component = (props: Props) => ReactElement<Props>;
+// The pack is a dynamic import, slow on a loaded PC; the wait stays under the 5 s test timeout.
+const PACK_LOAD = { timeout: 4_000 };
 
 const mount = async (icon: string) => {
     const { IconFactory } = (await import(
@@ -55,7 +57,7 @@ describe('an icon no schema names', () => {
 
         expect(render().props).toEqual({ boxSize: 4 });
 
-        await vi.waitFor(() => expect(harness.state.value).toBeDefined());
+        await vi.waitFor(() => expect(harness.state.value).toBeDefined(), PACK_LOAD);
         expect(render().props.as).toBe(drawn);
     });
 
@@ -71,7 +73,7 @@ describe('an icon no schema names', () => {
         const render = await mount('MdAccessAlarm');
         render();
 
-        await vi.waitFor(() => expect(harness.state.value).toEqual({}));
+        await vi.waitFor(() => expect(harness.state.value).toEqual({}), PACK_LOAD);
 
         expect(error).toHaveBeenCalledOnce();
         expect(render().props.as).toBeUndefined();

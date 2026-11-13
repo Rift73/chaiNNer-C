@@ -12,7 +12,7 @@ from onnx import TensorProto, helper
 from nodes.impl.compressed_file import XZ_HEADER, ZSTD_HEADER, Compression
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import OnnxModel
-from packages.chaiNNer_onnx.onnx.io.load_model import load_model_node
+from packages.chaiNNer_onnx.onnx.io.load_model import read_model
 from packages.chaiNNer_onnx.onnx.io.save_model import save_model_node
 
 HEADERS = {Compression.LZMA: XZ_HEADER, Compression.ZSTD: ZSTD_HEADER}
@@ -47,7 +47,7 @@ def test_a_compressed_model_loads_back_as_the_same_model(
     assert [p.name for p in tmp_path.iterdir()] == [path.name]
     assert path.read_bytes().startswith(HEADERS[compression])
 
-    loaded, directory, name = load_model_node(path)
+    loaded, directory, name = read_model(path)
     assert loaded.bytes == model.bytes
     assert loaded.info == model.info and loaded.info.scale_width == 2
     assert (directory, name) == (tmp_path, "model_compressed")
@@ -58,4 +58,4 @@ def test_a_plain_model_is_written_and_read_as_before(tmp_path: Path):
     save_model_node(model, tmp_path, "model", False, Compression.ZSTD)
     path = tmp_path / "model.onnx"
     assert path.read_bytes() == model.bytes
-    assert load_model_node(path)[0].bytes == model.bytes
+    assert read_model(path)[0].bytes == model.bytes

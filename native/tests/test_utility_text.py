@@ -317,7 +317,7 @@ def test_text_slice(text, operation, alignment, start, length, maximum):
 
     first = max(start, -len(text))
     if operation == "START_AND_LENGTH" and first < 0 <= first + length:
-        # A negative start whose length reaches the end slices to the end (2026-10-23);
+        # A negative start whose length reaches the end slices to the end;
         # upstream's start + length wrapped past 0 to the beginning of the text.
         assert call(NEW["text_slice"]) == text[first:]
         return
@@ -848,8 +848,8 @@ def test_frozen_snapshot_hashes():
         )
 
 
-# Text Pattern's description is reworded to the grammar it parses (upstream chaiNNer #2106;
-# owner's stand-in D13); the rest of its metadata and its signature still match.
+# Text Pattern's description is reworded to the grammar it parses (upstream chaiNNer
+# #2106); the rest of its metadata and its signature still match.
 REWORDED = {"text_pattern"}
 
 

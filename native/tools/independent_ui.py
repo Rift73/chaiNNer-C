@@ -20,7 +20,7 @@ MAIN = "resources/app/.vite/build/main.js"
 CSS = "resources/app/.vite/renderer/main_window/index.css"
 # The product version shown in the header. The package manifest's app_version
 # stays the installed UI baseline (upstream package.json); this is display only.
-PRODUCT_VERSION = "0.3.11"
+PRODUCT_VERSION = "0.3.12"
 BASELINE_HASHES = {
     RENDERER: "50f22a101c16c97fd1db413e3e0becf647c360b817f09b8a3089fa649fd16877",
     MAIN: "df979a26746d814f4dd8e4ce555f6114304a0b7f72cef429de783c646ad26f10",
@@ -31,7 +31,7 @@ BASELINE_HASHES = {
 # and downloads 3.11.5. chaiNNer-C ships CPython 3.14, so any 3.14.0+ is kept.
 PYTHON_CHECK_UPSTREAM = "if(gR.eq(s.version,I))return s}"
 PYTHON_CHECK_PORT = 'if(gR.gte(s.version,"3.14.0"))return s}'
-# The upstream base the version display names beside chaiNNer-C's (Consult 2 Q5):
+# The upstream base the version display names beside chaiNNer-C's:
 # the pinned app's package.json version, checked equal to it at every patch, so
 # the reviewed output never follows an unpinned file.
 UPSTREAM_VERSION = "0.25.1-nightly.2025-10-21"
@@ -47,16 +47,16 @@ UPSTREAM_APP = Path(
     / "native/local/upstream/app-0.25.1-nightly2025-10-21"
 )
 # What the patched main bundle logs at startup, and the error its integrated-Python
-# check throws instead of upstream's delete and download (Q6); the real-use pass
+# check throws instead of upstream's delete and download; the real-use pass
 # reads both in the package's log.
 VERSION_LOG_LINE = f"chaiNNer-C {PRODUCT_VERSION} (upstream {UPSTREAM_VERSION})"
 PYTHON_MISSING = (
     "chaiNNer-C's integrated Python is missing or older than 3.14; reinstall chaiNNer-C"
 )
 # The main bundle's further reviewed edits, (before, after), each anchor exactly
-# once. Consult 2 Q5: every shown version is chaiNNer-C's, while app.getVersion()
+# once. Every shown version is chaiNNer-C's, while app.getVersion()
 # (xf) stays upstream's, since it stamps saved chains and their migrations
-# compare it; the Release Notes item, which opens upstream's tag, goes. Q6: the
+# compare it; the Release Notes item, which opens upstream's tag, goes. The
 # fall-through after the integrated-Python check (delete <root>/python, download
 # and extract 3.11.5) throws instead; upstream's catch in setup logs it and
 # offers Retry, system Python or exit. Nothing is deleted or downloaded.

@@ -6,6 +6,7 @@ import importlib.util
 import os
 import sys
 from importlib import metadata
+from types import ModuleType
 
 import pytest
 
@@ -39,3 +40,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         import linux_differences
 
         linux_differences.skip_listed(items)
+
+
+@pytest.fixture
+def server_host(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    # The module parses its command line when imported.
+    monkeypatch.setattr(sys, "argv", ["server_host.py"])
+    return importlib.import_module("server_host")

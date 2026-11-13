@@ -4,6 +4,7 @@ import {
     DropDownItem,
     filterDropDownItems,
     getDropDownItems,
+    getDropDownKind,
     getUnavailableMask,
 } from '../../src/renderer/helpers/dropDownItems';
 
@@ -100,4 +101,25 @@ test('unavailable mask is stable text and empty without conditions', () => {
         { option: 'C', value: 2, condition: { kind: 'and', items: [] } },
     ];
     expect(getUnavailableMask(conditional, (c) => c.kind === 'and')).toBe('010');
+});
+
+test('dropdown kind: native select unless options have pop-ups or need a search field', () => {
+    // short lists without descriptions keep the native select, empty descriptions included
+    expect(getDropDownKind(options)).toBe('select');
+    expect(getDropDownKind([...options, { option: 'X', value: 'x', description: '' }])).toBe(
+        'select'
+    );
+    expect(getDropDownKind([...options, { option: 'X', value: 'x', description: null }])).toBe(
+        'select'
+    );
+
+    // one description is enough for the list, which can show a pop-up per option
+    const described = [...options, { option: 'X', value: 'x', description: 'Blurs.' }];
+    expect(getDropDownKind(described)).toBe('list');
+
+    // more than 12 options get the search field, with or without descriptions
+    const many = Array.from({ length: 13 }, (_, i): InputOption => ({ option: `${i}`, value: i }));
+    expect(getDropDownKind(many.slice(0, 12))).toBe('select');
+    expect(getDropDownKind(many)).toBe('search');
+    expect(getDropDownKind([...many, ...described])).toBe('search');
 });

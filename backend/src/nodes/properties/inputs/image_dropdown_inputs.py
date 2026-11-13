@@ -7,8 +7,6 @@ from ...impl.color.convert_data import (
     get_alpha_partner,
     is_alpha_partner,
 )
-
-# pylint: disable=relative-beyond-top-level
 from ...impl.image_utils import BorderType
 from ...impl.linear_light import LightTransfer
 from ...impl.pil_utils import RotationInterpolationMethod

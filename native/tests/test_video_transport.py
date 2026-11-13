@@ -241,8 +241,8 @@ def test_reader_view_keeps_each_immutable_frame_alive_without_array_copy():
     )
     frames = list(loader.stream_frames())
     assert len(frames) == 2
-    # D8 (SP4c): each frame views the fresh buffer it was read into, no longer the
-    # read's bytes; there is still no array copy after the read. Every frame is checked
+    # Each frame views the fresh buffer it was read into, not the read's bytes;
+    # there is still no array copy after the read. Every frame is checked
     # after all were read: a live frame keeps its content and its own buffer.
     for frame, source in zip(frames, chunks, strict=True):
         assert np.shares_memory(frame, frame.base)

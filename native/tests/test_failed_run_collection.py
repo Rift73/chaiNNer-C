@@ -124,7 +124,7 @@ def test_gc_is_used_only_by_collect_failed_run_return_device_memory_and_the_free
     # runs only when a cleared node's GPU memory goes back outside a run, so a
     # successful run still never collects. The one exception: NodeLoading's
     # gc.collect(); gc.freeze() once after the node loading, which logs the frozen
-    # count (gate ruling R1, the decision log "instant-exec gate R1").
+    # count.
     tree = ast.parse(source("server.py"))
     names = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "gc"]
     assert len(names) == 5
@@ -196,8 +196,8 @@ def test_no_finally_schedules_a_collection():
 
 
 def test_a_stopped_run_schedules_one_collection():
-    # Stop raises Aborted out of executor.run(), and the controller's Stop probe found
-    # a stopped run's arrays still held after the next /runs (D). The app's Stop
+    # Stop raises Aborted out of executor.run(), and a Stop probe found a stopped run's
+    # arrays still held after the next /runs. The app's Stop
     # usually drops its /run request first, so the run ends cancelled instead: that
     # handler schedules the same one collection and lets the cancellation go on. The
     # inner finally is unchanged; test_native_profile pins it.

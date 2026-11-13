@@ -399,10 +399,10 @@ def test_buffer_boundaries():
     with pytest.raises(ValueError):
         native_buffers.flatten_alpha(np.empty((2, 3, 8), np.float32))
     api = native_buffers._api()  # malformed direct ABI
-    assert api.cn_pixels_convert(None, None, 0, 0, 0, 0) == 1
+    assert api.cn_pixels_convert_checked(None, None, 0, 0, 0, 0, None) == 1
     assert (
-        api.cn_pixels_convert(
-            image.ctypes.data, image.ctypes.data, ct.c_size_t(-1), 0, 0, 0
+        api.cn_pixels_convert_checked(
+            image.ctypes.data, image.ctypes.data, ct.c_size_t(-1), 0, 0, 0, None
         )
         == 2
     )
@@ -442,7 +442,7 @@ class LibraryInFlight:
 
 
 def test_api_configures_the_library_one_thread_at_a_time(monkeypatch):
-    # SP3b audit A8: lru_cache does not serialize first calls, and two at once would
+    # lru_cache does not serialize first calls, and two at once would
     # each set argtypes on the function objects their getattr misses create, so
     # _api()'s body runs under a lock: one caller configures the library at a time.
     library = LibraryInFlight()

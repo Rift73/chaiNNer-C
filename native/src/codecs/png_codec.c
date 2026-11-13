@@ -101,8 +101,7 @@ static void png_quiet(png_structp png, png_const_charp message) {
  * if it cannot be allocated libpng decodes the file): 500 megapixels of RGBA. */
 #define DIRECT_MAX_BYTES (UINT64_C(1) << 31)
 /* The pixels' bytes of a store chunk, at least: the pixels' pages are first touched there, and with fresh pages 64 KiB
- * chunks took 1.8 ms at 3840x2160 RGB on 16 threads against 1.1 ms for 512 KiB, one thread 3.9 (measured 2026-11-04).
- */
+ * chunks took 1.8 ms at 3840x2160 RGB on 16 threads against 1.1 ms for 512 KiB, one thread 3.9. */
 #define DIRECT_STORE_GRAIN ((size_t)512 * 1024)
 
 static uint8_t png_paeth(int a, int b, int c) {

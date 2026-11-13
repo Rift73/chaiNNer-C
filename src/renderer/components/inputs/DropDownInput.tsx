@@ -1,8 +1,5 @@
-import { QuestionIcon } from '@chakra-ui/icons';
-import { Tooltip } from '@chakra-ui/react';
 import { memo, useCallback } from 'react';
 import { useValidDropDownValue } from '../../hooks/useValidDropDownValue';
-import { Markdown } from '../Markdown';
 import { AnchorSelector } from './elements/AnchorSelector';
 import { Checkbox } from './elements/Checkbox';
 import { DropDown } from './elements/Dropdown';
@@ -24,30 +21,10 @@ export const DropDownInput = memo(
 
         if (preferredStyle === 'checkbox' && options.length === 2) {
             // checkbox assumes the first options means yes and the second option means no
-
-            let afterText;
-            if (hint && description) {
-                afterText = (
-                    <Tooltip
-                        hasArrow
-                        borderRadius={8}
-                        label={<Markdown nonInteractive>{description}</Markdown>}
-                        openDelay={500}
-                        px={2}
-                        py={1}
-                    >
-                        <QuestionIcon
-                            boxSize={3}
-                            ml={1}
-                            verticalAlign="baseline"
-                        />
-                    </Tooltip>
-                );
-            }
             return (
                 <WithoutLabel>
                     <Checkbox
-                        afterText={afterText}
+                        description={hint ? description : undefined}
                         isDisabled={isLocked}
                         label={label}
                         no={options[1]}

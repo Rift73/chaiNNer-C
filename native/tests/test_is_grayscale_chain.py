@@ -3,41 +3,18 @@ does not, and a second native run takes the answer from the memo cache."""
 
 from __future__ import annotations
 
-import importlib
-import sys
 from pathlib import Path
 from typing import cast
 
 import cv2
 import numpy as np
 import pytest
-from engine_differential import execute, load_registry_errors, mismatches
+from engine_differential import execute, mismatches
 from verify_runtime import edge, make_node
 
-import api
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from nodes.impl.native_graph import graph
-
-BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
-
-
-@pytest.fixture(scope="module")
-def schemas():
-    main = sys.modules["__main__"]
-    previous = getattr(main, "__file__", None)
-    main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
-    errors = load_registry_errors(BACKEND / "server.py")
-    assert not errors, [e.module for e in errors]
-    yield {
-        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
-        for schema, (data, _) in api.registry.nodes.items()
-    }
-    if previous is None:
-        del main.__file__
-    else:
-        main.__file__ = previous
 
 
 def routed_chain(

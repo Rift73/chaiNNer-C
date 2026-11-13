@@ -225,7 +225,7 @@ PORT = [started("load"), SEQUENCE, frame(0), frame(1), frame(2), started("save")
         (PORT, [*PORT[:3], *PORT[4:]], True),
         (PORT, [*PORT, started("save")], False),
         (PORT, [*PORT[:3], frame(5), *PORT[4:]], False),
-        # Consult D-35: the port may end on any frame the oracle previewed.
+        # The port may end on any frame the oracle previewed.
         (PORT, PORT[:4] + PORT[5:], True),
     ],
     ids=[
@@ -277,7 +277,7 @@ def test_both_port_attempts_compare_under_the_shared_rule(first, second, equal):
         assert mismatch.startswith(
             "repeat: load: broadcast" if second is FOREIGN else "load: broadcast"
         )
-    # Consult 8 R-h (4): each attempt's broadcast multiset is in the report.
+    # Each attempt's broadcast multiset is in the report.
     frames = [
         sorted(
             (json.loads(key)["types"]["0"]["value"], count)

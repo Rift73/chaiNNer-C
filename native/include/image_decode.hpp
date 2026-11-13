@@ -1,7 +1,7 @@
-/* Native image decoding with today's results (GPL-3.0): Load Image's decoders `pil-jpeg`/`pil` (Pillow 12.3) and
+/* Native image decoding as Python decodes (GPL-3.0): Load Image's decoders `pil-jpeg`/`pil` (Pillow 12.3) and
  * `cv` (OpenCV 5.0 imdecode under IMREAD_UNCHANGED) for the files the vendored codecs take exactly as those paths do
- * (native/include/image_codecs.h). Each decode gives today's array before normalisation (dtype, shape, channel
- * order, bytes, EXIF orientation applied) or declines; a declined file goes through today's path, which gives the
+ * (native/include/image_codecs.h). Each decode gives the Python array before normalisation (dtype, shape, channel
+ * order, bytes, EXIF orientation applied) or declines; a declined file goes through the Python path, which gives the
  * image or the error. Nothing here touches Python, so the run engine's threads call it as they are. */
 #pragma once
 
@@ -33,10 +33,10 @@ struct Shape {
 using Allocator = std::function<uint8_t *(const Shape &shape)>;
 
 /* Whether native decoding runs at all: CHAINNER_C_NATIVE_CODECS=0 (a diagnostic switch, read per call) sends every
- * file through today's path, the oracle of the codec corpus. */
+ * file through the Python path, the oracle of the codec corpus. */
 bool enabled();
 
-/* The whole file, or false when it cannot be read (today's path then reports the error). */
+/* The whole file, or false when it cannot be read (the Python path then reports the error). */
 bool read_file(const std::filesystem::path &path, std::vector<uint8_t> &data);
 
 /* Today's `pil` decoder for a JPEG (Image.open sniffs FF D8 FF first): JpegImagePlugin's marker walk, its mode from

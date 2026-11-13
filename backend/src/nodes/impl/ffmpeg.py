@@ -243,49 +243,48 @@ def needs_update(base_dir: Path) -> bool:
             and marker.get("platform") == platform
             and _version_key(str(marker.get("version"))) > _version_key(version)
         )
-    except (OSError, ValueError) as e:
-        logger.warning(
-            f"Keeping the FFMPEG in {base_dir}: its {MARKER} is unreadable ({e})"
-        )
-        return False
-
-    if marker is not None and newer:
-        logger.info(
-            f"Keeping the FFMPEG {marker.get('version')} in {base_dir}: it is newer"
-            f" than {version}"
-        )
-        return False
-    if marker is None:
-        rehost = REHOST[platform]
-        paths = get_executable_path(base_dir)
-        if all(p.stat().st_size == rehost[p.name][0] for p in paths) and (
-            _executable_sha256(base_dir) == {n: h for n, (_, h) in rehost.items()}
-        ):
-            logger.info(f"Updating the FFMPEG 5.1.2 in {base_dir} to {version}")
+        if marker is not None and newer:
+            logger.info(
+                f"Keeping the FFMPEG {marker.get('version')} in {base_dir}: it is newer"
+                f" than {version}"
+            )
+            return False
+        if marker is None:
+            rehost = REHOST[platform]
+            paths = get_executable_path(base_dir)
+            if all(p.stat().st_size == rehost[p.name][0] for p in paths) and (
+                _executable_sha256(base_dir) == {n: h for n, (_, h) in rehost.items()}
+            ):
+                logger.info(f"Updating the FFMPEG 5.1.2 in {base_dir} to {version}")
+                return True
+            logger.info(
+                f"Keeping the FFMPEG in {base_dir}: it was put there by the user"
+            )
+            return False
+        if marker.get("sha256") == _executable_sha256(base_dir):
+            logger.info(
+                f"Updating the FFMPEG {marker.get('version')} in {base_dir} to {version}"
+            )
             return True
-        logger.info(f"Keeping the FFMPEG in {base_dir}: it was put there by the user")
-        return False
-    if marker.get("sha256") == _executable_sha256(base_dir):
         logger.info(
-            f"Updating the FFMPEG {marker.get('version')} in {base_dir} to {version}"
+            f"Keeping the FFMPEG in {base_dir}: the user replaced the"
+            f" {marker.get('version')} build installed there"
         )
-        return True
-    logger.info(
-        f"Keeping the FFMPEG in {base_dir}: the user replaced the"
-        f" {marker.get('version')} build installed there"
-    )
-    return False
+        return False
+    except (OSError, ValueError) as e:
+        logger.warning(f"Keeping the FFMPEG in {base_dir}: it cannot be checked ({e})")
+        return False
 
 
 def _make_executable(ffmpeg_path: Path, ffprobe_path: Path) -> None:
-    logger.info("Settings permissions for FFMPEG...")
+    logger.info("Setting permissions for FFMPEG...")
     if is_mac:
         # Un-Quarantine ffmpeg on macOS
         try:
             check_call(["xattr", "-dr", "com.apple.quarantine", str(ffmpeg_path)])
             check_call(["xattr", "-dr", "com.apple.quarantine", str(ffprobe_path)])
         except Exception as e:
-            logger.warn(f"Failed to un-quarantine ffmpeg: {e}")
+            logger.warning(f"Failed to un-quarantine ffmpeg: {e}")
 
     if is_arm_mac:
         # M1 can only run signed files, we must ad-hoc sign it
@@ -295,7 +294,7 @@ def _make_executable(ffmpeg_path: Path, ffprobe_path: Path) -> None:
             check_call(["codesign", "-s", "-", str(ffmpeg_path)])
             check_call(["codesign", "-s", "-", str(ffprobe_path)])
         except Exception as e:
-            logger.warn(f"Failed to sign ffmpeg: {e}")
+            logger.warning(f"Failed to sign ffmpeg: {e}")
 
     if is_mac or is_linux:
         # Make the files executable
@@ -303,7 +302,7 @@ def _make_executable(ffmpeg_path: Path, ffprobe_path: Path) -> None:
             ffmpeg_path.chmod(0o755)
             ffprobe_path.chmod(0o755)
         except Exception as e:
-            logger.warn(f"Failed to set permissions for ffmpeg: {e}")
+            logger.warning(f"Failed to set permissions for ffmpeg: {e}")
 
 
 def _move_into_place(extracted: Path, base_dir: Path) -> None:
@@ -490,8 +489,8 @@ def run_setup(base_dir: Path):
             setup_integrated_ffmpeg(base_dir)
             return
         except Exception as e:
-            logger.warn(f"Failed to setup FFMPEG: {e}")
-            logger.warn("Trying again...")
+            logger.warning(f"Failed to setup FFMPEG: {e}")
+            logger.warning("Trying again...")
 
         setup_integrated_ffmpeg(base_dir)
 

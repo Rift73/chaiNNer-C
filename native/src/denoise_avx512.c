@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "denoise_avx512.c is an x86-64 /arch:AVX512 unit"
 #endif
-/* Non-local means rows, AVX-512 unit (/arch:AVX512, spec 4.3): denoise_avx2.c at twice the lanes. */
+/* Non-local means rows, AVX-512 unit (/arch:AVX512): denoise_avx2.c at twice the lanes. */
 #include "denoise_shared.h"
 #include <immintrin.h>
 

@@ -5,7 +5,6 @@ from enum import Enum
 import numpy as np
 
 from nodes.impl import native_geometry
-from nodes.impl.normals.util import gr_to_xyz, xyz_to_bgr
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
 
@@ -46,19 +45,4 @@ class BChannel(Enum):
     ],
 )
 def normalize_normals_node(img: np.ndarray, b: BChannel) -> np.ndarray:
-    if native_geometry.image_supported(img):
-        return native_geometry.normal_map(img, 0, b.value)
-    result = xyz_to_bgr(gr_to_xyz(img))
-
-    if b == BChannel.Z_MAPPED:
-        result[:, :, 0] = (result[:, :, 0] + 1) / 2
-    elif b == BChannel.ZERO:
-        result[:, :, 0] = 0
-    elif b == BChannel.HALF:
-        result[:, :, 0] = 0.5
-    elif b == BChannel.ONE:
-        result[:, :, 0] = 1
-    elif b == BChannel.Z:
-        pass
-
-    return result
+    return native_geometry.normal_map(img, 0, b.value)

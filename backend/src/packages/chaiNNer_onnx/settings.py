@@ -183,14 +183,14 @@ def get_settings(context: NodeContext) -> OnnxSettings:
     settings = context.settings
 
     tensorrt_cache_path = settings.get_cache_location("onnx_tensorrt_cache")
-    logger.info(f"TensorRT cache location: {tensorrt_cache_path}")
+    logger.debug(f"TensorRT cache location: {tensorrt_cache_path}")
     if tensorrt_cache_path and not os.path.exists(tensorrt_cache_path):
-        os.makedirs(tensorrt_cache_path)
+        os.makedirs(tensorrt_cache_path, exist_ok=True)
 
     migraphx_cache_path = None
     if can_cache_migraphx:
         migraphx_cache_path = settings.get_cache_location("onnx_migraphx_cache")
-        logger.info(f"MIGraphX cache location: {migraphx_cache_path}")
+        logger.debug(f"MIGraphX cache location: {migraphx_cache_path}")
 
     execution_provider = settings.get_str("execution_provider", default_provider)
     return OnnxSettings(

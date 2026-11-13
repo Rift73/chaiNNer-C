@@ -10,11 +10,8 @@
 namespace py = pybind11;
 namespace {
 using graphpy::O;
-
-O checked(PyObject *result) {
-    if (!result) throw py::error_already_set();
-    return py::reinterpret_steal<O>(result);
-}
+using graphpy::equal;
+using graphpy::steal;
 
 O name(const py::dict &globals, const char *key) {
     py::str lookup(key);
@@ -22,27 +19,22 @@ O name(const py::dict &globals, const char *key) {
     return graphpy::builtin(key);
 }
 
-bool equal(const O &first, const O &second) {
-    // Python's == expression invokes rich comparison even for identical objects.
-    return graphpy::truth(checked(PyObject_RichCompare(first.ptr(), second.ptr(), Py_EQ)));
-}
-
 bool option(const py::dict &globals, const O &value, const char *type, const char *member) {
     O expected = name(globals, type).attr(member);
     return equal(value, expected);
 }
 
-O add(const O &a, const O &b) { return checked(PyNumber_Add(a.ptr(), b.ptr())); }
-O subtract(const O &a, const O &b) { return checked(PyNumber_Subtract(a.ptr(), b.ptr())); }
-O multiply(const O &a, const O &b) { return checked(PyNumber_Multiply(a.ptr(), b.ptr())); }
-O divide(const O &a, const O &b) { return checked(PyNumber_TrueDivide(a.ptr(), b.ptr())); }
+O add(const O &a, const O &b) { return steal(PyNumber_Add(a.ptr(), b.ptr())); }
+O subtract(const O &a, const O &b) { return steal(PyNumber_Subtract(a.ptr(), b.ptr())); }
+O multiply(const O &a, const O &b) { return steal(PyNumber_Multiply(a.ptr(), b.ptr())); }
+O divide(const O &a, const O &b) { return steal(PyNumber_TrueDivide(a.ptr(), b.ptr())); }
 
 O format(const O &value) {
     // f-string fields use __format__(""), which need not equal __str__().
-    return checked(PyObject_Format(value.ptr(), nullptr));
+    return steal(PyObject_Format(value.ptr(), nullptr));
 }
 
-O concat(const O &a, const O &b) { return checked(PyUnicode_Concat(a.ptr(), b.ptr())); }
+O concat(const O &a, const O &b) { return steal(PyUnicode_Concat(a.ptr(), b.ptr())); }
 
 [[noreturn]] void raise_object(const O &error) {
     if (!PyExceptionInstance_Check(error.ptr()))
@@ -116,7 +108,7 @@ O math_node(const py::dict &globals, const O &op, const O &a, const O &b) {
             O product = multiply(b, rounded);
             return subtract(a, product);
         }
-        return checked(PyNumber_Remainder(a.ptr(), b.ptr()));
+        return steal(PyNumber_Remainder(a.ptr(), b.ptr()));
     }
     if (option(globals, op, "MathOperation", "PERCENT")) {
         O product = multiply(a, b);
@@ -152,7 +144,7 @@ O round_node(const py::dict &globals, const O &a, const O &operation,
     if (option(globals, scale, "RoundScale", "POWER")) {
         O logarithm = name(globals, "math").attr("log")(a, power);
         O exponent = apply(logarithm);
-        return checked(PyNumber_Power(power.ptr(), exponent.ptr(), Py_None));
+        return steal(PyNumber_Power(power.ptr(), exponent.ptr(), Py_None));
     }
     unknown(globals, "RuntimeError", "Unknown scale ", scale);
 }

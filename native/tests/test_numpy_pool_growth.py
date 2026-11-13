@@ -1,7 +1,7 @@
-"""The pure parts of native/tools/numpy_pool_growth.py (SP4c Task 3).
+"""The pure parts of native/tools/numpy_pool_growth.py.
 
-The checks themselves start a worker, so the controller runs them at the gate (plan
-P9). These tests cover the rules the checks judge by (the plateau, the cap, the band a
+The checks themselves start a worker, so they run in the full gate, not here. These
+tests cover the rules the checks judge by (the plateau, the cap, the band a
 level must reach), the guard on every output, the read-only image folder and the
 refusal to start with the pool's variables already set.
 """
@@ -227,7 +227,7 @@ def test_refuses_to_start_with_either_variable_set(variable, monkeypatch, capsys
 
 def test_the_release_check_runs_with_the_memo_off():
     # The native engine's memo cache keeps Create Color's outputs live across requests
-    # (DESIGN.md amendment A3), so they would never be idle at the release points; the
+    # (the engine's memo), so they would never be idle at the release points; the
     # growth checks keep the shipped default.
     assert growth.CHECK_ENV["release"][growth.MEMO_VARIABLE] == "0"
     for check in ("video", "video-cap16", "images"):

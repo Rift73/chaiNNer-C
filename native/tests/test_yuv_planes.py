@@ -9,7 +9,7 @@ import ctypes as ct
 
 import numpy as np
 import pytest
-from test_isa_dispatch import isa_get, isa_set
+from test_isa_dispatch import isa_set
 
 from nodes.impl import colour_info
 from nodes.impl.colour_info import code_to_float, float_to_code
@@ -18,16 +18,6 @@ from nodes.impl.native_planes import _api
 ROWS, WIDTH, STRIDE = 64, 1027, 1040  # 1027 % 8 == 3: every row has a scalar tail
 DEPTHS = range(8, 17)
 FORMS = [(False, False), (False, True), (True, False), (True, True)]
-
-
-@pytest.fixture
-def levels():
-    """Every level this CPU has, scalar first; the original level afterwards."""
-    effective, _, cpu = isa_get()
-    try:
-        yield range(cpu + 1)
-    finally:
-        assert isa_set(effective) == effective
 
 
 def _numpy_values(codes: np.ndarray, bits: int, full: bool, chroma: bool):

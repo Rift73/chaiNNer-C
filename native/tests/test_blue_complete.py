@@ -117,7 +117,7 @@ def test_full_periodic_fields_and_extrema(shape, sigma, density):
 def test_node_normalization_promotion(count):
     ranks = np.arange(count, dtype=np.int32).reshape(1, count)
     with np.errstate(all="ignore"):
-        # A single rank is 0 (ruling of 2026-10-23), where upstream divides 0 by 0.
+        # A single rank is 0, where upstream divides 0 by 0.
         expected = ranks.astype(np.float32) / (count - 1 or 1)
         actual = native_blue.normalize(ranks)
     assert expected.dtype == actual.dtype

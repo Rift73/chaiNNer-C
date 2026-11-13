@@ -123,7 +123,7 @@ def widget(
 ) -> Any:
     """The input; its class depends on the kind, which each test checks."""
     p = param(annotation, default, name, kind)
-    return adapter_for(p, ENUMS, plugin).make_input("Label", p, input_id)
+    return adapter_for(p, ENUMS, plugin).make_input("Label", input_id)
 
 
 def options(dropdown: DropDownInput) -> dict[str, str | int]:
@@ -261,8 +261,9 @@ def test_plugin_range_is_a_colour_range_beside_range_in() -> None:
     deband = adapter_for(p, ENUMS, True, frozenset({"clip", "range", "thr"}))
     assert deband.kind == "int"
     assert deband.to_source("24") == "24"
-    made = deband.make_input("Range", p, 5)
-    assert isinstance(made, TextInput)
+    made = deband.make_input("Range", 5)
+    assert isinstance(made, NumberInput)
+    assert made.optional
 
 
 def test_make_input_takes_the_callers_id() -> None:
@@ -272,7 +273,7 @@ def test_make_input_takes_the_callers_id() -> None:
 
 def test_clip() -> None:
     a = adapt("vs.VideoNode", name="clip")
-    inp = a.make_input("Clip", param("vs.VideoNode"), 7)
+    inp = a.make_input("Clip", 7)
     assert isinstance(inp, VideoClipInput)
     assert inp.input_type == "VideoClip"
     assert not inp.optional
@@ -360,12 +361,15 @@ def test_int() -> None:
     assert widget("int", None, "first").default == 0
     assert required.to_source(0) == "0"
 
-    # A parameter whose default is None: an optional text, empty = the default.
+    # A parameter whose default is None: a number field that may stay empty, empty =
+    # the default.
     optional = adapt("int | None", "None", "width")
     inp = widget("int | None", "None", "width")
-    assert isinstance(inp, TextInput)
+    assert isinstance(inp, NumberInput)
     assert inp.optional
+    assert inp.default is None
     assert optional.to_source(None) is None
+    assert optional.to_source(1280) == "1280"
     assert optional.to_source("") is None
     assert optional.to_source(" 1280 ") == "1280"
     assert optional.to_source("-4") == "-4"
@@ -373,7 +377,7 @@ def test_int() -> None:
         optional.to_source("12.5")
     with pytest.raises(ValueError, match="whole number"):
         optional.to_source("ten")
-    assert isinstance(widget("int | None", "None", "last", plugin=True), TextInput)
+    assert isinstance(widget("int | None", "None", "last", plugin=True), NumberInput)
 
 
 def test_float() -> None:
@@ -387,7 +391,8 @@ def test_float() -> None:
     assert a.to_source(12) is None
 
     optional = adapt("float | None", "None", "blur")
-    assert isinstance(widget("float | None", "None", "blur"), TextInput)
+    assert isinstance(widget("float | None", "None", "blur"), NumberInput)
+    assert optional.to_source(0.2) == "0.2"
     assert optional.to_source("0.2") == "0.2"
     assert optional.to_source("1e-3") == "0.001"
     assert optional.to_source(None) is None
@@ -469,10 +474,10 @@ def test_enum_from_the_catalog() -> None:
     inp = widget("BM3D.Profile", "<Profile.FAST: 'fast'>", "profile")
     assert isinstance(inp, DropDownInput)
     assert options(inp) == {
-        "FAST": "vsdenoise.bm3d.Profile.FAST",
-        "LOW COMPLEXITY": "vsdenoise.bm3d.Profile.LOW_COMPLEXITY",
-        "NORMAL": "vsdenoise.bm3d.Profile.NORMAL",
-        "HIGH": "vsdenoise.bm3d.Profile.HIGH",
+        "Fast": "vsdenoise.bm3d.Profile.FAST",
+        "Low complexity": "vsdenoise.bm3d.Profile.LOW_COMPLEXITY",
+        "Normal": "vsdenoise.bm3d.Profile.NORMAL",
+        "High": "vsdenoise.bm3d.Profile.HIGH",
     }
     assert inp.default == "vsdenoise.bm3d.Profile.FAST"
     assert a.to_source("vsdenoise.bm3d.Profile.HIGH") == "vsdenoise.bm3d.Profile.HIGH"
@@ -521,7 +526,7 @@ def test_enum_from_the_catalog() -> None:
     # A default no option names gets a "Default" option that leaves it out.
     a = adapt("FieldBasedLike | bool | None", "None", "tff")
     inp = widget("FieldBasedLike | bool | None", "None", "tff")
-    assert inp.options[0] == {"option": "Default", "value": DEFAULT}
+    assert inp.options[0] == {"option": "As the video says", "value": DEFAULT}
     assert inp.default == DEFAULT
     assert a.to_source(DEFAULT) is None
     assert a.to_source("vstools.FieldBased.TFF") == "vstools.FieldBased.TFF"
@@ -552,18 +557,22 @@ def test_make_input_starts_with_a_given_value() -> None:
     function's default) is written."""
     p = param("int", None, "bitdepth")
     a = adapter_for(p, ENUMS)
-    assert a.make_input("Bits", p, 5).to_dict()["def"] == 0
-    assert a.make_input("Bits", p, 5, value=16).to_dict()["def"] == 16
+    assert a.make_input("Bits", 5).to_dict()["def"] == 0
+    assert a.make_input("Bits", 5, value=16).to_dict()["def"] == 16
     assert a.to_source(16) == "16"
     p = param("int | None", "None", "top")
-    text = adapter_for(p, ENUMS).make_input("Top", p, 6, value="20")
-    assert isinstance(text, TextInput)
-    assert text.to_dict()["def"] == "20"
+    top = adapter_for(p, ENUMS)
+    number = top.make_input("Top", 6, value=top.start_value(20))
+    assert isinstance(number, NumberInput)
+    assert number.optional
+    assert number.to_dict()["def"] == 20
+    # A start value written as a text is the number.
+    assert top.start_value("20") == 20
     p = param("vstools.enums.color.MatrixLike | None", "None", "matrix")
-    dropdown = adapter_for(p, ENUMS).make_input("Matrix", p, 7, value="6")
+    dropdown = adapter_for(p, ENUMS).make_input("Matrix", 7, value="6")
     assert dropdown.to_dict()["def"] == "6"
     p = param("bool | None", "None", "linear")
-    assert adapter_for(p, ENUMS).make_input("Linear", p, 8, value="True").to_dict()[
+    assert adapter_for(p, ENUMS).make_input("Linear", 8, value="True").to_dict()[
         "def"
     ] == ("True")
 
@@ -838,7 +847,7 @@ def test_expressions_per_plane() -> None:
             exprs.to_source(bad)
     inp = widget("str | bytes | Sequence[str | bytes]", None, "expr", plugin=True)
     assert isinstance(inp, TextInput)
-    assert "['x 2 *', '']" in (inp.placeholder or "")
+    assert inp.placeholder == "e.g. x 2 *"
     # One text stays one text, brackets and all.
     one = adapt("str | bytes", None, "expr", plugin=True)
     assert one.to_source("['x']") == repr("['x']")
@@ -870,7 +879,7 @@ def test_norm_expr_takes_the_literals_its_python_value_box_took() -> None:
     # Its hint shows the tuple, an expression per plane (a list is one expression).
     inp = widget("ExprLike", None, "expr")
     assert isinstance(inp, TextInput)
-    assert inp.placeholder == "one for all planes, or a tuple: ('x 2 *', '')"
+    assert inp.placeholder == "e.g. x 2 *"
     # std.Expr's expr keeps its flat list of texts, and a text in parentheses is
     # one expression.
     exprs = adapt("str | bytes | Sequence[str | bytes]", None, "expr", plugin=True)
@@ -885,7 +894,7 @@ def test_extra() -> None:
     inp = widget("dict[str, Any] | None", "None", "basic_args")
     assert isinstance(inp, TextInput)
     assert inp.optional
-    assert inp.label == "Label (dict[str, Any] | None)"
+    assert inp.label == "Label"
     assert a.to_source(None) is None
     assert a.to_source("") is None
     assert a.to_source("{'bs': 8}") == "{'bs': 8}"
@@ -920,7 +929,7 @@ def test_unknown_annotation_is_extra() -> None:
         assert a.kind == "extra"
         assert a.to_source("[1, 2]") == "[1, 2]"
         label = widget(annotation, None, "x").label
-        assert label == f"Label ({annotation})"
+        assert label == "Label"
 
 
 def test_extra_rejects_code() -> None:
@@ -963,3 +972,229 @@ def test_unannotated_parameters_follow_their_default() -> None:
     assert adapt("", "[0, 1, 2]", "planes").to_source("1, 2") == "[1, 2]"
     assert adapt("", "None", "ref").kind == "extra"
     assert adapt("", None, "clip").kind == "extra"
+
+
+@pytest.mark.parametrize(
+    ("annotation", "default", "name", "plugin", "placeholder", "example"),
+    [
+        ("int | Sequence[int] | None", "None", "radius", False, "e.g. 0, 2", "0, 2"),
+        ("float | Sequence[float]", "0.5", "sigma", False, "e.g. 0.35, 0", "0.35, 0"),
+        ("int | Sequence[int]", None, "map", True, "e.g. 0, 2", "0, 2"),
+        ("FrameRangesN", "None", "ranges", False, "e.g. 10-20, 35", "10-20, 35"),
+        ("Fraction", None, "fps", False, "e.g. 24000/1001", "24000/1001"),
+        ("ExprLike", None, "expr", False, "e.g. x 2 *", "x 2 *"),
+        ("str | bytes | Sequence[str | bytes]", None, "expr", True, "e.g. x 2 *", None),
+        (
+            "str | bytes | Sequence[str | bytes]",
+            None,
+            "props",
+            True,
+            "text, or ['a', 'b']",
+            "['a', 'b']",
+        ),
+        ("SomethingNew", None, "x", False, "Python value, e.g. [1, 2]", "[1, 2]"),
+    ],
+)
+def test_placeholders_fit_and_parse(
+    annotation: str,
+    default: str | None,
+    name: str,
+    plugin: bool,
+    placeholder: str,
+    example: str | None,
+) -> None:
+    # The node shows about 31 characters; the example after "e.g." is a value the
+    # box takes.
+    p = param(annotation, default, name)
+    a = adapter_for(p, ENUMS, plugin)
+    inp = a.make_input("Label", 1)
+    assert isinstance(inp, TextInput)
+    assert inp.placeholder == placeholder
+    assert len(placeholder) <= 28
+    if example is not None:
+        assert a.to_source(example) is not None
+
+
+def test_more_arguments_placeholder() -> None:
+    a = adapt("Any", None, "kwargs", kind="var_keyword")
+    inp = widget("Any", None, "kwargs", kind="var_keyword")
+    assert inp.placeholder == "e.g. {'name': 1}"
+    assert a.to_source("{'name': 1}") == "{'name': 1}"
+
+
+def test_missing_value_says_what_to_type() -> None:
+    assert adapt("FrameRangesN", None, "ranges").missing("Frames") == (
+        "Frames needs a value: type one in its box (e.g. 10-20, 35)."
+    )
+    assert adapt("str", None, "name").missing("Name") == (
+        "Name needs a value: type one in its box."
+    )
+    # A socket or a dropdown is not typed into.
+    assert adapt("VideoNode", None, "ref").missing("Ref") == "Ref needs a value."
+    assert adapt("MatrixLike", None, "matrix").missing("Matrix") == (
+        "Matrix needs a value."
+    )
+
+
+def test_field_order_choices_read_as_words() -> None:
+    inp = widget("vstools.enums.generic.FieldBasedLike | bool | None", "None", "tff")
+    # Top field first first; no True and False (they repeat TFF and BFF); no
+    # Progressive for a `tff`, which every such function refuses.
+    assert list(options(inp).items()) == [
+        ("As the video says", DEFAULT),
+        ("Top field first (TFF)", "vstools.FieldBased.TFF"),
+        ("Bottom field first (BFF)", "vstools.FieldBased.BFF"),
+    ]
+    # A saved True is still a value the function takes (top field first).
+    assert adapt(
+        "vstools.enums.generic.FieldBasedLike | bool", "True", "tff"
+    ).default == ("vstools.FieldBased.TFF")
+    # Required: starts at its first choice, which is always written.
+    required = adapt("vstools.enums.generic.FieldBasedLike | bool", None, "tff")
+    assert required.to_source("vstools.FieldBased.TFF") == "vstools.FieldBased.TFF"
+    # A field_based (a kernel's) keeps Progressive: scaling progressive video.
+    assert list(
+        options(
+            widget("vstools.enums.generic.FieldBasedLike | None", "None", "field_based")
+        )
+    ) == [
+        "As the video says",
+        "Top field first (TFF)",
+        "Bottom field first (BFF)",
+        "Progressive",
+    ]
+    # Another dropdown's Default and booleans keep their names.
+    names = options(widget("vsdenoise.prefilters.Prefilter | bool | None", "None"))
+    assert names["Default"] == DEFAULT
+    assert names["True"] == "True"
+
+
+def test_enum_names_of_several_words_are_in_sentence_case() -> None:
+    a = adapt("MVToolsPreset", None, "preset")
+    assert [label for label, _ in a.choices if label != "Default"] == [
+        "HQ coherence",
+        "HQ SAD",
+    ]
+    # One-word names too; acronyms and codes stay (BM3D, MINBLUR), and so do Literal
+    # texts and kernel names.
+    assert "Normal" in options(widget("BM3D.Profile", None, "profile"))
+    assert set(options(widget("vsdenoise.prefilters.Prefilter", None, "p"))) == {
+        "MINBLUR",
+        "DFTTEST",
+        "BM3D",
+    }
+    assert set(options(widget("DitherType", None, "dither"))) == {"None", "Random"}
+    assert "Catrom" in options(widget("KernelLike", None, "kernel"))
+    assert set(options(widget("Literal['C4F16_DN', 'x_y']", None, "model"))) >= {
+        "C4F16_DN",
+        "x_y",
+    }
+
+
+def test_a_number_beside_a_clip_or_a_function_is_typed() -> None:
+    # Dehalo's blur: a sigma, a list per plane or per iteration; the socket took none.
+    blur = adapt(
+        "IterArr[float] | VSFunctionPlanesArgs"
+        " | tuple[float | list[float] | VSFunctionPlanesArgs, ...]",
+        "<vsdenoise.prefilters.PrefilterPartial object>",
+        "blur",
+    )
+    assert blur.kind == "extra"
+    assert blur.to_source("1.4") == "1.4"
+    assert blur.to_source("(1.4, [1.4, 1.65])") == "(1.4, [1.4, 1.65])"
+    # finalize_clip's bits: a number of bits, 10 by default.
+    bits = adapt(
+        "vstools.vs_proxy.enums.PresetVideoFormat | VideoFormat | VideoNode | VideoFrame"
+        " | int | None",
+        "10",
+        "bits",
+    )
+    assert (bits.kind, bits.default) == ("int", 10)
+    # A fade's colour: a value, or one per plane.
+    colour = adapt("float | Sequence[float] | VideoNode", "0.0", "color")
+    assert colour.kind == "sequence"
+    assert colour.to_source("0.5, 0") == "[0.5, 0]"
+    # DPIR's strength (10 by default).
+    strength = adapt(
+        "SupportsFloat | VideoNode | None | Sequence[SupportsFloat | VideoNode | None]",
+        "10",
+        "strength",
+    )
+    assert (strength.kind, strength.default) == ("float", 10.0)
+    # A clip or a function alone keeps its socket.
+    assert adapt("VideoNode | VSFunctionNoArgs | None", "None", "x").kind == (
+        "clip_or_filter"
+    )
+    assert adapt("_DebanderFunc[Any]", "vsdeband.f3k_deband", "debander").kind == (
+        "clip_or_filter"
+    )
+
+
+def test_a_format_or_a_kernel_beside_a_clip_is_a_dropdown() -> None:
+    fmt = adapt(
+        "SupportsInt | vstools.vs_proxy.enums.PresetVideoFormat | VideoFormat"
+        " | VideoNode | VideoFrame",
+        None,
+        "format",
+    )
+    assert fmt.kind == "format"
+    assert fmt.to_source("vs.YUV444PS") == "vs.YUV444PS"
+    reference = adapt(
+        "vskernels.abstract.base.ScalerLike | VideoNode", None, "reference"
+    )
+    assert reference.kind == "enum"
+    assert reference.to_source("'Catrom'") == "'Catrom'"
+
+
+CONV = {
+    "vstools.enums.funcs.ConvMode": _enum(
+        "from vstools import ConvMode",
+        *(
+            f"ConvMode.{n}"
+            for n in ("SQUARE", "VERTICAL", "HORIZONTAL", "HV", "TEMPORAL")
+        ),
+    ),
+    "vsexprtools.exprop.ExprOp": _enum(
+        "from vsexprtools import ExprOp", "ExprOp.MAX", "ExprOp.MIN", "ExprOp.ADD"
+    ),
+}
+
+
+def test_type_aliases_of_enums_are_dropdowns() -> None:
+    mode = adapter_for(
+        param("OneDimConvMode | TempConvMode", "ConvMode.HV", "mode"), CONV
+    )
+    assert [s for _, s in mode.choices] == [
+        "vstools.ConvMode.VERTICAL",
+        "vstools.ConvMode.HORIZONTAL",
+        "vstools.ConvMode.HV",
+        "vstools.ConvMode.TEMPORAL",
+    ]
+    assert mode.default == "vstools.ConvMode.HV"
+    assert mode.imports == frozenset(["import vstools"])
+    assert mode.to_source("vstools.ConvMode.TEMPORAL") == "vstools.ConvMode.TEMPORAL"
+    operator = adapter_for(
+        param("vsexprtools.exprop.ExprOpBase", "ExprOp.MAX", "operator"), CONV
+    )
+    assert operator.kind == "enum"
+    assert operator.default == "vsexprtools.ExprOp.MAX"
+    assert operator.to_source("vsexprtools.ExprOp.ADD") == "vsexprtools.ExprOp.ADD"
+
+
+def test_a_switch_or_a_function_is_the_switch() -> None:
+    progress = adapt(
+        "bool | Callable[[float], None] | None", "False", "show_pretty_progress"
+    )
+    assert (progress.kind, progress.default) == ("bool", False)
+
+
+def test_a_format_or_an_int_is_bits_only_when_named_so() -> None:
+    zones = adapt(
+        "int | vstools.vs_proxy.enums.PresetVideoFormat | VideoFormat | VideoNode"
+        " | VideoFrame",
+        "PresetVideoFormat.GRAYS",
+        "format",
+    )
+    assert (zones.kind, zones.default) == ("format", "vs.GRAYS")
+    # A required clip beside a number keeps its socket (based_diff_mask's ref).
+    assert adapt("VideoNode | int", None, "ref_or_height").kind == "clip"

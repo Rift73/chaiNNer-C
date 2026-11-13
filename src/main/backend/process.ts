@@ -7,8 +7,9 @@ import { Readable } from 'stream';
 import { getBackend } from '../../common/Backend';
 import { PythonInfo } from '../../common/common-types';
 import { log } from '../../common/log';
-import { delay, lazy } from '../../common/util';
+import { lazy } from '../../common/util';
 import { sanitizedEnv } from '../env';
+import { retryUntil } from '../util';
 
 export const getBackendPath = lazy((): string => {
     const candidates: string[] = [
@@ -113,7 +114,6 @@ export class OwnedBackendProcess implements BaseBackendProcess {
     }
 
     static spawn(options: Readonly<SpawnOptions>): OwnedBackendProcess {
-        // defensive copy
         // eslint-disable-next-line no-param-reassign
         options = {
             ...options,
@@ -127,12 +127,7 @@ export class OwnedBackendProcess implements BaseBackendProcess {
     private static spawnProcess(options: SpawnOptions): ChildProcessWithoutNullStreams {
         log.info('Attempting to spawn backend...');
 
-        const args: string[] = [
-            // path to run.py
-            getBackendPath(),
-            // port the server will run on
-            String(options.port),
-        ];
+        const args: string[] = [getBackendPath(), String(options.port)];
 
         if (options.storageDir) {
             args.push('--storage-dir', options.storageDir);
@@ -196,7 +191,6 @@ export class OwnedBackendProcess implements BaseBackendProcess {
             );
 
             if (this.process === process) {
-                // reset process
                 this.process = undefined;
                 // kill() detaches the process before it stops it
                 exitedOnItsOwn = true;
@@ -221,7 +215,6 @@ export class OwnedBackendProcess implements BaseBackendProcess {
 
         const backend = this.process;
         if (!backend) {
-            // No process to kill
             log.warn('Process has already been killed');
             return;
         }
@@ -294,30 +287,13 @@ export class BorrowedBackendProcess implements BaseBackendProcess {
 
     static async fromUrl(url: string): Promise<BorrowedBackendProcess> {
         const backend = getBackend(url);
-        let python: PythonInfo | undefined;
-        // A cold backend can take minutes to import its dependencies.
-        const deadline = Date.now() + 5 * 60 * 1000;
-        const startSleep = 1;
-        const maxSleep = 250;
-        let lastError: unknown;
-
-        for (let i = 0; Date.now() < deadline; i += 1) {
-            try {
-                // eslint-disable-next-line no-await-in-loop
-                python = await backend.pythonInfo();
-                break;
-            } catch (error) {
-                lastError = error;
-                // eslint-disable-next-line no-await-in-loop
-                await delay(
-                    Math.min(maxSleep, startSleep * 2 ** i, Math.max(0, deadline - Date.now()))
-                );
-            }
+        try {
+            // A cold backend can take minutes to import its dependencies.
+            const python = await retryUntil(() => backend.pythonInfo(), Date.now() + 5 * 60 * 1000);
+            return new BorrowedBackendProcess(url, python);
+        } catch (error) {
+            throw new Error(`Unable to get python info from backend: ${String(error)}`);
         }
-        if (!python) {
-            throw new Error(`Unable to get python info from backend: ${String(lastError)}`);
-        }
-        return new BorrowedBackendProcess(url, python);
     }
 }
 

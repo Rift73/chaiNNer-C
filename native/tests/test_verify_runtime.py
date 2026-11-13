@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -501,7 +502,7 @@ def test_reruns_of_a_node_that_is_no_generator_fail():
     [
         without(PORT_EVENTS, broadcast("range", 3)),
         without(PORT_EVENTS, broadcast("double", 4)),
-        # Consult D-35: an iterated item's last value is timing-dependent upstream
+        # An iterated item's last value is timing-dependent upstream
         # on 3.14, so the port may end on any item the oracle broadcast.
         without(PORT_EVENTS, broadcast("range", 4)),
     ],
@@ -833,7 +834,7 @@ def test_a_port_pin_or_installed_version_off_the_lock_fails(
 
 @pytest.mark.parametrize("version", ["9.9.9", "", "0.8.2", "2.7.0+cu999"])
 def test_the_oracles_declared_versions_are_recorded_not_gated(declared, version):
-    # Consult 8 R-g: the oracle's versions are upstream's declarations for another
+    # The oracle's versions are upstream's declarations for another
     # stack; each run records its declarations whole, and only the port's are gated.
     oracle, port = copy.deepcopy(list(declared))
     declared_dependency(oracle, "chaiNNer_pytorch", "einops")["version"] = version
@@ -854,10 +855,8 @@ def test_the_oracles_declared_versions_are_recorded_not_gated(declared, version)
     assert einops["version"] == version
 
 
-def test_the_declaration_table_is_frozen_at_its_ruled_rows():
-    # Consult 8 R-g: pypiName and findLink differ only by these rows, each citing its
-    # ruling (ncnn: Consult 2 Q4; torch and torchvision: the design ruling, section
-    # 1; onnxruntime-gpu: PyPI's 1.30.0). A new row is a consult.
+def test_the_declaration_table_is_frozen_at_its_rows():
+    # pypiName and findLink differ only by these rows, each with its reason.
     rows = verify_runtime.DECLARATION_CHANGES
     assert {old: row[0] for old, row in rows["pypiName"].items()} == {
         "ncnn-vulkan": "ncnn"
@@ -867,9 +866,9 @@ def test_the_declaration_table_is_frozen_at_its_ruled_rows():
         "torchvision": (CU + "128", CU + "132"),
         "onnxruntime-gpu": (AIINFRA, None),
     }
-    assert "Consult 2 Q4" in rows["pypiName"]["ncnn-vulkan"][1]
+    assert "no cp314 wheel" in rows["pypiName"]["ncnn-vulkan"][1]
     for name in ("torch", "torchvision"):
-        assert "design ruling section 1" in rows["findLink"][name][2]
+        assert "on cu132, the lock's pin" in rows["findLink"][name][2]
     assert "PyPI onnxruntime-gpu 1.30.0" in rows["findLink"]["onnxruntime-gpu"][2]
     # /installed-dependencies: exactly {google-re2: oracle-only, ncnn: port-only}.
     assert set(rows["oracle_only"]) == {"google-re2"}
@@ -906,7 +905,7 @@ def test_verify_runtime_reports_metadata_by_the_declaration_rule(
     assert report["metadata_equal"]["packages"] is not unlisted
     assert len(report["declaration_changes_applied"]) == 5
     assert verify_runtime.METADATA_COMPARISON in report["fixture_limitations"]
-    # Consult 11 D-17.3: the matting fixtures compare the whole RGBA result.
+    # The matting fixtures compare the whole RGBA result.
     [matting] = [x for x in report["fixture_limitations"] if "Alpha Matting" in x]
     assert "whole RGBA result" in matting
     assert "nondeterministic" not in matting
@@ -923,7 +922,7 @@ class AnySchema(dict):
 
 
 def test_matting_fixtures_save_the_whole_rgba_result(tmp_path):
-    # Consult 11 D-17.3: PyMatting 1.1.16's foreground is deterministic, so the
+    # PyMatting 1.1.16's foreground is deterministic, so the
     # trimap-matting fixtures save the node's own RGBA output, not its alpha alone.
     graphs = dict(verify_runtime.fixture_graphs(AnySchema(), tmp_path))
     for name, schema in (
@@ -993,7 +992,7 @@ def test_framework_compare_runs_applies_the_rule_per_fixture(monkeypatch, declar
         matched = compare(matching)
         assert matched["success"]
         assert matched["sse_event_mismatches"] == {}
-    # Consult D-35: ending on an earlier item the oracle broadcast passes.
+    # Ending on an earlier item the oracle broadcast passes.
     assert compare(without(PORT_EVENTS, broadcast("range", 4)))["success"]
     lost = compare(without(PORT_EVENTS, RESTORATION))
     assert not lost["success"]
@@ -1124,7 +1123,7 @@ def range_previews(multiset):
 
 
 def test_each_attempts_broadcast_multiset_is_reported(monkeypatch, declared):
-    # Consult 8 R-h (4): the report shows what the port's repeat rule left out, as
+    # The report shows what the port's repeat rule left out, as
     # T131909Z's evidence was: Range's previews {2, 4}, then {2, 3, 4}.
     monkeypatch.setattr(
         verify_framework_runtime, "compare_images", lambda python, pairs: []
@@ -1157,7 +1156,7 @@ def test_each_attempts_broadcast_multiset_is_reported(monkeypatch, declared):
 
 
 def test_a_foreign_payload_in_the_second_attempt_alone_fails(monkeypatch, declared):
-    # Consult 8 R-h (5): the within-side rule leaves the repeat's previews out, so
+    # The within-side rule leaves the repeat's previews out, so
     # only the cross-side rule over BOTH attempts can see a foreign one there.
     within = verify_runtime.repeat_mismatches(
         attempt(PORT_EVENTS), attempt(FOREIGN), port=True
@@ -1232,7 +1231,7 @@ def test_compare_images_counts_differing_components_and_pixels(tmp_path):
     }
 
 
-# Consult D-35: iterated items' broadcasts arrive in timing-dependent order upstream
+# Iterated items' broadcasts arrive in timing-dependent order upstream
 # on 3.14 (CPython's _chain_future), so their last value is not defined.
 
 
@@ -1391,3 +1390,57 @@ def test_iterated_fields_are_those_sent_with_more_than_one_value():
     fields = verify_runtime.iterated_fields(attempt(recorded(3, 5, 4)))
     assert fields == {"range": {"types/0"}}
     assert verify_runtime.iterated_fields(attempt(recorded(3, 3, 3))) == {}
+
+
+RESIZE_COMPARE = """
+import sys
+from pathlib import Path
+
+import verify_resize_pipeline
+
+try:
+    verify_resize_pipeline.compare(Path(sys.argv[1]), "before", "after")
+except AssertionError as error:
+    print("refused:", error)
+    sys.exit(3)
+"""
+
+
+def test_resize_compare_refuses_a_changed_output_also_under_optimize(tmp_path):
+    # python -O drops assert statements, so the comparison must not rely on them.
+    image = cv2.imencode(".png", np.zeros((2, 2, 3), np.uint8))[1].tobytes()
+    for label in ("before", "after"):
+        output = tmp_path / label / "output" / "case"
+        output.mkdir(parents=True)
+        (output / "a.png").write_bytes(image)
+        fixture = {
+            "name": "case",
+            "contract": {"files": {"a.png": hashlib.sha256(image).hexdigest()}},
+        }
+        (tmp_path / f"{label}-result.json").write_text(
+            json.dumps({"success": True, "fixtures": [fixture]}), encoding="utf-8"
+        )
+    (tmp_path / "after" / "output" / "case" / "a.png").write_bytes(image + b"x")
+    script = tmp_path / "scratch_compare.py"
+    script.write_text(RESIZE_COMPARE, encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-O", "-B", str(script), str(tmp_path)],
+        cwd=Path(verify_runtime.__file__).parent,
+        env={**os.environ, "PYTHONPATH": str(Path(verify_runtime.__file__).parent)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert done.returncode == 3, done.stdout + done.stderr
+    assert "case" in done.stdout
+    assert not (tmp_path / "comparison.json").exists()
+
+
+def test_a_backend_that_exits_at_start_names_its_log(tmp_path):
+    exited = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    exited.wait(timeout=60)
+    log = tmp_path / "baseline" / "backend.log"
+    with pytest.raises(RuntimeError, match="baseline exited with 3") as raised:
+        verify_runtime.wait_until_ready(exited, 1, "baseline", 5, log)
+    assert str(log) in str(raised.value)

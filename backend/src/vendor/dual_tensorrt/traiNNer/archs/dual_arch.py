@@ -1,62 +1,158 @@
-"""DUAL: standalone DUAL3X with differentiable pre-mixed dynamic convolutions.
+"""DUAL: dual-context super-resolution with cross-scale feature retrieval.
 
-Presets: Light C128/PU2/depths(4,3,3,6), XS C128/native with a latency-selected
-schedule, S C160/G6, M C192/G6, L C224/G10, XL C256/G12. Full groups contain
-six layers. All retain head width32, F64, EDBB, XR/XG and ordinary (not
-factorized) FFN/attention 1x1 projections. Four zero-initialized experts at
-each group write-back preserve that preset's static-base initial function.
-Kernels are mixed per image BEFORE convolution; no stacked expert responses.
+RGB input (B,3,H,W) produces (B,3,scale*H,scale*W), with native scales 1/2/4.
+The model combines local spatial attention, neighborhood context attention,
+regional channel attention and a shared fine/coarse feature-retrieval path.
 
-Native output scales1/2/4 work for every preset. PU2 packs mean-shifted RGB
-and the coarse RGB branch, pads to a multiple of4 then crops the output.
-Its reconstruction scale is twice the requested net scale; the x8 head
-uses a 12-channel XG readout followed by PixelShuffle2.
+Preset       Width  Group depths         Heads  Input packing
+Light          128  (4,3,3,6)                 4  PixelUnshuffle2
+XS             128  (4,3,3,6)                 4  None
+S              160  (6,)*6                    5  None
+M              192  (6,)*6                    6  None
+L              224  (6,)*10                   7  None
+XL             256  (6,)*12                   8  None
 
-DUAL(scale=4) retains the original C96/G4x6 DUAL3X state/init contract.
-Factory names now describe new geometries: old consolidated DUAL4 factory
-checkpoints are NOT compatible. Context windows are not in checkpoints;
-set c_windows to the geometry used for training (default32/64).
-All presets default to sliding neighborhood attention (context_na=True) in
-the context layers: each query attends an in-bounds MxM neighborhood, M32/64
-by default. This replaces overlap-add; there is no output blending/filter.
-Widths, depths and checkpoint tensor keys/shapes are unchanged. context_na=False
-restores legacy non-overlap routing. context_overlap is a deprecated alias
-for context_na, NOT a way to select the retired overlap-add implementation.
-Routing is NOT stored in weights; inference/export must select it explicitly.
-Local G16 attention and the regional channel-attention mixer are unchanged.
-NA requires the default RFB positional bias and dot-product attention. Its
-differentiable SDPA path supports training; the separate optimized TensorRT
-NA plugin is inference-only and is not used by this architecture.
+All presets use 32 channels per attention head and a 64-channel reconstruction
+stream. The configurable DUAL constructor defaults to C96 with four full groups;
+use the registered factories for the preset geometries above.
 
-Dependencies: PyTorch, optional traiNNer registry, optional Triton/direct
-attention APIs. All model and kernel code is bundled; no other architecture
-imports. Eager and exported attention use SDPA. prepare_for_compile selects
-the original direct attention implementation, not the rolled-back speed
-optimization. Export folds an evaluation COPY's static EDBB bases only:
-routers and expert kernels remain input-dependent. Never fold for training.
+Spatial/context attention:
+    Local layers default to per-query 16x16 in-bounds neighborhoods with dense
+    relative position bias; local_na=False restores anchored, alternately
+    shifted G16 windows. Context layers
+    default to per-query 32x32/64x64 in-bounds neighborhoods with relative Fourier
+    bias. A separate regional channel mixer follows each context attention.
+    Neighborhood attention does not blend overlapping output predictions.
 
-Attention-kernel source SHA256:
-cd50b9a8e761d59f66130151ea55ff721b148d64eeab6ac9e945debe45c98ca7.
+Convolution and reconstruction:
+    EDBB factors compose a dense kernel differentiably before applying it.
+    Group write-backs add input-routed expert kernels before convolution.
+    Zero-initialized experts preserve the static-base initialization.
+    Light packs mean-shifted RGB at half resolution, pads to a multiple of four
+    and crops back to the requested size. Its internal upscale is twice the
+    requested scale; reconstruction heads and checkpoints are scale-specific.
+
+Execution:
+    Eager attention uses PyTorch SDPA. prepare_for_compile() selects the bundled
+    direct fixed-window local backend (only with local_na=False) and a
+    mask-sharing BF16 context layout.
+    The same execution policy applies to every preset and output scale; runtime
+    device, dtype and attention geometry determine which backend can execute.
+    use_checkpoint=True enables selective whole-layer checkpointing in training:
+    save expensive attention results and recompute surrounding intermediates.
+    Set it to False to disable explicit checkpointing. Eval/export never use it.
+    attn_type="masked" keeps SDPA; opt-in "hybrid" uses Flex for compiled BF16
+    masked context NA only. Unmasked attention, eager/eval and export keep SDPA.
+    Hybrid requires PyTorch Flex/Triton and prepare_for_compile(input_shape,
+    input_dtype) after moving the model to CUDA; traiNNer calls this hook.
+    These execution options do not promise bitwise equivalence across backends.
+    prepare_for_export() requires an eval copy and folds static EDBB factors
+    in-place. Dynamic routing remains input-dependent; never fold for training.
+
+Configuration such as context windows and NA routing is not stored in weights.
+context_na=False selects anchored window context; context_overlap is only a
+deprecated alias for context_na, not an overlap-add implementation.
+local_na (default True) runs the G16 local layers as per-query 16x16
+neighborhoods with their dense RPB; shifting has no effect there, and maps of at
+most 16 positions per axis keep the window path. retrieval_na (default True)
+lets each fine query attend its own 48x48 coarse-key neighborhood around its
+coarse cell; coarse grids of at most 48 per axis keep the single-block path.
+Both start each neighborhood at clamp(center - K//2, 0, length - K) and batch
+8x8 query tiles with a mask; False restores windows and 96px blocks.
+
+Dependencies are PyTorch, optional Triton/direct-attention APIs, and an optional
+traiNNer registry. No other architecture or local kernel file is required.
 """
+
+# Triton pointer types are inferred; its compile-time arguments use uppercase names.
+# ruff: noqa: ANN001, ANN202, N803, N806
 
 from __future__ import annotations
 
 import math
 import warnings
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache, partial
 from typing import Any, Literal
 
 import torch
 from torch import Tensor, nn
-from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint
+from torch.nn import functional as F  # noqa: N812
+from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.utils.checkpoint import (
+    CheckpointPolicy,
+    checkpoint,
+    create_selective_checkpoint_contexts,
+)
 
-__all__ = ["DUAL", "dual_light", "dual_xs", "dual_s", "dual_m", "dual_l", "dual_xl"]
+try:
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+except ImportError:
+    create_block_mask = flex_attention = None
+
+_FLEX_ATTENTION_OP = getattr(torch.ops.higher_order, "flex_attention", None)
+
+__all__ = [  # noqa: RUF022 - Keep public presets in family order.
+    "DUAL",
+    "dual_light",
+    "dual_xs",
+    "dual_s",
+    "dual_m",
+    "dual_l",
+    "dual_xl",
+]
+
+
+# Shared initialization, precision and window geometry.
+
+
+def _selective_checkpoint_policy(
+    ctx: Any, op: Any, *args: Any, **kwargs: Any
+) -> CheckpointPolicy:
+    """Retain attention results while rematerializing the rest of each layer."""
+    del ctx, args, kwargs
+    saved = (
+        torch.ops.aten._scaled_dot_product_flash_attention.default,  # noqa: SLF001
+        torch.ops.aten._scaled_dot_product_efficient_attention.default,  # noqa: SLF001
+        torch.ops.aten._scaled_dot_product_cudnn_attention.default,  # noqa: SLF001
+        torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default,  # noqa: SLF001
+    )
+    if op in saved or (_FLEX_ATTENTION_OP is not None and op is _FLEX_ATTENTION_OP):
+        return CheckpointPolicy.MUST_SAVE
+    if (
+        _HAS_DIRECT_ATTENTION
+        and op is torch.ops.dual_standalone.dense_rpb_attention.default
+    ):
+        return CheckpointPolicy.MUST_SAVE
+    return CheckpointPolicy.PREFER_RECOMPUTE
+
+
+def _checkpoint_layer(layer: nn.Module, x: Tensor) -> Tensor:
+    """One selective checkpoint boundary, shared by fine and coarse execution."""
+    context = nullcontext()
+    if not torch.compiler.is_compiling() and torch.is_autocast_enabled(x.device.type):
+        # Shared prefix weights may already be in eager AMP's cast cache.
+        # Recompute must see the same casts as the recorded forward region.
+        context = torch.autocast(
+            x.device.type,
+            dtype=torch.get_autocast_dtype(x.device.type),
+            cache_enabled=False,
+        )
+    with context:
+        return checkpoint(
+            layer,
+            x,
+            use_reentrant=False,
+            context_fn=partial(
+                create_selective_checkpoint_contexts, _selective_checkpoint_policy
+            ),
+        )
 
 
 def _init_weights(module: nn.Module) -> None:
-    """Preserve the source trunk/transfer initialization and RNG order."""
+    """Initialize token projections and biases; spatial kernels keep defaults."""
     if isinstance(module, nn.Linear) or (
         isinstance(module, nn.Conv2d) and module.kernel_size == (1, 1)
     ):
@@ -151,8 +247,91 @@ def calculation_dtype(dtype: torch.dtype) -> torch.dtype:
     return torch.float64 if dtype == torch.float64 else torch.float32
 
 
+# Token-wise normalization, feed-forward processing and positional bias.
+
+
+class TokenNorm(nn.Module):
+    """Channel-wise LayerNorm at each pixel, with FP32 low-precision statistics."""
+
+    def __init__(self, channels: int, eps: float = 1e-4) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(channels, eps=eps)
+
+    def forward(self, x: Tensor) -> Tensor:
+        precision = calculation_dtype(x.dtype)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            result = F.layer_norm(
+                x.permute(0, 2, 3, 1).to(precision),
+                self.norm.normalized_shape,
+                self.norm.weight.to(precision),
+                self.norm.bias.to(precision),
+                self.norm.eps,
+            )
+        return result.permute(0, 3, 1, 2).to(x.dtype)
+
+
+class ConvFFN(nn.Module):
+    """Expansion-two FFN with GELU, a depthwise residual and a 1x1 readout."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        hidden = 2 * channels
+        self.expand = nn.Conv2d(channels, hidden, 1)
+        self.depthwise = nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden)
+        self.project = nn.Conv2d(hidden, channels, 1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        hidden = F.gelu(self.expand(x))
+        return self.project(hidden + F.gelu(self.depthwise(hidden)))
+
+
+class RelativeFourierBias(nn.Module):
+    """Factor a stationary signed relative bias without constructing N*N.
+
+    Dot(q_factor(i), k_factor(j)) = sum(a*cos(w*(i-j))+b*sin(w*(i-j))).
+    Frequency and amplitude shapes are independent of the attention window.
+    """
+
+    def __init__(self, heads: int, rank: int = 16) -> None:
+        super().__init__()
+        if heads < 1 or rank < 2 or rank % 2:
+            raise ValueError("positive heads and a positive even rank required")
+        self.rank = rank
+        count = rank // 2
+        magnitudes = torch.logspace(
+            math.log10(2 * math.pi / 128), math.log10(math.pi / 2), count
+        )
+        angles = torch.arange(count) * (math.pi * (3 - math.sqrt(5)))
+        self.frequency = nn.Parameter(
+            magnitudes[:, None] * torch.stack((angles.cos(), angles.sin()), dim=-1)
+        )
+        self.amplitude_cos = nn.Parameter(torch.full((heads, count), 1 / count))
+        self.amplitude_sin = nn.Parameter(torch.zeros(heads, count))
+
+    def factors(self, coordinates: Tensor, dtype: torch.dtype) -> tuple[Tensor, Tensor]:
+        precision = calculation_dtype(dtype)
+        with torch.autocast(device_type=self.frequency.device.type, enabled=False):
+            phase = coordinates.to(precision) @ self.frequency.to(precision).T
+            cosine, sine = phase.cos()[None], phase.sin()[None]
+            a = self.amplitude_cos.to(precision)[:, None]
+            b = self.amplitude_sin.to(precision)[:, None]
+            query = torch.cat((a * cosine + b * sine, a * sine - b * cosine), dim=-1)
+            key = torch.cat((cosine, sine), dim=-1).expand(query.shape[0], -1, -1)
+        return query.to(dtype), key.to(dtype)
+
+    def forward(
+        self, height: int, width: int, dtype: torch.dtype
+    ) -> tuple[Tensor, Tensor]:
+        yy, xx = torch.meshgrid(
+            torch.arange(height, device=self.frequency.device),
+            torch.arange(width, device=self.frequency.device),
+            indexing="ij",
+        )
+        return self.factors(torch.stack((yy, xx), dim=-1).reshape(-1, 2), dtype)
+
+
 class SignedFactoredBias(nn.Module):
-    """SST-style Fourier/ReLU signed positional factors, shared across windows."""
+    """Learn signed low-rank position factors from Fourier-encoded coordinates."""
 
     def __init__(
         self, window: int, heads: int, rank: int = 16, hidden: int = 32
@@ -202,15 +381,18 @@ class SignedFactoredBias(nn.Module):
             )
             query = torch.matmul(hidden, self.to_query.to(precision))
             key = torch.matmul(hidden, self.to_key.to(precision))
-            # SST's rank normalization is absorbed into the query factor.
+            # Absorb rank normalization into the query factor.
             query = query * (self.rank**-0.5)
         return query.to(dtype), key.to(dtype)
+
+
+# Spatial attention: anchored windows and sliding context neighborhoods.
 
 
 class _WindowAttention(nn.Module):
     """Attention branch only: caller supplies normalized BCHW features.
 
-    No LayerNorm or residual is hidden here; these belong to the M2 layer.
+    Normalization and residual additions belong to the enclosing layer.
     ``pre_gate_core`` exposes window attention before the spatial gate/proj.
     The module respects an enclosing sdpa_kernel context for backend testing.
     """
@@ -345,110 +527,10 @@ class _WindowAttention(nn.Module):
         return self.project((attended * gate).permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
 
 
-class TokenNorm(nn.Module):
-    """BCHW per-token LayerNorm control with FP32 low-precision statistics."""
-
-    def __init__(self, channels: int, eps: float = 1e-4) -> None:
-        super().__init__()
-        self.norm = nn.LayerNorm(channels, eps=eps)
-
-    def forward(self, x: Tensor) -> Tensor:
-        precision = calculation_dtype(x.dtype)
-        with torch.autocast(device_type=x.device.type, enabled=False):
-            result = F.layer_norm(
-                x.permute(0, 2, 3, 1).to(precision),
-                self.norm.normalized_shape,
-                self.norm.weight.to(precision),
-                self.norm.bias.to(precision),
-                self.norm.eps,
-            )
-        return result.permute(0, 3, 1, 2).to(x.dtype)
-
-
-class ConvFFN(nn.Module):
-    """Non-gated SST-style convolutional feed-forward branch, expansion two."""
-
-    def __init__(self, channels: int) -> None:
-        super().__init__()
-        hidden = 2 * channels
-        self.expand = nn.Conv2d(channels, hidden, 1)
-        self.depthwise = nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden)
-        self.project = nn.Conv2d(hidden, channels, 1)
-
-    def forward(self, x: Tensor) -> Tensor:
-        hidden = F.gelu(self.expand(x))
-        return self.project(hidden + F.gelu(self.depthwise(hidden)))
-
-
-def direct_g16_attention(
-    query: Tensor, key: Tensor, value: Tensor, table: Tensor
-) -> Tensor:
-    """Retain the existing G16 entry point and equation."""
-    return direct_g_attention(query, key, value, table, 16)
-
-
-def direct_g_attention(
-    query: Tensor, key: Tensor, value: Tensor, table: Tensor, window: int
-) -> Tensor:
-    """G16/G32 adapter to the retained, unmodified DRFT dense-RPB kernel.
-
-    Q is already scaled. DRFT indexes key-minus-query, whereas GRAFT uses
-    query-minus-key: their indices sum to (2*window-1)**2-1 (960 or 3968).
-    """
-    return ocab_attention(
-        query, key, value, table.flip(0), window, window, window, window, 1.0
-    )
-
-
-class RelativeFourierBias(nn.Module):
-    """Factor a stationary signed relative bias without constructing N*N.
-
-    Dot(q_factor(i), k_factor(j)) = sum(a*cos(w*(i-j))+b*sin(w*(i-j))).
-    Frequency and amplitude shapes are independent of the attention window.
-    """
-
-    def __init__(self, heads: int, rank: int = 16) -> None:
-        super().__init__()
-        if heads < 1 or rank < 2 or rank % 2:
-            raise ValueError("positive heads and a positive even rank required")
-        self.rank = rank
-        count = rank // 2
-        magnitudes = torch.logspace(
-            math.log10(2 * math.pi / 128), math.log10(math.pi / 2), count
-        )
-        angles = torch.arange(count) * (math.pi * (3 - math.sqrt(5)))
-        self.frequency = nn.Parameter(
-            magnitudes[:, None] * torch.stack((angles.cos(), angles.sin()), dim=-1)
-        )
-        self.amplitude_cos = nn.Parameter(torch.full((heads, count), 1 / count))
-        self.amplitude_sin = nn.Parameter(torch.zeros(heads, count))
-
-    def factors(self, coordinates: Tensor, dtype: torch.dtype) -> tuple[Tensor, Tensor]:
-        precision = calculation_dtype(dtype)
-        with torch.autocast(device_type=self.frequency.device.type, enabled=False):
-            phase = coordinates.to(precision) @ self.frequency.to(precision).T
-            cosine, sine = phase.cos()[None], phase.sin()[None]
-            a = self.amplitude_cos.to(precision)[:, None]
-            b = self.amplitude_sin.to(precision)[:, None]
-            query = torch.cat((a * cosine + b * sine, a * sine - b * cosine), dim=-1)
-            key = torch.cat((cosine, sine), dim=-1).expand(query.shape[0], -1, -1)
-        return query.to(dtype), key.to(dtype)
-
-    def forward(
-        self, height: int, width: int, dtype: torch.dtype
-    ) -> tuple[Tensor, Tensor]:
-        yy, xx = torch.meshgrid(
-            torch.arange(height, device=self.frequency.device),
-            torch.arange(width, device=self.frequency.device),
-            indexing="ij",
-        )
-        return self.factors(torch.stack((yy, xx), dim=-1).reshape(-1, 2), dtype)
-
-
 def _resolve_context_na(
     context_na: bool | None, context_overlap: bool | None, *, default: bool
 ) -> bool:
-    """Migrate old YAML switches without silently keeping the retired operator."""
+    """Resolve the NA switch and reject conflicting deprecated alias values."""
     for name, value in (
         ("context_na", context_na),
         ("context_overlap", context_overlap),
@@ -477,8 +559,165 @@ def _na_coordinates(height: int, width: int, device: torch.device) -> Tensor:
     return torch.stack((yy, xx), dim=-1).reshape(-1, 2)
 
 
+@lru_cache(maxsize=16)
+def _inference_na_coordinates(height: int, width: int, device: torch.device) -> Tensor:
+    """Reuse small, read-only integer grids, never weights or attention masks.
+
+    Normal tensors remain safe if a later caller needs autograd. Training and
+    compiled/export paths bypass this bounded eager-inference cache.
+    """
+    with torch.inference_mode(False):
+        return _na_coordinates(height, width, device)
+
+
+def _na_block_mask(
+    height: int, width: int, window: int, first: int, device: torch.device
+) -> Any:
+    """Build one immutable four-tile Flex mask outside the compiled graph.
+
+    Rows use clamped query coordinates and inward-shifted donor origins, exactly
+    like _na_chunk. Image batches share this geometry through the head axis.
+    The callback captures integer geometry only, never learned Fourier factors.
+    """
+    if create_block_mask is None:
+        raise ImportError("DUAL hybrid attention requires PyTorch Flex Attention")
+    kh, kw = min(height, window), min(width, window)
+    uh, uw = min(height, kh + 15), min(width, kw + 15)
+    tiles = [(y, x) for y in range(0, height, 16) for x in range(0, width, 16)]
+    current = tiles[first : first + 4]
+    with torch.inference_mode(False), torch.no_grad():
+        origins = torch.tensor(current, device=device, dtype=torch.int64)
+
+        def mask_mod(b, h, q, k):
+            oy, ox = origins[b, 0], origins[b, 1]
+            qy = (oy + q // 16).clamp(max=height - 1)
+            qx = (ox + q % 16).clamp(max=width - 1)
+            ky = (oy - kh // 2).clamp(0, height - uh) + k // uw
+            kx = (ox - kw // 2).clamp(0, width - uw) + k % uw
+            sy = (qy - kh // 2).clamp(0, height - kh)
+            sx = (qx - kw // 2).clamp(0, width - kw)
+            return (
+                (q < 256)
+                & (k < uh * uw)
+                & (ky >= sy)
+                & (ky < sy + kh)
+                & (kx >= sx)
+                & (kx < sx + kw)
+            )
+
+        return create_block_mask(
+            mask_mod,
+            len(current),
+            None,
+            256,
+            uh * uw,
+            device=device,
+            BLOCK_SIZE=128,
+        )
+
+
+# Attention elements per SDPA call before tiled local/retrieval NA splits tiles.
+_NA_ELEMENT_CAP = 2**27
+
+
+@dataclass
+class NAGeometry:
+    """Tiled neighborhood indices; tiles of one class share one mask.
+
+    Tile (ty, tx) holds row-major query slots, clamped to the last position, and
+    reads a fixed key union. ``inside`` marks each slot's own neighborhood per
+    class; ``offset_y``/``offset_x`` give query minus key in unit-stride units.
+    """
+
+    window: tuple[int, int]
+    tiles: tuple[int, int]
+    queries: Tensor
+    keys: Tensor
+    tile_class: Tensor
+    inside: Tensor
+    offset_y: Tensor
+    offset_x: Tensor
+
+
+@lru_cache(maxsize=32)
+def na_geometry(
+    query_shape: tuple[int, int],
+    key_shape: tuple[int, int],
+    window: int,
+    tile: int,
+    stride: int,
+    device: torch.device,
+) -> NAGeometry:
+    """Query i attends keys clamp(i // stride - K // 2, 0, L - K) + [0, K).
+
+    K = min(window, L) per axis for L keys. Integer geometry only: the cached
+    tensors never hold weights and are read by index operations alone.
+    """
+    axes = []
+    for length, keys in zip(query_shape, key_shape, strict=True):
+        size = min(window, keys)
+        queries = [
+            [min(t + j, length - 1) for j in range(tile)]
+            for t in range(0, length, tile)
+        ]
+        starts = [
+            [min(max(q // stride - size // 2, 0), keys - size) for q in row]
+            for row in queries
+        ]
+        union = min(keys, size + max(s[-1] - s[0] for s in starts))
+        origins = [min(s[0], keys - union) for s in starts]
+        classes: dict[tuple, int] = {}
+        tile_class = [
+            classes.setdefault(
+                (tuple(v - o for v in s), tuple(q - stride * o for q in row)),
+                len(classes),
+            )
+            for row, s, o in zip(queries, starts, origins, strict=True)
+        ]
+        axes.append((size, union, queries, origins, tile_class, tuple(classes)))
+    with torch.inference_mode(False):
+        tensors = []
+        for size, union, queries, origins, tile_class, classes in axes:
+            positions = torch.arange(union, device=device)
+            start = torch.tensor([c[0] for c in classes], device=device)[..., None]
+            relative = torch.tensor([c[1] for c in classes], device=device)
+            tensors.append(
+                (
+                    torch.tensor(queries, device=device),
+                    torch.tensor(origins, device=device)[:, None] + positions,
+                    torch.tensor(tile_class, device=device),
+                    (positions >= start) & (positions < start + size),
+                    relative[..., None] - positions,
+                )
+            )
+        (qy, ky, cy, iy, oy), (qx, kx, cx, ix, ox) = tensors
+        classes_y, classes_x = iy.shape[0], ix.shape[0]
+        return NAGeometry(
+            (axes[0][0], axes[1][0]),
+            (qy.shape[0], qx.shape[0]),
+            (qy[:, None, :, None] * query_shape[1] + qx[None, :, None, :]).reshape(
+                -1, tile * tile
+            ),
+            (ky[:, None, :, None] * key_shape[1] + kx[None, :, None, :]).reshape(
+                qy.shape[0] * qx.shape[0], -1
+            ),
+            (cy[:, None] * classes_x + cx[None, :]).reshape(-1),
+            (iy[:, None, :, None, :, None] & ix[None, :, None, :, None, :]).reshape(
+                classes_y * classes_x, tile * tile, -1
+            ),
+            oy,
+            ox,
+        )
+
+
 class _SpatialAttention(_WindowAttention):
-    """Original projections with optional per-query context neighborhoods."""
+    """Spatial attention with shared projections and two routing modes.
+
+    Local layers use anchored windows. Context layers may instead gather one
+    in-bounds neighborhood per query, shifting it inward at image borders.
+    Queries are processed in 16x16 tiles, four tiles per chunk; a per-query
+    mask enforces the neighborhood even though chunk storage shares donors.
+    """
 
     def __init__(
         self,
@@ -511,7 +750,18 @@ class _SpatialAttention(_WindowAttention):
         if context_na and (pos_bias != "rfb" or self.logit_scale is not None):
             raise ValueError("context_na requires RFB bias and dot-product attention")
         self.context_na = context_na
+        # DUAL enables this on its dense-RPB local layers; see _local_na_core.
+        self.local_na = False
+        self.na_training_fast = False
+        self.attn_type: Literal["masked", "hybrid"] = "masked"
+        self._flex_masks: dict[tuple[int, int, int], Any] = {}
         self.direct_fallback_reason: str | None = None
+
+    def _apply(self, fn: Any, recurse: bool = True) -> _SpatialAttention:
+        # BlockMasks are runtime geometry, not buffers or checkpoint contents.
+        # Device/dtype moves require fresh preparation on the destination.
+        self._flex_masks.clear()
+        return super()._apply(fn, recurse=recurse)
 
     @property
     def context_overlap(self) -> bool:
@@ -528,8 +778,18 @@ class _SpatialAttention(_WindowAttention):
         if self.direct_fallback_reason is None:
             self.direct_fallback_reason = reason
             warnings.warn(
-                f"GRAFT G{self.window} direct fallback to SDPA: {reason}", stacklevel=3
+                f"DUAL G{self.window} direct fallback to SDPA: {reason}", stacklevel=3
             )
+
+    def _use_fast_na(self, query: Tensor) -> bool:
+        """Use the shared-mask layout only on its supported training backend."""
+        return (
+            self.na_training_fast
+            and self.training
+            and query.device.type == "cuda"
+            and query.dtype == torch.bfloat16
+            and not torch.are_deterministic_algorithms_enabled()
+        )
 
     def attend_windows(
         self, tokens: Tensor, window_shape: tuple[int, int], mask: Tensor | None = None
@@ -568,107 +828,291 @@ class _SpatialAttention(_WindowAttention):
         )
         return output.transpose(1, 2).reshape(batch_windows, count, channels)
 
-    def _na_core(self, x: Tensor) -> Tensor:
-        """Differentiable exact neighborhoods, evaluated in small query tiles.
-
-        Query i uses start=clamp(i-floor(K/2), 0, length-K), K=min(M,length).
-        Tiles only batch the calculation; a boolean mask selects each query's
-        own neighborhood, with no tile seam or output blend in the operator.
-        RFB factors use the accepted probe's tile-local coordinate frame to
-        preserve low-precision rounding. QKV is projected once for the image.
-        """
-        if self.pos_bias != "rfb" or self.logit_scale is not None:
-            raise ValueError("context_na requires RFB bias and dot-product attention")
-        batch, channels, height, width = x.shape
-        kh, kw = min(height, self.window), min(width, self.window)
+    def _na_chunk(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        first: int,
+        height: int,
+        width: int,
+        key_bias: Tensor | None = None,
+    ) -> Tensor:
+        """Gather, mask and attend a query chunk; return unassembled tile outputs."""
+        batch, heads, _, dim = query.shape
+        channels = heads * dim
         tile, chunk_size = 16, 4
-        heads, dim = self.heads, channels // self.heads
-        tokens = x.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
-        qkv = self.qkv(tokens).reshape(batch, height * width, 3, heads, dim)
-        query, key, value = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        query = query * dim**-0.5
-        dtype = query.dtype
-        output = x.new_empty((batch, channels, height, width), dtype=dtype)
+        kh, kw = min(height, self.window), min(width, self.window)
         uh, uw = min(height, kh + tile - 1), min(width, kw + tile - 1)
-        qlocal = _na_coordinates(tile, tile, x.device)
-        klocal = _na_coordinates(uh, uw, x.device)
+        eager_inference = (
+            not self.training
+            and not torch.is_grad_enabled()
+            and not torch.compiler.is_compiling()
+            and not torch.onnx.is_in_onnx_export()
+        )
+        coordinates = _inference_na_coordinates if eager_inference else _na_coordinates
+        qlocal = coordinates(tile, tile, query.device)
+        klocal = coordinates(uh, uw, query.device)
         tiles = [(y, z) for y in range(0, height, tile) for z in range(0, width, tile)]
+        current = tiles[first : first + chunk_size]
+        count = len(current)
+        dtype = query.dtype
+        # Eligible BF16 training folds images into heads to share masks.
+        # Evaluation, deterministic mode and other dtypes use the standard layout;
+        # both paths retain the same neighborhoods and positional coordinates.
+        fast = self._use_fast_na(query)
 
-        def gather(t: Tensor, index: Tensor, count: int) -> Tensor:
-            return (
-                t.index_select(2, index.reshape(-1))
-                .reshape(batch, heads, count, index.shape[1], dim)
-                .permute(0, 2, 1, 3, 4)
-                .reshape(batch * count, heads, index.shape[1], dim)
+        def gather(t: Tensor, index: Tensor) -> Tensor:
+            gathered = t.index_select(2, index.reshape(-1)).reshape(
+                batch, heads, count, index.shape[1], dim
+            )
+            if fast:
+                return gathered.permute(2, 0, 1, 3, 4).reshape(
+                    count, batch * heads, index.shape[1], dim
+                )
+            return gathered.permute(0, 2, 1, 3, 4).reshape(
+                batch * count, heads, index.shape[1], dim
             )
 
-        for first in range(0, len(tiles), chunk_size):
-            current = tiles[first : first + chunk_size]
-            count = len(current)
-            origins = torch.tensor(current, device=x.device)
-            qp = origins[:, None, :] + qlocal[None]
-            # Partial tiles repeat a valid query to avoid all-masked softmax;
-            # only the actual image coordinates are written to the output.
-            qp = torch.stack(
-                (qp[..., 0].clamp(max=height - 1), qp[..., 1].clamp(max=width - 1)), -1
+        if eager_inference:
+            # Avoid two tiny host-to-device copies and their synchronizations
+            # per chunk. Tile ownership and integer coordinates are unchanged.
+            origins = (
+                coordinates(
+                    (height + tile - 1) // tile,
+                    (width + tile - 1) // tile,
+                    query.device,
+                )[first : first + count]
+                * tile
             )
-            ko = origins - torch.tensor((kh // 2, kw // 2), device=x.device)
+        else:
+            origins = torch.tensor(current, device=query.device)
+        qp = origins[:, None, :] + qlocal[None]
+        qp = torch.stack(
+            (qp[..., 0].clamp(max=height - 1), qp[..., 1].clamp(max=width - 1)), -1
+        )
+        if eager_inference:
+            ko = torch.stack(
+                (
+                    (origins[:, 0] - kh // 2).clamp(0, height - uh),
+                    (origins[:, 1] - kw // 2).clamp(0, width - uw),
+                ),
+                -1,
+            )
+        else:
+            ko = origins - torch.tensor((kh // 2, kw // 2), device=query.device)
             ko = torch.stack(
                 (ko[:, 0].clamp(0, height - uh), ko[:, 1].clamp(0, width - uw)), -1
             )
-            kp = ko[:, None, :] + klocal[None]
-            qi, ki = qp[..., 0] * width + qp[..., 1], kp[..., 0] * width + kp[..., 1]
-            qt, kt, vt = (
-                gather(query, qi, count),
-                gather(key, ki, count),
-                gather(value, ki, count),
-            )
-            bq, _ = self.factored_bias.factors((qp - ko[:, None]).reshape(-1, 2), dtype)
+        kp = ko[:, None, :] + klocal[None]
+        qi, ki = qp[..., 0] * width + qp[..., 1], kp[..., 0] * width + kp[..., 1]
+        qt, kt, vt = gather(query, qi), gather(key, ki), gather(value, ki)
+        bq, _ = self.factored_bias.factors((qp - ko[:, None]).reshape(-1, 2), dtype)
+        if key_bias is None:
             _, bk = self.factored_bias.factors(klocal, dtype)
-            rank = self.factored_bias.rank
-            bq = bq.reshape(heads, count, tile * tile, rank).permute(1, 0, 2, 3)
+        else:
+            bk = key_bias
+        rank = self.factored_bias.rank
+        bq = bq.reshape(heads, count, tile * tile, rank).permute(1, 0, 2, 3)
+        if fast:
+            bq = (
+                bq[:, None]
+                .expand(count, batch, heads, tile * tile, rank)
+                .reshape(count, batch * heads, tile * tile, rank)
+            )
+            bk = (
+                bk[None, None]
+                .expand(count, batch, heads, uh * uw, rank)
+                .reshape(count, batch * heads, uh * uw, rank)
+            )
+        else:
             bq = (
                 bq[None]
                 .expand(batch, -1, -1, -1, -1)
                 .reshape(batch * count, heads, tile * tile, rank)
             )
             bk = bk[None].expand(batch * count, -1, -1, -1)
-            qt, kt = (
-                torch.cat((qt, bq), -1).contiguous(),
-                torch.cat((kt, bk), -1).contiguous(),
+        qt, kt = (
+            torch.cat((qt, bq), -1).contiguous(),
+            torch.cat((kt, bk), -1).contiguous(),
+        )
+        # Positional factors extend Q/K only. Zero V lanes never contribute to
+        # the returned channels; the supported training backend accepts Dv!=Dq.
+        vt = vt.contiguous() if fast else F.pad(vt, (0, rank)).contiguous()
+        if (
+            fast
+            and self.attn_type == "hybrid"
+            and torch.compiler.is_compiling()
+            and not torch.onnx.is_in_onnx_export()
+        ):
+            block = self._flex_masks.get((height, width, first))
+            if block is None:
+                raise RuntimeError(
+                    "DUAL hybrid mask missing: call prepare_for_compile with the "
+                    "actual input shape and dtype after moving the model to CUDA"
+                )
+            # Content32 + RFB16 becomes64 by appending exact zeros. V stays32;
+            # learned RFB factors remain ordinary differentiable Q/K operands.
+            padded = 1 << (qt.shape[-1] - 1).bit_length()
+            attended = flex_attention(
+                F.pad(qt, (0, padded - qt.shape[-1])),
+                F.pad(kt, (0, padded - kt.shape[-1])),
+                vt,
+                block_mask=block,
+                scale=1.0,
             )
-            vt = F.pad(vt, (0, rank)).contiguous()
-            sy = (qp[..., 0] - kh // 2).clamp(0, height - kh)
-            sx = (qp[..., 1] - kw // 2).clamp(0, width - kw)
-            ky = ko[:, 0, None] + torch.arange(uh, device=x.device)[None]
-            kx = ko[:, 1, None] + torch.arange(uw, device=x.device)[None]
-            my = (ky[:, None, :] >= sy[..., None]) & (
-                ky[:, None, :] < sy[..., None] + kh
-            )
-            mx = (kx[:, None, :] >= sx[..., None]) & (
-                kx[:, None, :] < sx[..., None] + kw
-            )
-            mask = (my[..., :, None] & mx[..., None, :]).reshape(
-                count, tile * tile, uh * uw
-            )
-            mask = (
-                mask[None]
-                .expand(batch, -1, -1, -1)
-                .reshape(batch * count, 1, tile * tile, uh * uw)
-                .contiguous()
-            )
-            attended = F.scaled_dot_product_attention(
-                qt, kt, vt, attn_mask=mask, dropout_p=0.0, scale=1.0
-            )[..., :dim]
-            attended = (
-                attended.reshape(batch, count, heads, tile, tile, dim)
-                .permute(0, 1, 2, 5, 3, 4)
+            return (
+                attended.reshape(count, batch, heads, tile, tile, dim)
+                .permute(1, 0, 2, 5, 3, 4)
                 .reshape(batch, count, channels, tile, tile)
             )
-            for j, (y, z) in enumerate(current):
+        sy = (qp[..., 0] - kh // 2).clamp(0, height - kh)
+        sx = (qp[..., 1] - kw // 2).clamp(0, width - kw)
+        ky = ko[:, 0, None] + torch.arange(uh, device=query.device)[None]
+        kx = ko[:, 1, None] + torch.arange(uw, device=query.device)[None]
+        my = (ky[:, None, :] >= sy[..., None]) & (ky[:, None, :] < sy[..., None] + kh)
+        mx = (kx[:, None, :] >= sx[..., None]) & (kx[:, None, :] < sx[..., None] + kw)
+        mask = (my[..., :, None] & mx[..., None, :]).reshape(
+            count, tile * tile, uh * uw
+        )
+        if fast:
+            # Fold independent images into heads to share each chunk's mask.
+            # Prefer cuDNN, with ordinary SDPA capability dispatch on devices
+            # where it is unsupported; do not swallow kernel/runtime errors.
+            with sdpa_kernel(
+                [
+                    SDPBackend.CUDNN_ATTENTION,
+                    SDPBackend.EFFICIENT_ATTENTION,
+                    SDPBackend.MATH,
+                ],
+                set_priority=True,
+            ):
+                attended = F.scaled_dot_product_attention(
+                    qt,
+                    kt,
+                    vt,
+                    attn_mask=mask[:, None].contiguous(),
+                    dropout_p=0.0,
+                    scale=1.0,
+                )
+            return (
+                attended.reshape(count, batch, heads, tile, tile, dim)
+                .permute(1, 0, 2, 5, 3, 4)
+                .reshape(batch, count, channels, tile, tile)
+            )
+        mask = (
+            mask[None]
+            .expand(batch, -1, -1, -1)
+            .reshape(batch * count, 1, tile * tile, uh * uw)
+            .contiguous()
+        )
+        attended = F.scaled_dot_product_attention(
+            qt, kt, vt, attn_mask=mask, dropout_p=0.0, scale=1.0
+        )[..., :dim]
+        return (
+            attended.reshape(batch, count, heads, tile, tile, dim)
+            .permute(0, 1, 2, 5, 3, 4)
+            .reshape(batch, count, channels, tile, tile)
+        )
+
+    def _na_core(self, x: Tensor) -> Tensor:
+        """Evaluate exact per-query neighborhoods in bounded spatial chunks."""
+        if self.pos_bias != "rfb" or self.logit_scale is not None:
+            raise ValueError("context_na requires RFB bias and dot-product attention")
+        batch, channels, height, width = x.shape
+        heads, dim = self.heads, channels // self.heads
+        tokens = x.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+        qkv = self.qkv(tokens).reshape(batch, height * width, 3, heads, dim)
+        query, key, value = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        query = query * dim**-0.5
+        output = x.new_empty((batch, channels, height, width), dtype=query.dtype)
+        tile, chunk_size = 16, 4
+        tiles = [(y, z) for y in range(0, height, tile) for z in range(0, width, tile)]
+        key_bias = None
+        if (
+            not self.training
+            and not torch.is_grad_enabled()
+            and not torch.compiler.is_compiling()
+            and not torch.onnx.is_in_onnx_export()
+        ):
+            # Every chunk in this layer uses the same local key coordinates.
+            # Recompute once PER FORWARD so EMA/load updates cannot leave stale
+            # positional factors. Arithmetic, dtype and SDPA backend stay intact.
+            kh, kw = min(height, self.window), min(width, self.window)
+            uh, uw = min(height, kh + tile - 1), min(width, kw + tile - 1)
+            _, key_bias = self.factored_bias.factors(
+                _inference_na_coordinates(uh, uw, query.device), query.dtype
+            )
+        for first in range(0, len(tiles), chunk_size):
+            attended = self._na_chunk(query, key, value, first, height, width, key_bias)
+            for j, (y, z) in enumerate(tiles[first : first + chunk_size]):
                 th, tw = min(tile, height - y), min(tile, width - z)
                 output[:, :, y : y + th, z : z + tw] = attended[:, j, :, :th, :tw]
         return output
+
+    def _local_na_core(self, x: Tensor) -> Tensor:
+        """Per-query window neighborhoods with dense RPB, batched in 8x8 tiles.
+
+        Each tile reads a (window+7)^2 key union; a per-class float mask adds the
+        layer's own bias inside each query's neighborhood and -inf outside.
+        """
+        if self.pos_bias != "rpb" or self.logit_scale is not None:
+            raise ValueError("local_na requires RPB bias and dot-product attention")
+        batch, channels, height, width = x.shape
+        heads, dim, tile, window = self.heads, channels // self.heads, 8, self.window
+        geometry = na_geometry(
+            (height, width), (height, width), window, tile, 1, x.device
+        )
+        tokens = x.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+        qkv = self.qkv(tokens).reshape(batch, height * width, 3, heads, dim)
+        query, key, value = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        query = query * (dim**-0.5)
+        dtype = query.dtype
+        span = 2 * window - 1
+        index = (
+            (geometry.offset_y + window - 1)[:, None, :, None, :, None] * span
+            + (geometry.offset_x + window - 1)[None, :, None, :, None, :]
+        ).reshape(geometry.inside.shape)
+        index = index.where(geometry.inside, 0)
+        bias = (
+            self.relative_bias.to(calculation_dtype(dtype))[index]
+            .permute(0, 3, 1, 2)
+            .masked_fill(~geometry.inside[:, None], float("-inf"))
+            .to(dtype)
+        )
+        count, keys = geometry.queries.shape[1], geometry.keys.shape[1]
+        step = max(1, _NA_ELEMENT_CAP // (batch * heads * count * keys))
+
+        def gather(t: Tensor, index: Tensor) -> Tensor:
+            return (
+                t.index_select(2, index.reshape(-1))
+                .reshape(batch, heads, index.shape[0], index.shape[1], dim)
+                .transpose(1, 2)
+                .reshape(batch, index.shape[0] * heads, index.shape[1], dim)
+            )
+
+        outputs = []
+        for first in range(0, geometry.queries.shape[0], step):
+            queries = geometry.queries[first : first + step]
+            keys_index = geometry.keys[first : first + step]
+            mask = bias.index_select(0, geometry.tile_class[first : first + step])
+            outputs.append(
+                F.scaled_dot_product_attention(
+                    gather(query, queries),
+                    gather(key, keys_index),
+                    gather(value, keys_index),
+                    attn_mask=mask.reshape(1, -1, count, keys),
+                    dropout_p=0.0,
+                    scale=1.0,
+                )
+            )
+        ty, tx = geometry.tiles
+        return (
+            torch.cat(outputs, 1)
+            .reshape(batch, ty, tx, heads, tile, tile, dim)
+            .permute(0, 3, 6, 1, 4, 2, 5)
+            .reshape(batch, channels, ty * tile, tx * tile)[:, :, :height, :width]
+        )
 
     def pre_gate_core(self, x: Tensor) -> Tensor:
         if x.ndim != 4 or x.shape[1] != self.channels or min(x.shape[2:]) < 1:
@@ -676,6 +1120,8 @@ class _SpatialAttention(_WindowAttention):
         batch, channels, height, width = x.shape
         if self.context_na and (height > self.window or width > self.window):
             return self._na_core(x)
+        if self.local_na and (height > self.window or width > self.window):
+            return self._local_na_core(x)
         wh, ww = min(height, self.window), min(width, self.window)
         if (
             self.window_mode == "anchored"
@@ -698,6 +1144,9 @@ class _SpatialAttention(_WindowAttention):
                 .permute(0, 3, 1, 2)
             )
         return super().pre_gate_core(x)
+
+
+# Cross-scale retrieval: block packing, attention and reconstruction transfers.
 
 
 def axis_spans(
@@ -771,6 +1220,7 @@ def grouped_layout(layout: tuple) -> tuple:
 
 
 def pad_even(x: Tensor) -> Tensor:
+    """Replicate the last row/column when needed for 2x pixel packing."""
     return F.pad(x, (0, x.shape[-1] % 2, 0, x.shape[-2] % 2), mode="replicate")
 
 
@@ -794,8 +1244,130 @@ def unpack_children(x: Tensor) -> Tensor:
     return F.pixel_shuffle(slots, 2)
 
 
+def pack_grandchildren(x: Tensor) -> Tensor:
+    """B,2*heads,H,W -> B,32*heads,H/4,W/4; head/slot/channel order."""
+    b, c, h, w = x.shape
+    return (
+        F.pixel_unshuffle(x, 4)
+        .reshape(b, c // 2, 2, 16, h // 4, w // 4)
+        .permute(0, 1, 3, 2, 4, 5)
+        .reshape(b, 16 * c, h // 4, w // 4)
+    )
+
+
+def unpack_grandchildren(x: Tensor) -> Tensor:
+    """Restore the sixteen packed spatial slots at four times the resolution."""
+    b, c, h, w = x.shape
+    raw = x.reshape(b, c // 32, 16, 2, h, w).permute(0, 1, 3, 2, 4, 5)
+    return F.pixel_shuffle(raw.reshape(b, c, h, w), 4)
+
+
+def pack_qk(q: Tensor, k: Tensor, *, na: bool = False) -> tuple:
+    """Pair 96px query blocks with half-resolution keys, batching equal shapes.
+
+    With na=True and a coarse grid above 48 on either axis, each fine query
+    instead keeps its own 48x48 coarse-key neighborhood (8x8 query tiles).
+    """
+    if na and max(k.shape[-2:]) > 48:
+        batch, heads = q.shape[0], q.shape[1] // 32
+        geometry = na_geometry(
+            tuple(q.shape[-2:]), tuple(k.shape[-2:]), 48, 8, 2, q.device
+        )
+        query, key = (t.reshape(batch * heads, 32, -1).transpose(1, 2) for t in (q, k))
+        return geometry, (query, key), q.shape
+    layout = block_layout(*q.shape[-2:], 96)
+    classes = []
+    for _, items in grouped_layout(layout):
+        qs = [pack_block(q, block) for _, block in items]
+        ks = [pack_block(k, tuple(t // 2 for t in block)) for _, block in items]
+        qq, kk = (
+            torch.cat(z, 0)
+            .reshape(-1, z[0].shape[1], q.shape[1] // 32, 32)
+            .transpose(1, 2)
+            for z in (qs, ks)
+        )
+        classes.append((items, qq, kk.contiguous()))
+    return layout, classes, q.shape[0]
+
+
+def attend_packed(packed: tuple, v: Tensor, log_tau: Tensor) -> Tensor:
+    """Reuse packed query/key blocks for a value stream, then restore BCHW."""
+    layout, classes, batch = packed
+    if isinstance(layout, NAGeometry):
+        query, key = classes
+        images, channels, height, width = batch
+        heads = channels // 32
+        value = v.reshape(query.shape[0], 32, -1).transpose(1, 2)
+        tau = log_tau.exp().clamp(0.1, 10).to(query.dtype).repeat(images)
+        query = query * tau[:, None, None]
+        count, keys = layout.queries.shape[1], layout.keys.shape[1]
+        step = max(1, _NA_ELEMENT_CAP // (query.shape[0] * count * keys))
+        scale = math.log(layout.window[0] * layout.window[1]) / (
+            math.log(1024) * math.sqrt(32)
+        )
+
+        def gather(t: Tensor, index: Tensor) -> Tensor:
+            return t.index_select(1, index.reshape(-1)).reshape(
+                t.shape[0], index.shape[0], index.shape[1], 32
+            )
+
+        outputs = []
+        for first in range(0, layout.queries.shape[0], step):
+            keys_index = layout.keys[first : first + step]
+            classes_index = layout.tile_class[first : first + step]
+            mask = layout.inside.index_select(0, classes_index)
+            outputs.append(
+                F.scaled_dot_product_attention(
+                    gather(query, layout.queries[first : first + step]),
+                    gather(key, keys_index),
+                    gather(value, keys_index),
+                    attn_mask=mask[None],
+                    scale=scale,
+                )
+            )
+        ty, tx = layout.tiles
+        return (
+            torch.cat(outputs, 1)
+            .reshape(images, heads, ty, tx, 8, 8, 32)
+            .permute(0, 1, 6, 2, 4, 3, 5)
+            .reshape(images, channels, ty * 8, tx * 8)[:, :, :height, :width]
+        )
+    outputs = [None] * len(layout)
+    for items, qq, kk in classes:
+        vs = [pack_block(v, tuple(t // 2 for t in block)) for _, block in items]
+        vv = (
+            torch.cat(vs, 0)
+            .reshape(-1, vs[0].shape[1], qq.shape[1], 32)
+            .transpose(1, 2)
+        )
+        tau = log_tau.exp().clamp(0.1, 10).to(qq.dtype)
+        out = (
+            F.scaled_dot_product_attention(
+                (qq * tau[None, :, None, None]).contiguous(),
+                kk,
+                vv.contiguous(),
+                scale=math.log(kk.shape[2]) / (math.log(1024) * math.sqrt(32)),
+            )
+            .transpose(1, 2)
+            .reshape(-1, qq.shape[2], 32 * qq.shape[1])
+        )
+        start = 0
+        for (index, block), chunk in zip(items, vs, strict=True):
+            count = chunk.shape[0]
+            outputs[index] = unpack_block(out[start : start + count], block, batch)
+            start += count
+    return join_blocks(outputs, layout)
+
+
 class CrossScaleRetrieval(nn.Module):
-    """Parameters/operators for DUAL's shared packed cross-scale retrieval."""
+    """Match fine features to a coarse RGB branch and retrieve packed values.
+
+    The coarse branch uses a fixed separable downsampler and shares the stem
+    and first two local layers with the fine branch. Queries combine fine-prefix
+    and group-two features; keys use the coarse branch, while values carry
+    group-two features packed into four spatial slots. Separate zero-initialized
+    readouts inject the result into the trunk and the 2x reconstruction stream.
+    """
 
     def __init__(self, channels: int = 96, *, include_hr: bool = True) -> None:
         super().__init__()
@@ -825,7 +1397,7 @@ class CrossScaleRetrieval(nn.Module):
             ),
             persistent=False,
         )
-        self.apply(_init_weights)  # noqa: SLF001 - preserve the parent initialization contract
+        self.apply(_init_weights)
         for layer in (self.project, self.hr):
             if layer is not None:
                 nn.init.zeros_(layer.weight)
@@ -844,75 +1416,19 @@ class CrossScaleRetrieval(nn.Module):
         )
 
 
-def pack_grandchildren(x: Tensor) -> Tensor:
-    """B,2*heads,H,W -> B,32*heads,H/4,W/4; head/slot/channel order."""
-    b, c, h, w = x.shape
-    return (
-        F.pixel_unshuffle(x, 4)
-        .reshape(b, c // 2, 2, 16, h // 4, w // 4)
-        .permute(0, 1, 3, 2, 4, 5)
-        .reshape(b, 16 * c, h // 4, w // 4)
-    )
-
-
-def unpack_grandchildren(x: Tensor) -> Tensor:
-    b, c, h, w = x.shape
-    raw = x.reshape(b, c // 32, 16, 2, h, w).permute(0, 1, 3, 2, 4, 5)
-    return F.pixel_shuffle(raw.reshape(b, c, h, w), 4)
-
-
-def pack_qk(q: Tensor, k: Tensor) -> tuple:
-    layout = block_layout(*q.shape[-2:], 96)
-    classes = []
-    for _, items in grouped_layout(layout):
-        qs = [pack_block(q, block) for _, block in items]
-        ks = [pack_block(k, tuple(t // 2 for t in block)) for _, block in items]
-        qq, kk = (
-            torch.cat(z, 0)
-            .reshape(-1, z[0].shape[1], q.shape[1] // 32, 32)
-            .transpose(1, 2)
-            for z in (qs, ks)
-        )
-        classes.append((items, qq, kk.contiguous()))
-    return layout, classes, q.shape[0]
-
-
-def attend_packed(packed: tuple, v: Tensor, log_tau: Tensor) -> Tensor:
-    layout, classes, batch = packed
-    outputs = [None] * len(layout)
-    for items, qq, kk in classes:
-        vs = [pack_block(v, tuple(t // 2 for t in block)) for _, block in items]
-        vv = (
-            torch.cat(vs, 0)
-            .reshape(-1, vs[0].shape[1], qq.shape[1], 32)
-            .transpose(1, 2)
-        )
-        tau = log_tau.exp().clamp(0.1, 10).to(qq.dtype)
-        out = (
-            F.scaled_dot_product_attention(
-                (qq * tau[None, :, None, None]).contiguous(),
-                kk,
-                vv.contiguous(),
-                scale=math.log(kk.shape[2]) / (math.log(1024) * math.sqrt(32)),
-            )
-            .transpose(1, 2)
-            .reshape(-1, qq.shape[2], 32 * qq.shape[1])
-        )
-        start = 0
-        for (index, block), chunk in zip(items, vs, strict=True):
-            count = chunk.shape[0]
-            outputs[index] = unpack_block(out[start : start + count], block, batch)
-            start += count
-    return join_blocks(outputs, layout)
-
-
 class SecondOctaveTransfer(nn.Module):
+    """Reuse cross-scale matching to add a zero-initialized 4x RGB residual.
+
+    Sixteen spatial slots are packed per key. The PU2/4x model emits twelve
+    channels here and pixel-shuffles them once more for its internal 8x output.
+    """
+
     def __init__(self, channels: int = 96) -> None:
         super().__init__()
         self.value = nn.Conv2d(64, channels // 16, 1)
         self.out = nn.Conv2d(channels // 16, 3, 3, padding=1, bias=False)
         self.log_tau = nn.Parameter(torch.zeros(channels // 32))
-        self.apply(_init_weights)  # noqa: SLF001 - preserve base initialization
+        self.apply(_init_weights)
         nn.init.zeros_(self.out.weight)
 
     def forward(self, t2: Tensor, packed: tuple, shape: tuple[int, int]) -> Tensor:
@@ -921,6 +1437,9 @@ class SecondOctaveTransfer(nn.Module):
         o2 = attend_packed(packed, pack_grandchildren(g), self.log_tau)
         r = unpack_grandchildren(o2)[:, :, : 4 * h, : 4 * w]
         return self.out(r)
+
+
+# Regional channel mixing and the dual-context residual layer.
 
 
 def hat_weights(
@@ -932,22 +1451,24 @@ def hat_weights(
 ) -> Tensor:
     """Nominal-window hats on real pixels, including clipped border windows."""
     if length < 1 or shift not in (0, 16):
-        raise ValueError("DUAL-R needs a positive axis and a 0/16 shift")
+        raise ValueError("Regional mixing needs a positive axis and a 0/16 shift")
     t = (torch.arange(length, device=device) + shift) % 32
     return (1 - ((t.to(dtype) - 15.5).abs() / 16)).to(dtype)
 
 
 class RegionalChannelAttention(nn.Module):
-    """Pre-norm residual BRANCH (the caller adds x); no hidden mutable state."""
+    """Channel attention over four offset grids of 32x32 regions.
 
-    def __init__(
-        self, channels: int = 96, heads: int = 3, *, core_checkpoint: bool = True
-    ) -> None:
+    Each region forms a per-head channel-mixing matrix from normalized feature
+    correlations. Separable hat weights blend the four grid outputs. Border
+    normalization counts real pixels, not padding; the caller adds the residual.
+    """
+
+    def __init__(self, channels: int = 96, heads: int = 3) -> None:
         super().__init__()
         if channels < 1 or heads < 1 or channels % heads:
             raise ValueError("channels must be positive and divisible by heads")
         self.channels, self.heads = channels, heads
-        self.core_checkpoint = core_checkpoint
         self.norm = TokenNorm(channels, eps=1e-5)
         self.qkv = nn.Conv2d(channels, channels * 3, 1, bias=False)
         self.depthwise = nn.Conv2d(
@@ -955,7 +1476,7 @@ class RegionalChannelAttention(nn.Module):
         )
         self.project = nn.Conv2d(channels, channels, 1, bias=False)
         self.theta = nn.Parameter(torch.zeros(heads))
-        self.apply(_init_weights)  # noqa: SLF001 - same new-module initialization
+        self.apply(_init_weights)
 
     def channel_attention(self, q: Tensor, k: Tensor, count: Tensor) -> Tensor:
         """(..., heads, d, tokens) -> (..., heads, d, d), FP32 or FP64.
@@ -994,7 +1515,7 @@ class RegionalChannelAttention(nn.Module):
         xc = (x0 + 32).clamp(max=w) - x0.clamp(min=0)
         count = (yc[:, None] * xc[None, :]).reshape(1, ny * nx, 1, 1)
         a = self.channel_attention(windows(q), windows(k), count)
-        # The probability cast is part of the stated BF16 training function.
+        # Preserve the probability cast before the low-precision value product.
         # Keep matmul dtype explicit even under a surrounding autocast context.
         with torch.autocast(device_type=v.device.type, enabled=False):
             o = a.to(v.dtype) @ windows(v)
@@ -1010,14 +1531,9 @@ class RegionalChannelAttention(nn.Module):
 
     def mix(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         """Blend four class outputs without an H*W*d*d matrix field."""
-        check = self.core_checkpoint and self.training and torch.is_grad_enabled()
         result = None
         for sy, sx in ((0, 0), (0, 16), (16, 0), (16, 16)):
-            out = (
-                checkpoint(self._class_core, q, k, v, sy, sx, use_reentrant=False)
-                if check
-                else self._class_core(q, k, v, sy, sx)
-            )
+            out = self._class_core(q, k, v, sy, sx)
             result = out if result is None else result + out
         return result
 
@@ -1029,20 +1545,24 @@ class RegionalChannelAttention(nn.Module):
 
 
 class DualContextLayer(nn.Module):
-    def __init__(self, source: nn.Module, *, core_checkpoint: bool) -> None:
+    """Spatial attention -> regional channel mixing -> convolutional FFN."""
+
+    def __init__(self, source: nn.Module) -> None:
         super().__init__()
         self.norm1, self.attention = source.norm1, source.attention
         self.norm2, self.ffn = source.norm2, source.ffn
         self.dual = RegionalChannelAttention(
             self.attention.channels,
             self.attention.heads,
-            core_checkpoint=core_checkpoint,
         )
 
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attention(self.norm1(x))
         x = x + self.dual(x)
         return x + self.ffn(self.norm2(x))
+
+
+# Reparameterized convolutions and per-image expert routing.
 
 
 class _EDBBDenseBranch(nn.Module):
@@ -1113,7 +1633,14 @@ class _EDBBEdgeBranch(nn.Module):
 
 
 class EDBBReparamConv3x3(nn.Module):
-    """All learnable branches expanded; one differentiably composed convolution."""
+    """Compose dense, pointwise, edge and identity branches into one 3x3 kernel.
+
+    Both training and evaluation compose parameters before convolution; expanded
+    intermediate image features are not materialized. Composition uses FP32
+    (FP64 for double parameters), then casts back before convolution. Branch
+    initialization exactly embeds the supplied convolution. folded() produces
+    a static deployment convolution without changing the training instance.
+    """
 
     def __init__(self, original: nn.Conv2d) -> None:
         super().__init__()
@@ -1130,8 +1657,7 @@ class EDBBReparamConv3x3(nn.Module):
         self.gain = 2
         bias = original.bias is not None
         factory = {"device": original.weight.device, "dtype": original.weight.dtype}
-        # Expanding the former direct 3x3 makes its topology match the sequential
-        # branch. They remain independent factors, not shared/duplicated weights.
+        # The two dense paths have identical topology but independent factors.
         self.direct = _EDBBDenseBranch(ci, co, bias=bias, factory=factory)
         self.sequential = _EDBBDenseBranch(ci, co, bias=bias, factory=factory)
         self.pointwise = _EDBBPointwiseBranch(ci, co, bias=bias, factory=factory)
@@ -1291,7 +1817,7 @@ def _premixed_conv3x3(
 
 
 class PremixedDynamicGroupConv3x3(nn.Module):
-    """Unchanged EDBB base plus K learnable, input-routed residual kernels."""
+    """EDBB base plus K zero-initialized, input-routed residual kernels."""
 
     def __init__(self, base: EDBBReparamConv3x3, experts: int = 4) -> None:
         super().__init__()
@@ -1346,8 +1872,11 @@ class PremixedDeployedDynamicConv3x3(nn.Module):
         )
 
 
+# Residual hierarchy and complete RGB model.
+
+
 class _Layer(nn.Module):
-    """Original token-normalized spatial attention and convolutional FFN."""
+    """Pre-normalized spatial attention and FFN, each with a residual addition."""
 
     def __init__(
         self,
@@ -1361,7 +1890,7 @@ class _Layer(nn.Module):
         g_attention_impl: Literal["sdpa", "direct"],
     ) -> None:
         super().__init__()
-        # Match the source construction order, not just its forward equation.
+        # Construction order is fixed to keep seeded initialization reproducible.
         self.norm1 = TokenNorm(channels, 1e-5)
         self.norm2 = TokenNorm(channels, 1e-5)
         self.attention = _SpatialAttention(
@@ -1383,7 +1912,7 @@ class _Layer(nn.Module):
 
 
 class _Group(nn.Module):
-    """Six layers and a group residual; optional activation checkpointing."""
+    """Build a six-slot local/context schedule followed by a group write-back."""
 
     def __init__(
         self,
@@ -1425,18 +1954,29 @@ class _Group(nn.Module):
         residual = x
         for layer in self.layers:
             if self.use_checkpoint and self.training and torch.is_grad_enabled():
-                x = checkpoint(layer, x, use_reentrant=False)
+                x = _checkpoint_layer(layer, x)
             else:
                 x = layer(x)
         return residual + self.conv(x)
 
 
 class DUAL(nn.Module):
-    """DUAL3X with explicit original-index schedules and optional RGB PU2.
+    """Dual-context RGB restoration with an optional half-resolution trunk.
 
-    RGB BCHW -> RGB B,C,scale*H,scale*W. The shared two-local-layer prefix,
-    retrieval after group two and F64 reconstruction are retained. Static
-    factor folding is destructive and terminal; use an evaluation copy.
+    Each full group follows [local, shifted local, context-small, local,
+    shifted local, context-large]. layer_indices selects ordered slots for
+    shortened groups; the first group's two-local-layer prefix is mandatory.
+    The coarse RGB branch reuses that prefix. Cross-scale retrieval follows
+    group two, and optional 2x/4x transfers feed the 64-channel reconstruction.
+
+    DUAL accepts nonempty BCHW RGB input. PixelUnshuffle2 changes the internal
+    scale, not the output contract. prepare_for_export() is irreversible and
+    must operate on an eval copy, never the training instance.
+
+    context_na, local_na and retrieval_na (all default True) select per-query
+    neighborhoods for the context layers, the G-window local layers and the
+    cross-scale retrieval respectively; False keeps windows or 96px blocks.
+    local_na requires qk='dot'. None of them changes parameters or keys.
     """
 
     def __init__(
@@ -1452,6 +1992,8 @@ class DUAL(nn.Module):
         c_windows: tuple[int, int] = (32, 64),
         context_na: bool | None = None,
         context_overlap: bool | None = None,
+        local_na: bool = True,
+        retrieval_na: bool = True,
         g_window: int = 16,
         norm: Literal["token"] = "token",
         c_pos_bias: str = "rfb",
@@ -1459,16 +2001,33 @@ class DUAL(nn.Module):
         window_mode: WindowMode = "anchored",
         qk: QKMode = "dot",
         ffn: Literal["conv"] = "conv",
-        use_checkpoint: bool = False,
-        dual_core_checkpoint: bool = True,
+        use_checkpoint: bool = True,
         g_attention_impl: Literal["sdpa", "direct"] = "sdpa",
         compile_g_attention_impl: Literal["sdpa", "direct"] = "direct",
+        attn_type: Literal["masked", "hybrid"] = "masked",
     ) -> None:
         super().__init__()
         _check_experts(dynamic_experts)
         if type(pixel_unshuffle) is not bool:
             raise ValueError("pixel_unshuffle must be a bool")
+        if type(use_checkpoint) is not bool:
+            raise ValueError("use_checkpoint must be a bool")
         context_na = _resolve_context_na(context_na, context_overlap, default=True)
+        for name, value in (("local_na", local_na), ("retrieval_na", retrieval_na)):
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be a bool")
+        if local_na and qk != "dot":
+            raise ValueError("local_na requires qk='dot'; disable local_na for cosine")
+        if attn_type not in ("masked", "hybrid"):
+            raise ValueError("attn_type must be masked/hybrid")
+        if attn_type == "hybrid":
+            if not context_na:
+                raise ValueError("attn_type='hybrid' requires context_na=True")
+            if flex_attention is None:
+                raise ImportError(
+                    "DUAL hybrid attention requires PyTorch Flex Attention"
+                )
+        self.attn_type = attn_type
         if scale not in (1, 2, 4) or norm != "token":
             raise ValueError("DUAL requires scale 1/2/4 and token normalization")
         if not isinstance(embed_dim, int) or embed_dim < 32 or embed_dim % 32:
@@ -1501,7 +2060,7 @@ class DUAL(nn.Module):
         if window_mode != "anchored":
             raise ValueError("DUAL requires anchored spatial windows")
         if ffn != "conv":
-            raise ValueError("DUAL requires the original convolutional FFN")
+            raise ValueError("DUAL requires the convolutional FFN")
         if len(c_windows) != 2 or min(c_windows) < 1:
             raise ValueError("two positive context windows required")
         if not isinstance(g_window, int) or g_window < 2 or g_window % 2:
@@ -1517,6 +2076,12 @@ class DUAL(nn.Module):
         self.compile_g_attention_impl = compile_g_attention_impl
         self.scale = scale
         self.context_na = context_na
+        self.local_na = local_na
+        self.retrieval_na = retrieval_na
+        self.compile_cache_key_tag = (
+            f"dual-family-attention-v5:selective-checkpoint={use_checkpoint}"
+            f":attn-type={attn_type}"
+        )
         self.unshuffle = pixel_unshuffle
         self.internal_scale = scale * (2 if pixel_unshuffle else 1)
         self.selected_original_indices = selected
@@ -1559,15 +2124,16 @@ class DUAL(nn.Module):
         self.tail = nn.Sequential(*tail)
         self.apply(_init_weights)
 
-        # Preserve the full native C96 DUAL3X construction/RNG order.
+        # Initialize full groups before slot selection to keep seeded weights stable.
         self.xr = CrossScaleRetrieval(channels, include_hr=self.internal_scale >= 2)
         self.xg = SecondOctaveTransfer(channels) if self.internal_scale >= 4 else None
         for group in self.groups:
+            for index in (0, 1, 3, 4):
+                group.layers[index].attention.local_na = local_na
             for index in (2, 5):
-                group.layers[index] = DualContextLayer(
-                    group.layers[index], core_checkpoint=dual_core_checkpoint
-                )
+                group.layers[index] = DualContextLayer(group.layers[index])
                 group.layers[index].attention.context_na = context_na
+                group.layers[index].attention.attn_type = attn_type
         for group, indices in zip(self.groups, selected, strict=True):
             group.layers = nn.ModuleList(group.layers[i] for i in indices)
         if self.unshuffle:
@@ -1622,30 +2188,29 @@ class DUAL(nn.Module):
         shifted = x - mean
         stem = self.stem(F.pixel_unshuffle(shifted, 2) if self.unshuffle else shifted)
         h = stem
+        # Capture the shared local prefix, then finish the first two groups.
         group = self.groups[0]
         check = group.use_checkpoint and self.training and torch.is_grad_enabled()
         fine = h
         for index, layer in enumerate(group.layers):
-            h = checkpoint(layer, h, use_reentrant=False) if check else layer(h)
+            h = _checkpoint_layer(layer, h) if check else layer(h)
             if index == 1:
                 fine = h
         h = stem + group.conv(h)
         h = self.groups[1](h)
+        # Reuse the same stem/prefix on a fixed-filter half-resolution RGB input.
         coarse_input = self.xr.downsample(shifted)
         coarse = self.stem(
             F.pixel_unshuffle(coarse_input, 2) if self.unshuffle else coarse_input
         )
         for layer in group.layers[:2]:
-            coarse = (
-                checkpoint(layer, coarse, use_reentrant=False)
-                if check
-                else layer(coarse)
-            )
+            coarse = _checkpoint_layer(layer, coarse) if check else layer(coarse)
+        # Retrieve packed trunk values using fine queries and coarse keys.
         height, width = h.shape[-2:]
         u = self.xr.norm_u(pad_even(h))
         q = self.xr.query(torch.cat((self.xr.norm_f(pad_even(fine)), u), 1))
         k = self.xr.key(self.xr.norm_f(coarse))
-        packed = pack_qk(q, k)
+        packed = pack_qk(q, k, na=self.retrieval_na)
         o = attend_packed(packed, pack_children(self.xr.value(u)), self.xr.log_tau)
         lr = self.xr.project(o * self.xr.gate(u).sigmoid())[:, :, :height, :width]
         hr = (
@@ -1653,6 +2218,7 @@ class DUAL(nn.Module):
             if self.internal_scale >= 2
             else None
         )
+        # Write back at trunk resolution; retain HR transfers for reconstruction.
         h = h + lr
         for group in self.groups[2:]:
             h = group(h)
@@ -1667,6 +2233,7 @@ class DUAL(nn.Module):
                 out = out + (
                     F.pixel_shuffle(extra, 2) if self.internal_scale == 8 else extra
                 )
+        # Add the RGB residual base and undo any input-side PU2 padding.
         out = (
             out + F.interpolate(shifted, scale_factor=self.scale, mode="nearest") + mean
         )
@@ -1677,37 +2244,89 @@ class DUAL(nn.Module):
         input_shape: tuple[int, ...] | None = None,
         input_dtype: torch.dtype | None = None,
     ) -> None:
-        """Select the opt-in G16/G32 direct implementation on the compile path.
+        """Select training execution paths without changing model mathematics.
 
-        No caches need priming. Eager attention defaults to SDPA; export copies
-        remain on SDPA. Per-call device/dtype/geometry checks govern direct use.
+        Every preset and scale shares these capability checks: no width, depth
+        or preset-specific restriction is needed. Hybrid masks are shared across
+        equal context windows and primed for the actual trunk size, including
+        PU2 padding. Repeated calls replace caches; eval/export keep portable SDPA.
+        Per-call device/dtype/geometry checks still govern actual execution.
+        The direct local backend implements fixed G windows, so it is selected
+        only for layers with local_na off; local and retrieval NA use SDPA.
         """
+        training = self.training and not self.deployed
+        bf16_context = training and input_dtype == torch.bfloat16
+        direct_local = (
+            training
+            and self.compile_g_attention_impl == "direct"
+            and input_dtype in (torch.bfloat16, torch.float16)
+        )
+        flex_shape = None
         if (
-            self.deployed
-            or self.compile_g_attention_impl != "direct"
-            or input_dtype
-            not in (
-                torch.bfloat16,
-                torch.float16,
-            )
+            bf16_context
+            and self.attn_type == "hybrid"
+            and self.mean.device.type == "cuda"
+            and not torch.are_deterministic_algorithms_enabled()
         ):
-            return
-        for layer in self.modules():
             if (
-                isinstance(layer, _SpatialAttention)
-                and layer.pos_bias == "rpb"
-                and layer.window_mode == "anchored"
-                and layer.window in (16, 32)
+                input_shape is None
+                or len(input_shape) != 4
+                or any(type(d) is not int or d < 1 for d in input_shape)
+                or input_shape[1] != 3
             ):
-                layer.g_attention_impl = "direct"
+                raise ValueError(
+                    "Hybrid compilation requires a fixed positive BCHW RGB input_shape"
+                )
+            height, width = input_shape[-2:]
+            if self.unshuffle:
+                height, width = ((height + 3) // 4) * 2, ((width + 3) // 4) * 2
+            flex_shape = height, width
+        shared_masks: dict[tuple[int, int], Any] = {}
+        for layer in self.modules():
+            if isinstance(layer, _SpatialAttention):
+                masks: dict[tuple[int, int, int], Any] = {}
+                layer._flex_masks = masks  # noqa: SLF001 - Model owns runtime caches.
+                layer.na_training_fast = bool(
+                    bf16_context
+                    and layer.context_na
+                    and layer.pos_bias == "rfb"
+                    and layer.window in (32, 64)
+                    and layer.factored_bias.rank == 16
+                )
+                if flex_shape is not None and layer.na_training_fast:
+                    height, width = flex_shape
+                    if height > layer.window or width > layer.window:
+                        count = ((height + 15) // 16) * ((width + 15) // 16)
+                        for first in range(0, count, 4):
+                            key = layer.window, first
+                            if key not in shared_masks:
+                                shared_masks[key] = _na_block_mask(
+                                    height, width, layer.window, first, self.mean.device
+                                )
+                            masks[(height, width, first)] = shared_masks[key]
+                layer.g_attention_impl = (
+                    "direct"
+                    if direct_local
+                    and not layer.local_na
+                    and layer.pos_bias == "rpb"
+                    and layer.window_mode == "anchored"
+                    and layer.window in (16, 32)
+                    else "sdpa"
+                )
 
     def prepare_for_export(self) -> None:
-        """Select portable SDPA and fold factors; call only on an eval COPY."""
+        """Select portable SDPA and fold factors; call only on an eval COPY.
+
+        Like context_na, local_na and retrieval_na stay as configured: their
+        neighborhoods export as index gathers plus masked SDPA.
+        """
         if self.training:
             raise RuntimeError("Call eval() on an export copy before folding DUAL")
         for layer in self.modules():
             if isinstance(layer, _SpatialAttention):
                 layer.g_attention_impl = "sdpa"
+                layer.na_training_fast = False
+                layer._flex_masks.clear()  # noqa: SLF001 - Drop export-only runtime state.
         if self.deployed:
             return
         for name in self.reparameterized_names:
@@ -1717,92 +2336,10 @@ class DUAL(nn.Module):
         self.deployed = True
 
 
-# =============================================================================
-# Model Factory Functions
-# Explicit schedules retain both context scales and the shared local prefix.
-# =============================================================================
-
-_LIGHT_INDICES = ((0, 1, 2, 3), (3, 4, 5), (0, 1, 2), (0, 1, 2, 3, 4, 5))
-# Native x4 C128: 57.23ms median at static B1/LR512 on the recorded RTX5090
-# TensorRT11.2 Opt3 BF16/FP32 CUDA-Graph contract. Not a universal timing promise.
-_XS_INDICES = _LIGHT_INDICES
-
-
-def dual_light(scale: int = 4, use_checkpoint: bool = False, **kwargs: Any) -> DUAL:
-    """PU2 C128/H4/F64, four groups with 16 selected DUAL3X blocks."""
-    return DUAL(
-        scale=scale,
-        embed_dim=128,
-        depths=tuple(map(len, _LIGHT_INDICES)),
-        layer_indices=_LIGHT_INDICES,
-        pixel_unshuffle=True,
-        use_checkpoint=use_checkpoint,
-        **kwargs,
-    )
-
-
-def dual_xs(scale: int = 4, use_checkpoint: bool = False, **kwargs: Any) -> DUAL:
-    """Native C128/H4/F64, depths(4,3,3,6); measured XS target preset."""
-    return DUAL(
-        scale=scale,
-        embed_dim=128,
-        depths=tuple(map(len, _XS_INDICES)),
-        layer_indices=_XS_INDICES,
-        use_checkpoint=use_checkpoint,
-        **kwargs,
-    )
-
-
-def dual_s(scale: int = 4, use_checkpoint: bool = False, **kwargs: Any) -> DUAL:
-    """C160/G6xD6/H5/F64 DUAL3X."""
-    return DUAL(
-        scale=scale,
-        embed_dim=160,
-        depths=(6,) * 6,
-        use_checkpoint=use_checkpoint,
-        **kwargs,
-    )
-
-
-def dual_m(scale: int = 4, use_checkpoint: bool = False, **kwargs: Any) -> DUAL:
-    """C192/G6xD6/H6/F64 DUAL3X."""
-    return DUAL(
-        scale=scale,
-        embed_dim=192,
-        depths=(6,) * 6,
-        use_checkpoint=use_checkpoint,
-        **kwargs,
-    )
-
-
-def dual_l(scale: int = 4, use_checkpoint: bool = False, **kwargs: Any) -> DUAL:
-    """C224/G10xD6/H7/F64 DUAL3X."""
-    return DUAL(
-        scale=scale,
-        embed_dim=224,
-        depths=(6,) * 10,
-        use_checkpoint=use_checkpoint,
-        **kwargs,
-    )
-
-
-def dual_xl(scale: int = 4, use_checkpoint: bool = False, **kwargs: Any) -> DUAL:
-    """C256/G12xD6/H8/F64 DUAL3X."""
-    return DUAL(
-        scale=scale,
-        embed_dim=256,
-        depths=(6,) * 12,
-        use_checkpoint=use_checkpoint,
-        **kwargs,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Bundled DRFT-derived dense-RPB Triton attention, used by direct G16/G32.
-# Kernel math, launch settings, layout, custom autograd and table convention
-# are retained; only the torch.library registration namespace is renamed.
-# Optional import keeps the reference usable on CPU-only PyTorch installations.
-# ---------------------------------------------------------------------------
+# Optional fused local-attention backend.
+# This bundled dense-RPB kernel serves G16/G32 attention, not context NA.
+# Missing optional APIs are reported when direct execution is requested; SDPA
+# remains available without Triton.
 _DIRECT_ATTENTION_ERROR: str | None = None
 try:
     import triton
@@ -1849,12 +2386,12 @@ if _HAS_DIRECT_ATTENTION:
     _DELTA_WARPS = 8
     _REDUCE_WARPS = 8
 
-    def ocab_attention_dtype_code(dtype: torch.dtype) -> int:
+    def _attention_dtype_code(dtype: torch.dtype) -> int:
         if dtype is torch.bfloat16:
             return _BF16
         if dtype is torch.float16:
             return _FP16
-        raise ValueError(f"unsupported fused OCAB attention dtype: {dtype}")
+        raise ValueError(f"unsupported fused DUAL attention dtype: {dtype}")
 
     @triton.jit
     def _rounded_bias(value, DTYPE_CODE: tl.constexpr):
@@ -2577,8 +3114,8 @@ if _HAS_DIRECT_ATTENTION:
             tl.sum(gradient, axis=0),
         )
 
-    @triton_op("dual_standalone::ocab_dense_rpb_attention", mutates_args={})
-    def ocab_dense_rpb_attention(
+    @triton_op("dual_standalone::dense_rpb_attention", mutates_args={})
+    def _dense_rpb_attention(
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
@@ -2593,21 +3130,20 @@ if _HAS_DIRECT_ATTENTION:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_windows, num_heads, query_tokens, head_dim = query.shape
         if key.shape != (batch_windows, num_heads, key_height * key_width, head_dim):
-            raise ValueError("fused OCAB key geometry does not match query geometry")
+            raise ValueError("fused DUAL key geometry does not match query geometry")
         if value.shape != key.shape:
-            raise ValueError("fused OCAB value geometry must match key geometry")
+            raise ValueError("fused DUAL value geometry must match key geometry")
         if query_tokens != query_height * query_width:
-            raise ValueError("fused OCAB query geometry does not match token count")
+            raise ValueError("fused DUAL query geometry does not match token count")
         expected_relative = (query_height + key_height - 1) * (
             query_width + key_width - 1
         )
         if table.shape != (expected_relative, num_heads):
-            raise ValueError("fused OCAB relative-bias table has the wrong shape")
+            raise ValueError("fused DUAL relative-bias table has the wrong shape")
 
-        # Q arrives as a dense head view of token-major QKV storage.  Preserving
-        # those strides makes the immediately following head->channel reshape a
-        # view instead of a materialized transpose.  Keep the historical layout
-        # available for controlled A/B validation.
+        # Q is a dense head view of token-major QKV. Preserving its strides
+        # lets the following head-to-channel reshape remain a view; otherwise
+        # allocate a contiguous head-major result.
         output = (
             torch.empty_like(query, memory_format=torch.preserve_format)
             if preserve_layout
@@ -2652,8 +3188,8 @@ if _HAS_DIRECT_ATTENTION:
         )
         return output, lse
 
-    @triton_op("dual_standalone::ocab_dense_rpb_attention_backward", mutates_args={})
-    def ocab_dense_rpb_attention_backward(
+    @triton_op("dual_standalone::dense_rpb_attention_backward", mutates_args={})
+    def _dense_rpb_attention_backward(
         grad_output: torch.Tensor,
         query: torch.Tensor,
         key: torch.Tensor,
@@ -2689,9 +3225,8 @@ if _HAS_DIRECT_ATTENTION:
             num_warps=_DELTA_WARPS,
         )
 
-        # In the projection-ready mode, return gradients in the source Q/K/V
-        # layouts so their inverse reshape/permute into the fused QKV-window
-        # operator remains a view.  Every kernel already honors explicit strides.
+        # Layout-preserving gradients avoid copies when restoring QKV storage.
+        # All kernels accept explicit source/destination strides.
         grad_query = (
             torch.empty_like(query, memory_format=torch.preserve_format)
             if preserve_layout
@@ -2867,23 +3402,21 @@ if _HAS_DIRECT_ATTENTION:
     def _backward(ctx, grad_output: torch.Tensor, grad_lse: torch.Tensor | None):
         del grad_lse
         query, key, value, table, attention_output, lse = ctx.saved_tensors
-        grad_query, grad_key, grad_value, grad_table = (
-            ocab_dense_rpb_attention_backward(
-                grad_output,
-                query,
-                key,
-                value,
-                table,
-                attention_output,
-                lse,
-                ctx.query_height,
-                ctx.query_width,
-                ctx.key_height,
-                ctx.key_width,
-                ctx.scale,
-                ctx.dtype_code,
-                ctx.preserve_layout,
-            )
+        grad_query, grad_key, grad_value, grad_table = _dense_rpb_attention_backward(
+            grad_output,
+            query,
+            key,
+            value,
+            table,
+            attention_output,
+            lse,
+            ctx.query_height,
+            ctx.query_width,
+            ctx.key_height,
+            ctx.key_width,
+            ctx.scale,
+            ctx.dtype_code,
+            ctx.preserve_layout,
         )
         return (
             grad_query,
@@ -2900,12 +3433,12 @@ if _HAS_DIRECT_ATTENTION:
         )
 
     torch.library.register_autograd(
-        ocab_dense_rpb_attention,
+        _dense_rpb_attention,
         _backward,
         setup_context=_setup_context,
     )
 
-    def ocab_attention(
+    def _fused_rpb_attention(
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
@@ -2917,7 +3450,7 @@ if _HAS_DIRECT_ATTENTION:
         scale: float,
         preserve_layout: bool = False,
     ) -> torch.Tensor:
-        output, _lse = ocab_dense_rpb_attention(
+        output, _lse = _dense_rpb_attention(
             query,
             key,
             value,
@@ -2927,14 +3460,14 @@ if _HAS_DIRECT_ATTENTION:
             key_height,
             key_width,
             scale,
-            ocab_attention_dtype_code(query.dtype),
+            _attention_dtype_code(query.dtype),
             preserve_layout,
         )
         return output
 
 else:
 
-    def ocab_attention(
+    def _fused_rpb_attention(
         query: Tensor,
         key: Tensor,
         value: Tensor,
@@ -2953,9 +3486,106 @@ else:
         )
 
 
-# =============================================================================
-# Optional: traiNNer Registry
-# =============================================================================
+def direct_g16_attention(
+    query: Tensor, key: Tensor, value: Tensor, table: Tensor
+) -> Tensor:
+    """Apply the bundled dense-RPB backend to a complete 16x16 local window."""
+    return direct_g_attention(query, key, value, table, 16)
+
+
+def direct_g_attention(
+    query: Tensor, key: Tensor, value: Tensor, table: Tensor, window: int
+) -> Tensor:
+    """Adapt local attention to the bundled backend's relative-index convention.
+
+    Q is already scaled. Model tables use query-minus-key; the kernel uses
+    key-minus-query. Reversing the flattened table converts between them.
+    """
+    return _fused_rpb_attention(
+        query, key, value, table.flip(0), window, window, window, window, 1.0
+    )
+
+
+# Public presets and optional traiNNer registration.
+# Selected slots retain both context scales and the shared local prefix.
+
+_LIGHT_INDICES = ((0, 1, 2, 3), (3, 4, 5), (0, 1, 2), (0, 1, 2, 3, 4, 5))
+_XS_INDICES = _LIGHT_INDICES
+
+
+def dual_light(
+    scale: int = 4,
+    use_checkpoint: bool = True,
+    **kwargs: Any,
+) -> DUAL:
+    """Light: C128, four heads, 16 layers, PU2; native output scales 1/2/4."""
+    return DUAL(
+        scale=scale,
+        embed_dim=128,
+        depths=tuple(map(len, _LIGHT_INDICES)),
+        layer_indices=_LIGHT_INDICES,
+        pixel_unshuffle=True,
+        use_checkpoint=use_checkpoint,
+        **kwargs,
+    )
+
+
+def dual_xs(scale: int = 4, use_checkpoint: bool = True, **kwargs: Any) -> DUAL:
+    """XS: C128, four heads, depths (4,3,3,6), full-resolution trunk."""
+    return DUAL(
+        scale=scale,
+        embed_dim=128,
+        depths=tuple(map(len, _XS_INDICES)),
+        layer_indices=_XS_INDICES,
+        use_checkpoint=use_checkpoint,
+        **kwargs,
+    )
+
+
+def dual_s(scale: int = 4, use_checkpoint: bool = True, **kwargs: Any) -> DUAL:
+    """S: C160, five heads and six complete six-layer groups."""
+    return DUAL(
+        scale=scale,
+        embed_dim=160,
+        depths=(6,) * 6,
+        use_checkpoint=use_checkpoint,
+        **kwargs,
+    )
+
+
+def dual_m(scale: int = 4, use_checkpoint: bool = True, **kwargs: Any) -> DUAL:
+    """M: C192, six heads and six complete six-layer groups."""
+    return DUAL(
+        scale=scale,
+        embed_dim=192,
+        depths=(6,) * 6,
+        use_checkpoint=use_checkpoint,
+        **kwargs,
+    )
+
+
+def dual_l(scale: int = 4, use_checkpoint: bool = True, **kwargs: Any) -> DUAL:
+    """L: C224, seven heads and ten complete six-layer groups."""
+    return DUAL(
+        scale=scale,
+        embed_dim=224,
+        depths=(6,) * 10,
+        use_checkpoint=use_checkpoint,
+        **kwargs,
+    )
+
+
+def dual_xl(scale: int = 4, use_checkpoint: bool = True, **kwargs: Any) -> DUAL:
+    """XL: C256, eight heads and twelve complete six-layer groups."""
+    return DUAL(
+        scale=scale,
+        embed_dim=256,
+        depths=(6,) * 12,
+        use_checkpoint=use_checkpoint,
+        **kwargs,
+    )
+
+
 try:
     from traiNNer.utils.registry import ARCH_REGISTRY
 except ModuleNotFoundError as error:

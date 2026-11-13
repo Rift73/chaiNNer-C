@@ -38,6 +38,8 @@ class Method:
     # The class's constructor parameters, for bound methods.
     init_params: tuple[Param, ...]
     params: tuple[Param, ...]
+    # The method's pop-up text (Markdown): the overlay's help, else the cleaned
+    # docstring; "" for a plugin, whose docstring is only the plugin's name.
     doc: str
     # Parameter name -> its help text from the docstring's Args section.
     arg_docs: Mapping[str, str] = field(hash=False)
@@ -57,10 +59,18 @@ class Method:
     choice: str = ""
     # A group's preselected member (its choice), or "" for the first.
     default_choice: str = ""
-    # Listed first in its node's Method dropdown ("Common"): it has an overlay.
+    # Listed first in its node's Method dropdown ("Common"): it has a rank, or an
+    # overlay that promotes it (catalog's module docstring).
     common: bool = False
+    # Its place among the ranked Common methods (an overlay's rank), or None.
+    rank: int | None = None
     # Parameter name -> the value its input starts with (an overlay's default).
     defaults: Mapping[str, object] = field(default_factory=dict, hash=False)
+    # Parameter name -> its pop-up text (Markdown): the overlay's (for a constructor
+    # parameter its init_docs first), else the glossary's, else the cleaned arg_docs.
+    docs: Mapping[str, str] = field(default_factory=dict, hash=False)
+    # A group's choice -> its dropdown entry's pop-up text (the overlay's choices).
+    choice_docs: Mapping[str, str] = field(default_factory=dict, hash=False)
     # It returns a list of clips (shift_clip_multi), not one clip.
     many: bool = False
     # A function of the user's files or listed modules.

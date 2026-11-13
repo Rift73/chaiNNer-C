@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "alpha_gamma_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Gamma's approximation, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only through gamma_range's dispatch on
+/* Gamma's approximation, AVX2 unit (/arch:AVX2): no export, reached only through gamma_range's dispatch on
  * the call's ISA level (alpha_gamma_ops.c). Eight elements at a time run gamma_approx's operations in its order, one
  * instruction for each scalar operation: vmulps and vaddps or vsubps where it multiplies and adds (no fused
  * multiply-add), vmaxps and vminps for its ?: clamps (each selects its second operand on a NaN, as those forms do),

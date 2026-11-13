@@ -290,7 +290,7 @@ CN_EXPORT cn_status cn_blue_from_permutation(const int64_t *permutation, int32_t
         /* One or two pixels rank in their seeded order, the initial one first. With
          * two, the forced single initial one is half the pattern, which inverts the
          * minority, and the swap below moves a pixel onto itself forever (upstream's
-         * Python loops too; ruling of 2026-10-23). */
+         * Python loops too). */
         for (size_t i = 0; i < count; ++i) out[i] = (int32_t)permutation[i];
         goto done;
     }

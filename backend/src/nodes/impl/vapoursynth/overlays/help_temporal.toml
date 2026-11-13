@@ -1,0 +1,424 @@
+# Help texts: Deinterlace and Denoise nodes.
+
+# ---------------------------------------------------------------- Deinterlace, Common
+
+[method."vsdeinterlace.vfm"]
+help = "Detelecine, step 1 of 2: rebuilds the original film frames by pairing the right fields (the two half-pictures of an interlaced frame). One frame in five is then a duplicate, so Detelecine step 2: drop repeats (VDecimate) comes next and drops it: 30000/1001 fps becomes 24000/1001. Needs the field order (which field was shot first): most DVDs and broadcasts are top field first, DV camcorders bottom first."
+
+[method."vsdeinterlace.vfm".docs]
+tff = "Which field (half-picture) of each frame was shot first. Starts at Top field first (TFF), so it runs on clips without a field flag; a flag on the frames wins. NTSC DVDs and HD broadcasts are usually TFF, DV camcorder video BFF. Example: Top field first (TFF)"
+mode = "How hard to search for a clean match. The default (2-way plus a third match on combed frames) suits most sources. Two way match is the safest against jerky motion but leaves more combed frames; Three way match fourth fifth finds the most clean frames but risks duplicated, jerky motion."
+postprocess = "A deinterlacer run on frames that are still combed after matching (bad edits, orphan fields); clean frames pass untouched. Wire in a same-rate deinterlacer, e.g. this node with Deinterlace, smooth edges (NNEDI3), Double rate off and Use as filter on. Pitfall: a double-rate filter fails, the frame rates must match."
+field = "Which field is kept when the match takes the other field from a neighbouring frame. 2 and 3 follow the field order (the usual choice); 0 keeps the bottom field, 1 the top field, both ignoring the file's flag. Change it only when matching fails. Example: 2"
+mchroma = "On: colour is compared when choosing a match, which is more accurate on most sources. Turn off for sources with colour bleeding or rainbow artefacts, or for a little more speed."
+cthresh = "How visible combing must be for a frame to count as combed (a pixel difference, 8-bit scale). Lower catches fainter combing; 8 to 12 is usual. -1 marks every pixel combed, 255 none. Example: 9"
+mi = "How many combed pixels one block (see Combing block size) must hold before the whole frame counts as combed. Lower flags more frames. From 0 up to the block's pixel count, which disables detection. Example: 80"
+chroma = "On: colour planes count in the combed-frame decision. Off is often more reliable, unless the source has combing only in colour; turn off for sources with rainbow artefacts."
+block = "Width and height in pixels of the window in which Combed pixels per block must be found for a combed frame. A power of 2 from 4 to 512; one number sets both. Example: 16, 16"
+y = "First and last row of a band left out of the matching decision, for subtitles or a logo that confuse it. Equal numbers turn the band off. Example: 400, 480 ignores rows 400 to 480."
+scthresh = "Scene-change threshold, as a percentage of the largest possible change in brightness between frames. Matching is more careful around scene changes. 8 to 14 is usual. Example: 12"
+micmatch = "Lets the combing amount (mic) decide between candidate matches. 0 off (modes with a third match then behave like 2-way), 1 only around scene changes, 2 everywhere. Example: 1"
+micout = "On: computes the combing amount for every possible match and writes it to the frame properties, for inspecting or external tools. It does not change the picture. Off is usual."
+clip2 = "A clip the output frames are copied from, while matching is computed on the main clip. The node already does this itself for high-bit-depth input (it matches on an 8-bit copy), so leave it empty unless both versions differ on purpose."
+
+[method."vsdeinterlace.vdecimate"]
+help = "Detelecine, step 2 of 2: runs after Detelecine step 1: field match (VFM) and drops the most duplicate-looking frame in every 5, so 30000/1001 fps becomes 24000/1001. Field order (which field, top or bottom, was shot first) only matters in step 1 and is set there; most DVDs are top field first. Pitfall: on telecined video without step 1 it keeps the combing."
+
+[method."vsdeinterlace.vdecimate".docs]
+cycle = "Group size in frames; one frame is dropped from each group. 5 turns 30000/1001 fps telecined film into 24000/1001; 2 halves the rate. Example: 5"
+chroma = "On: colour is compared when looking for the duplicate frame, as well as brightness. Off is a little faster and helps when colour noise hides the duplicate."
+dupthresh = "How small the change from the previous frame must be (percent of the largest possible change in one block) for a frame to count as a duplicate. Raise it for noisy sources whose duplicates are missed. Example: 1.1"
+scthresh = "Scene-change threshold as a percentage of the largest possible brightness change; a frame above it is never treated as a duplicate. 10 to 15 is usual. Example: 15"
+block = "Width and height of the blocks compared between frames. Larger blocks ignore noise better but miss small movements. A power of 2 from 4 to 512; one number sets both. Example: 16, 16"
+clip2 = "A clip the output frames are taken from, while duplicates are found on the main clip. The node already does this for float or above-16-bit input, so leave it empty unless both versions differ on purpose."
+ovr = "Path to a text file that overrides which frames are dropped. Frame numbers are those before decimation; lines starting with # are ignored. A line `314 -` drops frame 314; `1001,5403 +++-` drops every fourth frame from 1001 to 5403. Example: C:\\video\\decimate.txt"
+dryrun = "On: drops nothing and writes per-frame properties instead (VDecimateDrop is 1 where a frame would go), to check the decision before committing. The frame rate stays unchanged."
+
+[method."vsaa.NNEDI3.deinterlace"]
+help = "Deinterlaces with a small neural network that redraws each field's missing lines: smooth edges, no motion search, fast. With Double rate on (the start value) every field becomes a frame, so 25i gives 50 fps; off keeps 25. For quality pick the QTempGaussMC method, for speed Bwdif. Pitfall: the clip needs a field-order flag (from the file, or Set field order (SetFieldBased) in Clip Properties: 2 top first, 1 bottom)."
+
+[method."vsaa.NNEDI3.deinterlace".docs]
+pscrn = "Prescreener: decides which pixels go through the neural network; the rest use plain cubic interpolation. 0 sends every pixel (very slow), 1 is the old prescreener, 2 to 4 the newer one at levels 0 to 2. Example: 4"
+tff = "Which field (half-picture) was shot first: Yes top first (most DVDs and HD broadcasts), No bottom first (DV camcorders). Default reads the clip's flag. The flag must exist even when this is set; add it with Set field order (SetFieldBased) in Clip Properties. Example: Yes"
+double_rate = "On: every field becomes a frame, doubling the frame rate (25i to 50 fps) and keeping all motion. Off: one frame per input frame, keeping the rate; half the motion is lost."
+nsize = "Size of the area around each pixel the network looks at. 0 is 8x6, 1 16x6, 2 32x6, 3 48x6, 4 8x4, 5 16x4, 6 32x4; wider areas follow long edges better. Example: 0"
+nns = "Network size: 0 to 4 for 16, 32, 64, 128 or 256 neurons. Larger is slower and slightly cleaner. Example: 4"
+qual = "1 or 2: how many differently trained networks are averaged. 2 is a little cleaner and slower. Example: 2"
+etype = "Which trained weights are used: 0 minimises absolute error, 1 squared error. The difference is small. Example: 0"
+gpu = "On: uses the Vulkan version (any Vulkan graphics card), which needs the separate nnedi3vk plugin. Off: the CPU version."
+transpose_first = "Has no effect when deinterlacing; it changes the processing order only for anti-aliasing and supersampling."
+scaler = "Has no effect when deinterlacing; it is used only when this class upscales (supersampling)."
+noshift = "Has no effect when deinterlacing; it is used only when this class upscales (supersampling)."
+kwargs = "Extra settings passed straight to the znedi3 plugin, as a Python dict of name and value. Example: {'planes': [0]}"
+
+# ---------------------------------------------------------------- Deinterlace, others
+
+[method."bwdif.Bwdif"]
+help = "Fast motion-adaptive deinterlacer: keeps still areas from both fields and interpolates moving ones. Rate and first field 2 or 3 doubles the frame rate (25i to 50 fps); 0 or 1 keeps it. Pick it for speed; the NNEDI3 method has smoother edges, the QTempGaussMC one the best quality. The field order is set through Rate and first field, not read from the file."
+
+[method."bwdif.Bwdif".docs]
+field = "Output rate and field order: 0 same rate, bottom field first; 1 same rate, top field first; 2 double rate, bottom field first; 3 (the start value) double rate, top field first. Most DVDs and HD broadcasts are top field first. Example: 3"
+opt = "CPU instruction set: empty or 0 detects it, 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Leave empty unless testing. Example: 0"
+edeint = "A clip used for the interpolated lines instead of Bwdif's own cubic interpolation, for example Deinterlace, smooth edges (NNEDI3) output with the same Double rate choice. Same size and format; twice the frames for values 2 or 3."
+
+[method."std.SeparateFields"]
+help = "Splits every interlaced frame into its two fields (half-height pictures), doubling the frame count. Use it to check the field order: with the right Field order, stepping through shows smooth motion; with the wrong one motion jerks back and forth. Weave fields into frames (weave) puts them back together."
+
+[method."std.SeparateFields".docs]
+tff = "Field order to use when frames carry no field-order flag: 1 top field first, 0 bottom field first. A flag from the file wins. Example: 1"
+modify_duration = "1 (or empty): the frame rate doubles and frame durations halve, matching the doubled frame count. 0: the rate stays and the clip plays twice as long. Example: 1"
+
+[method."std.DoubleWeave"]
+help = "Weaves a clip of separated fields back into frames, pairing each field with the next one; the frame count stays the same, so every second frame is a real frame. For a plain reweave, Weave fields into frames (weave) is simpler."
+
+[method."std.DoubleWeave".docs]
+tff = "Field order when the fields carry no field flag: 1 top field first, 0 bottom field first. A field flag from Split into fields (SeparateFields) wins. Example: 1"
+
+[method."vsdeinterlace.QTempGaussMC.deinterlace"]
+help = "QTGMC: the highest-quality deinterlacer here, using motion search to rebuild and stabilise lines; slow. Returns double the frame rate (25i to 50 fps) unless Stage settings sets `{'motion_blur_fps_divisor': 2}`. Pitfall: the clip must carry a field-order flag, set with Set field order (SetFieldBased) in Clip Properties if the file has none."
+
+[method."vsdeinterlace.QTempGaussMC.deinterlace".docs]
+tff = "Which field was shot first: TFF for most DVDs and HD broadcasts, BFF for DV camcorders. As the video says reads the clip's flag. The flag must exist even when this is set; add it with Set field order (SetFieldBased) in Clip Properties. Example: Top field first (TFF)"
+kwargs = "Settings of QTGMC's stages as a Python dict; each name is the stage plus the setting (prefilter, analyze, denoise, basic, source_match, lossless, sharpen, back_blend, sharpen_limit, final, motion_blur). Example: {'motion_blur_fps_divisor': 2} keeps the original frame rate."
+
+[method."vsdeinterlace.QTempGaussMC.bob"]
+help = "QTGMC as a bob deinterlacer: every field becomes a frame, always doubling the frame rate (25i to 50 fps), and a frame-rate divisor in Stage settings is ignored. Highest quality here and slow. Pick Deinterlace, best and slow (QTempGaussMC) to keep the original rate. Needs a field-order flag on the clip."
+
+[method."vsdeinterlace.QTempGaussMC.bob".docs]
+tff = "Which field was shot first: TFF for most DVDs and HD broadcasts, BFF for DV camcorders. As the video says reads the clip's flag. The flag must exist even when this is set; add it with Set field order (SetFieldBased) in Clip Properties. Example: Top field first (TFF)"
+kwargs = "Settings of QTGMC's stages as a Python dict; each name is the stage plus the setting, e.g. sharpen_strength or denoise_tr. Example: {'prefilter_tr': 1}"
+
+[method."vsdeinterlace.QTempGaussMC.repair"]
+help = "QTGMC repair for video that was already deinterlaced badly (jaggies, shimmer) but is still flagged or set as interlaced: cleans it with motion search at the same frame rate. Slow. Needs a field order (TFF or BFF) even though the frames are whole."
+
+[method."vsdeinterlace.QTempGaussMC.repair".docs]
+tff = "Field order the damage follows. As the video says reads the file's flag and stops with an error if it is missing or progressive, so pick Top field first (TFF) or Bottom field first (BFF) for progressive files. Example: Top field first (TFF)"
+kwargs = "Settings of QTGMC's stages as a Python dict, each name being stage plus setting. Example: {'basic_mask_args': {'ml': 12}}, the documented recipe for shimmering input."
+
+[method."vsdeinterlace.QTempGaussMC.deshimmer"]
+help = "QTGMC run on progressive video to calm shimmering and flickering fine detail, at the same frame rate. No field order needed. Slow, like the other QTGMC methods."
+
+[method."vsdeinterlace.QTempGaussMC.deshimmer".docs]
+kwargs = "Settings of QTGMC's stages as a Python dict, each name being stage plus setting. Example: {'denoise_tr': 1}"
+
+[method."vsdeinterlace.sivtc"]
+help = "Simplest detelecine in one step: weaves the fields and keeps 4 of every 5 frames by a fixed pattern, 30000/1001 to 24000/1001 fps. Unlike Detelecine step 1: field match (VFM) plus Detelecine step 2: drop repeats (VDecimate) it does not adapt, so the pattern must be found by hand and the clip split where it changes. Needs the field order."
+
+[method."vsdeinterlace.sivtc".docs]
+pattern = "Which of the 5 possible pulldown phases the clip uses, 0 to 4. Step through the source: the right value gives clean frames, a wrong one leaves combing. Example: 2"
+tff = "Which field was shot first. As the video says reads the file's flag and stops with an error if it is missing or progressive. TFF for most NTSC DVDs, BFF for DV. Example: Top field first (TFF)"
+ivtc_cycle = "The pulldown scheme: Cycle 10 standard 2:3 pulldown done on fields (the usual case), Cycle 08 2:3:3:2 pulldown, Cycle 05 2:3 pulldown done on whole frames."
+
+[method."vsdeinterlace.jivtc"]
+help = "Detelecine for the hard case where a normal one, or one followed by a bob deinterlacer, still leaves a colour blend on every fourth frame. Input must be 30000/1001 fps interlaced; the pattern is set by hand. Output 24000/1001 fps. Use Detelecine step 1: field match (VFM) plus Detelecine step 2: drop repeats (VDecimate) first; this is a fallback."
+
+[method."vsdeinterlace.jivtc".docs]
+postprocess = "The filter run after the second decimation to repair what is left: a deblender (default Repair blended frames (deblend)) or a bob deinterlacer. Wire in a filter."
+pattern = "Which of the 5 possible pulldown phases the clip uses, 0 to 4; the right value gives clean frames, a wrong one combing. Example: 2"
+tff = "Which field was shot first. As the video says reads the file's flag and stops with an error if it is missing or progressive. TFF for most NTSC DVDs. Example: Top field first (TFF)"
+chroma_only = "On: only the colour planes take the repaired result and brightness keeps the plain detelecine, as recommended. Off also processes brightness."
+postdecimate = "The decimation applied after Repair filter when that filter does not drop frames itself. The start value Cycle 05 fits the default deblend filter."
+ivtc_cycle = "The pulldown scheme of the first decimation: Cycle 10 standard 2:3 pulldown on fields (the usual case), Cycle 08 2:3:3:2, Cycle 05 2:3 on whole frames."
+final_ivtc_cycle = "The scheme of the final decimation that picks between the plain and the post-processed frames. The start value Cycle 08 is the designed one; change it only with Pulldown scheme."
+
+[method."vsdeinterlace.vinverse"]
+help = "Removes leftover combing (thin horizontal stripes) after detelecine or a poor deinterlace by blurring vertically and then sharpening back what the blur took. Light and fast; same frame rate. Example: after Detelecine step 1: field match (VFM) when a few lines still comb."
+
+[method."vsdeinterlace.vinverse".docs]
+contra_str = "How strongly detail lost to the vertical blur is sharpened back. Higher keeps more detail and more leftover combing. Example: 2.7"
+amnt = "Largest change allowed per pixel, 8-bit scale; one number, or two for darkening and brightening. The start value 255 means no limit; an empty box fails in this install. Example: 10"
+scl = "Strength where blur and sharpening point in opposite directions; lower keeps the result closer to the blurred one there. Example: 0.25"
+comb_blur = "The filter that removes the combing; empty uses a vertical blur. Wire in a filter or a clip."
+contra_blur = "The blur used to measure what gets sharpened back; empty uses a small vertical blur. Wire in a filter or a clip."
+
+[method."vsdeinterlace.weave"]
+help = "Joins a clip of separated fields (from Split into fields (SeparateFields)) back into full frames, halving the frame count. Same field order as when they were split."
+
+[method."vsdeinterlace.weave".docs]
+tff = "Which field comes first. Default reads the field flag that Split into fields (SeparateFields) wrote, and stops with an error without it. Top or True: top first; Bottom or False: bottom first. Example: Top"
+
+[method."vsdeinterlace.reweave"]
+help = "Interleaves two clips and weaves the result into frames, each frame made of one picture from each clip. A building block for scripts that process fields separately."
+
+[method."vsdeinterlace.reweave".docs]
+clipb = "The clip holding the second field of each frame. Same size, format and frame count as the main clip."
+tff = "Which field comes first. Default reads the field flag; without it the method stops with an error. Top or True: top first. Example: Top"
+
+[method."vsdeinterlace.reinterlace"]
+help = "Turns progressive frames back into interlaced ones: keeps one field from each frame and weaves pairs, halving the frame count (50p to 25i). Example: matching a progressive edit to an interlaced master. Pitfall: the field order must be set to TFF or BFF."
+
+[method."vsdeinterlace.reinterlace".docs]
+tff = "The field order of the result: Top field first (TFF), the start value and usual for HD broadcast, or Bottom field first (BFF). Example: Top field first (TFF)"
+
+[method."vsdeinterlace.deblend"]
+help = "Repairs blended frames that remain after field matching: two blends in every five frames, typical of film converted badly to video. Run it on the source before field matching; with Field-matched clip wired, it puts repaired frames into the matched clip. Follow with Detelecine step 2: drop repeats (VDecimate)."
+
+[method."vsdeinterlace.deblend".docs]
+fieldmatched = "The same source after Detelecine step 1: field match (VFM) with Field 3 and often a low Combing threshold. With it, deblended frames replace combed ones by pattern; without it, the output is the deblended clip alone."
+decomber = "A filter run on the deblended frames to remove leftover combing before they are used; empty means Remove leftover combing (vinverse). Wire in a filter."
+
+[method."vsdeinterlace.deblend_bob"]
+help = "Stronger version of Repair blended frames (deblend) that works on a bob-deinterlaced clip (every field a frame). Wire the bobbed source as Clip and the field-matched clip into Field-matched clip."
+
+[method."vsdeinterlace.deblend_bob".docs]
+fieldmatched = "The source after Detelecine step 1: field match (VFM) with Field 3 and often a low Combing threshold; deblended frames replace its combed ones. Empty returns the deblended clip alone."
+
+[method."vsdeinterlace.deblend_fix_kf"]
+help = "Fixes scene changes after the deblend or deblend_bob methods, where a repaired frame from the wrong scene can appear. Uses the scene-change marks Detelecine step 1: field match (VFM) wrote."
+
+[method."vsdeinterlace.deblend_fix_kf".docs]
+fieldmatched = "The clip from Detelecine step 1: field match (VFM) that was used for deblending; its scene-change and combed marks decide which frames to fix."
+
+[method."vsdeinterlace.get_field_difference"]
+help = "Measures how different the two fields of each frame are and writes it as the frame property FieldDifference. Large values point to combed or interlaced frames; the picture is unchanged."
+
+[method."vsdeinterlace.get_field_difference".docs]
+tff = "Which field was shot first. As the video says reads the file's flag and stops with an error if it is missing or progressive. Example: Top field first (TFF)"
+
+[method."vsdeinterlace.dmetrics"]
+help = "Writes field-matching measurements (as the decomb package's Telecide computes them) to the frame properties for the Wobbly detelecine editor. The picture is unchanged."
+
+[method."vsdeinterlace.dmetrics".docs]
+chroma = "On: combing in the colour planes counts in the measurement."
+clip2 = "A clip the measurements are copied to, while they are computed on the main clip. The node already measures on an 8-bit 4:2:0 copy for other formats, so leave it empty."
+tff = "Which field was shot first. As the video says reads the file's flag and stops with an error if it is missing or progressive. Example: Top field first (TFF)"
+nt = "Noise tolerance: pixel differences up to this are ignored when measuring combing. Higher for noisy sources. Example: 10"
+y = "First and last row of a band left out of the measurement, for subtitles; equal numbers turn it off. Example: 400, 480"
+
+[method."vsdeinterlace.FixInterlacedFades"]
+help = "Removes combing from fades to or from a solid colour (often black) that were added after telecine, so detelecine could not fix them. Run after detelecine, on 32-bit float video only. Frames without such a fade may be damaged, so apply it only to the fade frames."
+
+[method."vsdeinterlace.FixInterlacedFades".choices]
+AVERAGE = "Sets both fields to their average distance from the fade colour. The usual choice."
+MATCH = "Matches both fields to the one closer to the fade colour."
+
+[method."vsdeinterlace.FixInterlacedFades".docs]
+color = "The colour the fade starts or ends at, per plane in float values (0 is black for brightness, 1 white). The start value 0 means black.\n\nExample: `1, 0, 0`"
+
+[method."vsdeinterlace.InterpolateOverlay"]
+help = "For telecined film with 60i or 30p text (credits, titles) laid on top: interpolates the text area by motion to 120 fps and decimates to 24 fps, so both film and text look smooth. Input is a bob-deinterlaced clip; the pulldown pattern is set by hand. Slow (motion search)."
+
+[method."vsdeinterlace.InterpolateOverlay".choices]
+IVTC_TXT60 = "60i text over telecined (24t) film. The usual case."
+DEC_TXT60 = "60i text over film marked 24d in vs-jetpack (decimated film)."
+IVTC_TXT30 = "30p text over telecined film."
+
+[method."vsdeinterlace.InterpolateOverlay".docs]
+pattern = "First frame of a clean, combed, combed, clean, clean run in the source, which gives the pulldown phase. Example: 2"
+vectors = "Motion vectors from an earlier MVTools run, to reuse them. Leave empty; the node cannot build them."
+preset = "MVTools motion-search settings. Leave empty for the designed HQ_COHERENCE preset."
+blksize = "Block size in pixels for the motion search. Larger is faster and steadier on noise, less precise. Example: 8"
+overlap = "Divides the block size to give the overlap between blocks; 2 means half a block. More overlap, fewer block edges, slower. Example: 2"
+refine = "How many times the motion search is repeated with half the block size, for finer vectors. Example: 1"
+thsad_recalc = "During refinement, only blocks matching worse than this (difference sum scaled to an 8x8 block) are searched again. Empty uses the motion tool's default. Example: 200"
+export_globals = "Leave off: on returns the motion data together with the clip, which the node cannot pass on."
+
+# ---------------------------------------------------------------- Denoise, Common
+
+[method."vsdenoise.bm3d"]
+help = "Strong, detail-keeping denoiser that groups similar blocks and filters them together. Needs an NVIDIA GPU; a clip that is not 32-bit float goes to 32-bit float and back by itself. Without NVIDIA only Backend Old runs (slow, YUV 4:4:4 or RGB). Example: Strength 1 on grainy DVD footage. Pick Denoise, gentle (NL-Means) for a lighter touch."
+
+[method."vsdenoise.bm3d".docs]
+kwargs = "Extra settings passed straight to the BM3D plugin, as a Python dict; meant for testing. Example: {'block_step': 4}"
+sigma = "Denoising strength; one value for all planes, or up to three for Y, U and V. 0.5 is light, 1 to 3 handles clear grain; higher smears detail. 0 skips a plane. Example: 1, 0.5"
+tr = "Temporal radius: how many frames before and after each frame are searched too. 1 or 2 is usual; higher is steadier and slower. Empty uses the profile's value. Two values set the basic and final passes. Example: 1"
+refine = "How many final passes follow the first estimate. 0 uses the first estimate only (faster, rougher); 1 is the usual; more is slower and smoother. Example: 1"
+profile = "Preset of block and search sizes: Fast (quickest), Low complexity, Normal, High (most precise, slowest), Very noisy (only with Backend Old)."
+pre = "A pre-cleaned copy of the clip used only to find similar blocks, which helps on heavy noise; same size and format as the clip. Use Search clip or Reference clip, not both."
+ref = "A clip used in place of BM3D's own first estimate, for example another denoiser's output; the final pass then refines it. Same size and format. Use Search clip or Reference clip, not both."
+backend = "Which BM3D plugin runs. Auto takes the first installed one, CUDA ZIP (NVIDIA), even on a PC without an NVIDIA card, where it fails. Without NVIDIA pick Old (YUV 4:4:4 or RGB, any depth). All but Old work in 32-bit float: a clip in another format goes to it and back by itself."
+basic_args = "Extra settings for the first estimate, as a Python dict passed to the plugin. Example: {'block_step': 4}"
+final_args = "Extra settings for the final pass, as a Python dict passed to the plugin. Example: {'block_step': 4}"
+
+[method."vsdenoise.nl_means"]
+help = "NL-Means: averages each pixel with similar-looking patches nearby and in neighbouring frames. Smooth and fairly gentle; good on fine grain and chroma noise. Backend Auto uses the NVIDIA GPU; on a PC without one pick ISPC (CPU, slower). Example: Strength 0.6 on a webcam clip. Pick Denoise, strong (BM3D) for heavier noise."
+
+[method."vsdenoise.nl_means".docs]
+h = "Denoising strength. About 0.5 is light, 1.2 (the start value) medium; higher removes more and smears texture. For YUV, two values set brightness and colour. Example: 0.8, 1.2"
+tr = "Temporal radius: frames before and after each frame used too. 0 uses the frame alone, 1 three frames, 2 five. Higher denoises more and is slower. Example: 1"
+a = "Search radius in pixels: similar patches are looked for within this distance. 2 searches 5x5 pixels; larger finds more matches and is much slower. Example: 2"
+s = "Patch radius: the size of the patches compared, 4 meaning 9x9 pixels. Little effect on speed; smaller suits fine noise. Example: 4"
+backend = "Which plugin runs. Auto takes CUDA (NVIDIA, fast) and fails on a PC without an NVIDIA card: pick ISPC (the CPU) there. GPU is OpenCL (plugin not installed by default)."
+ref = "A clip used to judge which patches are similar, while the main clip is averaged; often a lightly denoised copy, which helps on heavy noise. Same size and format."
+wmode = "How strongly dissimilar patches still count. Welsch (classic) lets them count a little; the Bisquare modes drop them sooner, keeping more detail: LR least, THR at a threshold, HR most."
+kwargs = "Extra settings passed straight to the plugin, as a Python dict. Example: {'wref': 1.0}"
+
+[method."vsdenoise.mc_degrain"]
+help = "Temporal denoiser with motion compensation: finds where each block moved in neighbouring frames and averages them, removing moving grain while keeping detail. CPU only, moderately slow. Example: Temporal radius 2, Strength 300 on film grain. Pitfall: too high a threshold ghosts on fast motion."
+
+[method."vsdenoise.mc_degrain".docs]
+prefilter = "A filter run on a copy of the clip used only for the motion search; denoising helps it find motion in grain. Wire in this node with Quick prefilter for motion search (Prefilter) as method and Use as filter on. Empty uses a brightness-boosted copy."
+preset = "Motion-search settings: HQ SAD (start value) compares blocks by plain difference; HQ coherence also favours smooth, consistent motion, steadier on noisy sources."
+tr = "Temporal radius: how many frames before and after are averaged. 1 is light, 2 or 3 strong; each step is slower. Example: 2"
+thsad = "Strength: blocks that differ from the current frame by more than this are not used. 150 to 300 is gentle, 400 the start value; higher removes more grain and risks ghosting. Two values set brightness and colour. Example: 300"
+vectors = "Motion vectors from an earlier MVTools run, to reuse them. Leave empty; the node cannot build them."
+mfilter = "A filter or clip used where no matching block was found (new objects, fast motion), instead of the untouched source. Wire in, e.g., a spatial denoiser."
+delta = "Use only these frame distances instead of all up to the temporal radius. Example: 1, 2"
+blksize = "Block size in pixels for the motion search. Larger is faster and steadier on noise, less precise; 8 or 16 is usual. Example: 16"
+overlap_div = "Divides the block size to give the overlap between blocks; 2 means half a block. More overlap reduces block edges and is slower. Example: 2"
+refine = "How many times the motion search repeats with half the block size, for finer motion. Example: 1"
+thsad2 = "Threshold for the farthest frames; frames in between blend from Strength to this. Lower than Strength weakens far frames. Empty uses Strength. Example: 150"
+thsad_recalc = "During refinement, only blocks matching worse than this are searched again. Empty uses half of Strength. Example: 200"
+limit = "Largest change allowed per pixel, 8-bit scale; one value or brightness, colour. Empty means no limit. Example: 4"
+thscd = "Scene-change detection: first a block difference above which a block counts as changed, then the percentage of changed blocks that marks a new scene. Across a scene change frames are not averaged. Example: 400, 50"
+export_globals = "Leave off: on returns the motion data together with the clip, which the node cannot pass on."
+
+[method."vsdenoise.DFTTest.denoise"]
+help = "DFTTest: removes noise in the frequency domain, block by block, optionally across frames. Smooth and good on grain; can soften fine detail. Backend Auto uses the NVIDIA GPU; on a PC without one pick CPU (slower). Example: Strength 4 on light grain. Needs progressive video."
+
+[method."vsdenoise.DFTTest.denoise".docs]
+backend = "Which plugin runs. Auto takes NVRTC (NVIDIA, fast) and fails on a PC without an NVIDIA card: pick CPU there. cuFFT is also NVIDIA, HIPRTC and hipFFT AMD, GCC the CPU."
+sloc = "Strength, typed as Python: one number for all frequencies, or frequency: strength pairs (0 coarse, 1 finest detail). Empty uses 8. About 4 is light, 8 medium, 16 strong. Example: {0.0: 4, 0.5: 8, 1.0: 16} cleans fine grain harder than shapes."
+tr = "Temporal radius: frames before and after each frame used too. Empty or 0 uses the frame alone; 1 uses three frames, steadier and slower. Example: 1"
+clip = "Leave empty; the Clip input above is the clip processed."
+kwargs = "Extra settings passed straight to the plugin, as a Python dict, e.g. block size. Example: {'sbsize': 24, 'sosize': 18}"
+clip_or_sloc = "The clip to denoise; the node fills it from the Clip input."
+ftype = "Filter type: 0 Wiener (start value, adaptive), 1 hard threshold, 2 fixed multiplier, 3 multiplier inside a power range, 4 smooth range multiplier. Empty uses 0. Example: 0"
+swin = "Window shape used when splitting each frame into overlapping blocks. Default (Hanning) suits most uses; the others trade sharpness of the frequency split against leakage."
+twin = "Window shape used across frames when Temporal radius is above 0. Default (Hanning) suits most uses."
+
+[method."vsdenoise.Prefilter"]
+help = "A quick denoise meant to help motion search, not as the final result: the chosen filter cleans a copy so Denoise moving grain (mc_degrain) finds motion despite grain. With Use as filter on, wire it into a Prefilter input; on its own it outputs the filtered clip. Example: DFTTEST into Denoise moving grain (mc_degrain)."
+
+[method."vsdenoise.Prefilter".choices]
+NONE = "No filtering; the clip passes unchanged."
+MINBLUR = "Light blur that takes the smaller of a median and a gaussian change. Fast, runs on any PC: the choice without an NVIDIA card."
+GAUSS = "Gaussian blur, sigma 1.5. Fast, soft."
+FLUXSMOOTHST = "Smooths pixels that flicker between frames and neighbours. Fast, light."
+DFTTEST = "DFTTest denoise, keeping the original in the darkest areas. The start value; needs an NVIDIA GPU (the backend is picked inside), so pick MINBLUR without one."
+NLMEANS = "NL-Means at strength 7: very strong, fine for motion search only. Needs an NVIDIA GPU (Auto backend)."
+BM3D = "BM3D at strength 10, one frame each side. Strong; needs an NVIDIA GPU and 32-bit float input."
+BILATERAL = "Edge-preserving blur."
+
+[method."vsdenoise.Prefilter".docs]
+full_range = "On: the result is also stretched to full range with dark areas boosted (slope 2), which helps motion search in dark scenes. A number sets the boost instead. Example: 2.0"
+kwargs = "Settings for the chosen filter, as a Python dict, e.g. sigma for Gauss or sloc for DFTTEST. Example: {'sigma': 1.0}"
+
+# ---------------------------------------------------------------- Denoise, others
+
+[method."vsdenoise.ccd"]
+help = "Camcorder Color Denoise: removes colour noise and blotches only, leaving brightness alone. Made for VHS and low-quality DVD captures. CPU, fairly fast. Example: Strength `6` on a VHS capture with colour speckle."
+
+[method."vsdenoise.ccd".docs]
+planes = "Which planes are processed. Default: the colour planes (U and V) for YUV input, all planes for RGB."
+thr = "Strength: how close in colour neighbours must be to be averaged. Higher removes more colour noise and can bleed colours. Example: 6"
+tr = "Temporal radius: frames before and after also used. 0 is spatial only; 1 denoises more. Example: 1"
+ref_points = "Which reference points of the 25x25 sampling grid are used, as Python (low, medium, high). The start value uses low and medium. Example: (True, True, False)"
+scale = "Multiplies the 25x25 sampling grid size; 2 gives 50x50. Empty leaves it to the plugin. Example: 2"
+ref = "A clip used for the colour comparisons instead of the main clip; same size, may differ in chroma subsampling."
+pscale = "Corrects colour ringing created when the result is scaled back to the clip's format. 0 is off. Example: 0.5"
+chroma_upscaler = "Scaler used to bring the colour planes to full size before processing. Default is Lanczos."
+chroma_downscaler = "Scaler used to bring the result back to the clip's colour size. Example: Catrom"
+
+[method."vsdenoise.wnnm"]
+help = "WNNM: block-matching denoiser like BM3D with fewer block and ringing artefacts, but much slower (CPU only). Needs 32-bit float input. Pick it for a short, difficult clip where BM3D leaves artefacts."
+
+[method."vsdenoise.wnnm".docs]
+ref = "A clip used to find similar blocks, often a lightly denoised copy, while the main clip is filtered. Same size and format."
+sigma = "Denoising strength; one value or one per plane. Higher removes more noise and smooths detail. Example: 3"
+tr = "Temporal radius: frames before and after also searched, 1 to 16. Empty uses the frame alone. Example: 1"
+block_size = "Size of the square blocks compared, 1 to 64. Larger keeps texture, smaller adapts to detail. Example: 8"
+block_step = "Pixels between processed blocks, 1 to Block size. Smaller is slower with fewer artefacts. Example: 4"
+group_size = "Most similar blocks grouped together, 1 to 256. Larger smooths more and is slower. Example: 8"
+bm_range = "Search distance in pixels for similar blocks. Larger finds more and is slower. Example: 7"
+ps_num = "Matched spots reused to predict searches in the next frame, 1 to Group size. Example: 2"
+ps_range = "Search distance around predicted spots in other frames. Example: 4"
+residual = "Yes: blocks are centred (their average removed) before filtering. Default is No."
+adaptive_aggregation = "Yes (default): overlapping block results are weighted by their quality when combined."
+refine = "Extra passes, each on the previous result. 0 is one pass; each pass adds full time. Example: 1"
+merge_factor = "How much of the difference between the source and the last pass is added back before the next pass. Example: 0.1"
+
+[method."vsdenoise.dpir"]
+help = "DPIR: a neural network that removes compression blocking (DEBLOCK) or noise (DENOISE), with strong results on low-bitrate video. Runs through vs-mlrt; slow, and much faster on a GPU. Works in RGB (YUV is converted). Example: DEBLOCK on an over-compressed web video."
+
+[method."vsdenoise.dpir".choices]
+DEBLOCK = "Removes block artefacts and compression smearing."
+DENOISE = "Removes noise and grain."
+
+[method."vsdenoise.dpir".docs]
+strength = "Strength on an 8-bit scale; higher = smoother. Starts at 10. A grey clip whose pixels give the strength per pixel goes in Strength (other values).\n\nExample: `15`"
+zones = "Different strengths for frame ranges, as Python: a list of (range, strength). None as strength leaves that range untouched. Example: [((100, 200), 20)]"
+kwargs = "Extra settings for the network runner, as a Python dict."
+
+[method."vsdenoise.deblock_qed"]
+help = "Removes the 8x8 block edges of MPEG-2 or similar compression, adapting to how blocky each frame is instead of smoothing uniformly. Example: a blocky DVD or broadcast capture."
+
+[method."vsdenoise.deblock_qed".docs]
+quant = "Strength on block edges, then inside blocks. Higher smooths more. Example: 24, 26"
+alpha = "Sensitivity and strength modifier, block edges then insides. Example: 1, 1"
+beta = "How easily blocking is detected, block edges then insides. Higher finds more. Example: 2, 2"
+chroma_mode = "Colour planes: 0 the adaptive method, 1 the normal deblock, 2 the strong deblock. Example: 0"
+interlaced = "On for a clip of separated fields (from Split into fields (SeparateFields)), so each field is deblocked on its own."
+
+[method."vsdenoise.decrease_size"]
+help = "YUV only. Blurs away grain only in very bright areas, where it is hard to see but costs bitrate, keeping edges with a mask. Meant to lower encoding size, not to clean the picture. Example: bright sky with fine grain before encoding."
+
+[method."vsdenoise.decrease_size".docs]
+mask = "A detail mask clip (grey, same size) protecting edges from the blur. Empty builds one from edges and local contrast."
+sigmaS = "Spatial size of the blur. Higher blurs wider. Example: 10"
+sigmaR = "How different in brightness pixels may be and still be blurred together. Higher blurs across more detail. Example: 0.009"
+min_in = "Brightness, 0 to 255, where blurring starts to fade in. Low values blur much more detail. Example: 180"
+max_in = "Brightness, 0 to 255, above which the blur is fully applied; must be above Start brightness. Example: 230"
+gamma = "Curve of the fade between Start and Full brightness; 1 is linear, above 1 blurs more of that range. Example: 1.0"
+prefilter = "On: a box blur of the brightness before the bright-area mask is built, so grain does not break it up. A number gives a gaussian blur of that sigma instead."
+show_mask = "On: outputs the brightness mask instead of the result, to check which areas are blurred."
+kwargs = "Extra settings for the blur, as a Python dict."
+
+[method."vsdenoise.mpeg2stinx"]
+help = "Removes the comb-like compression artefacts of hard-telecined MPEG-2 (and to a lesser extent AVC) encodes, by deinterlacing and repairing each field against its neighbours. Needs a progressive clip; not a general denoiser."
+
+[method."vsdenoise.mpeg2stinx".docs]
+bobber = "The deinterlacer used internally, as a Python object. Leave empty for NNEDI3."
+tff = "Which field was shot first. The start value is Top field first (TFF). Example: Bottom field first (BFF)"
+mask = "On: Bwdif's motion detection is combined with the bobber, so still areas keep the original fields."
+radius = "Horizontal and vertical radius of the repair. Example: 2"
+limit = "Limits each change to this many times the difference to the neighbouring frames. Empty means no limit. Example: 1.0"
+
+[method."vsdenoise.frequency_merge"]
+help = "Combines several clips by frequency: the coarse shapes and the fine detail are each mixed from the clips by a chosen average. Example: keep the fine detail of the source and the clean flat areas of a denoised copy."
+
+[method."vsdenoise.frequency_merge".docs]
+mode_high = "How the fine detail of the clips is combined, or the one clip whose detail is kept. Default: a Lehmer mean, an average that leans towards the larger values."
+mode_low = "How the coarse content of the clips is combined, or the one clip whose coarse content is kept. Default: a plain average."
+lowpass = "The blur that splits coarse from fine content in every clip. Wire in a filter."
+
+[method."vsdenoise.prefilter_to_full_range"]
+help = "Stretches brightness to full range and boosts dark areas, so motion search in Denoise moving grain (mc_degrain) treats dark scenes more carefully. A building block for the Prefilter input; the output is not meant to be watched."
+
+[method."vsdenoise.prefilter_to_full_range".docs]
+slope = "How much dark areas are boosted relative to bright ones. 1 is no boost. Example: 2.0"
+smooth = "Width of the transition between the boosted dark range and the rest. Example: 0.0625"
+
+[method."vsdenoise.DFTTest.extract_freq"]
+help = "Returns only what DFTTest would remove (the difference between the clip and its denoised version), for splitting a clip into detail and base."
+
+[method."vsdenoise.DFTTest.extract_freq".docs]
+sloc = "Strength: one number for all frequencies (it must be set; 8 to start, about 4 is light, 16 strong). Frequency: strength pairs go in the Python-value box below, e.g. {0.0: 4, 1.0: 16}. Example: 8"
+tr = "Temporal radius: frames before and after each frame used too. Empty or 0 uses the frame alone. Example: 1"
+backend = "Which DFTTest plugin runs. Auto takes the NVIDIA version (NVRTC) and fails without an NVIDIA card; pick CPU there."
+
+[method."vsdenoise.DFTTest.insert_freq"]
+help = "Takes the fine detail that DFTTest would remove from Detail clip and adds it to the main clip. Example: put the source's grain back onto a filtered clip."
+
+[method."vsdenoise.DFTTest.insert_freq".docs]
+sloc = "Strength: one number for all frequencies (it must be set; 8 to start, about 4 is light, 16 strong). Frequency: strength pairs go in the Python-value box below, e.g. {0.0: 4, 1.0: 16}. Example: 8"
+tr = "Temporal radius: frames before and after each frame used too. Empty or 0 uses the frame alone. Example: 1"
+backend = "Which DFTTest plugin runs. Auto takes the NVIDIA version (NVRTC) and fails without an NVIDIA card; pick CPU there."
+high = "The clip whose fine detail is taken."
+
+[method."vsdenoise.DFTTest.merge_freq"]
+help = "Denoises the main clip with DFTTest and adds back the fine detail from Detail clip, so the coarse content comes from the main clip and the detail from Detail clip."
+
+[method."vsdenoise.DFTTest.merge_freq".docs]
+sloc = "Strength: one number for all frequencies (it must be set; 8 to start, about 4 is light, 16 strong). Frequency: strength pairs go in the Python-value box below, e.g. {0.0: 4, 1.0: 16}. Example: 8"
+tr = "Temporal radius: frames before and after each frame used too. Empty or 0 uses the frame alone. Example: 1"
+backend = "Which DFTTest plugin runs. Auto takes the NVIDIA version (NVRTC) and fails without an NVIDIA card; pick CPU there."
+high = "The clip whose fine detail is kept."
+
+[method."chainner_vs.detelecine"]
+help = "Turns telecined film (29.97 fps video made from 24 fps film by repeating fields) back into the film frames, 30000/1001 to 24000/1001 fps. It runs field matching (VFM), then drops the repeated frame in every 5 (VDecimate). Set the field order: which field (half-picture) was shot first. Example: an NTSC film DVD."
+
+[method."chainner_vs.detelecine".docs]
+tff = "On (the start value): top field first, usual for NTSC DVDs and broadcasts; off: bottom field first (DV camcorders). This replaces the file's own flag. If the result still combs or stutters, try the other order."
+postprocess = "On: frames still combed after matching (bad edits, orphan fields) are deinterlaced with NNEDI3 on the CPU. Off is faster and leaves them combed."
+cycle = "Group size in frames; one frame of each group is dropped. 5 turns 30000/1001 fps into 24000/1001. Example: 5"

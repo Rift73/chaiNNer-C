@@ -113,8 +113,9 @@ export const FileInput = memo(
                 <MenuItem
                     icon={<BsFileEarmarkPlus />}
                     isDisabled={isLocked || isConnected}
-                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-                    onClick={onButtonClick}
+                    onClick={() => {
+                        onButtonClick().catch(log.error);
+                    }}
                 >
                     {t('inputs.file.selectFile', 'Select a file...')}
                 </MenuItem>
@@ -203,8 +204,9 @@ export const FileInput = memo(
                                 size="sm"
                                 textOverflow="ellipsis"
                                 value={filePath ? path.parse(filePath).base : ''}
-                                // eslint-disable-next-line @typescript-eslint/no-misused-promises
-                                onClick={onButtonClick}
+                                onClick={() => {
+                                    onButtonClick().catch(log.error);
+                                }}
                             />
                         </InputGroup>
                     </Tooltip>

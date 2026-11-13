@@ -931,7 +931,7 @@ def test_load_model_starts_the_probe_on_a_gpu_provider_only(
     )
     path = tmp_path / "model.onnx"
     path.write_bytes(stub(8).bytes)
-    (model, _, name) = load_model_module.load_model_and_probe_node(
+    (model, _, name) = load_model_module.load_model_node(
         node_context(provider, tmp_path), path
     )
     assert name == "model"

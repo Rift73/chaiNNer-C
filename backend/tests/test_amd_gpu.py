@@ -684,13 +684,6 @@ def test_windows_child_process_and_counters(monkeypatch: pytest.MonkeyPatch):
         _dedicated_usage(0x7FFF_FFFF_0000_0001)
 
 
-@pytest.fixture
-def server_host(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    # The module parses its command line when imported.
-    monkeypatch.setattr(sys, "argv", ["server_host.py"])
-    return importlib.import_module("server_host")
-
-
 def vram_labels(
     server_host: ModuleType, monkeypatch: pytest.MonkeyPatch, nvidia: int, amd: int
 ) -> list[str]:

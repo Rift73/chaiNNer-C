@@ -1,8 +1,8 @@
-"""The NCNN session's at-exit teardown (U4-light item 2, Consult 8 sweep item 7).
+"""The NCNN session's at-exit teardown.
 
 A process holding PyPI ncnn's Vulkan instance at a normal exit crashed with
-0xC0000005 (a worker started with --close-after-start, Vulkan visible). U4-light
-verified the teardown on the GPU: that worker now exits 0. These tests hold its
+0xC0000005 (a worker started with --close-after-start, Vulkan visible). The teardown
+was verified on the GPU: that worker now exits 0. These tests hold its
 order and its registration without a GPU.
 """
 

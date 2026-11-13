@@ -298,18 +298,30 @@ def test_a_target_the_rename_cannot_replace_fails_before_encoding(tmp_path: Path
     assert path.stat().st_mtime == OLD
 
 
-@pytest.mark.parametrize("released", [True, False])
+def decodes(path: Path) -> bool:
+    """Whether FFmpeg reads path's video stream to its end without an error."""
+    ffmpeg("-i", str(path), "-map", "0:v:0", "-f", "null", "-")
+    return True
+
+
+@pytest.mark.parametrize(("released", "taken"), [(True, 0), (False, 0), (False, 2)])
 @held_files
 def test_a_rename_failing_at_close(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: bool, taken: int
 ):
     # The file is held when the finished video is renamed onto it: a holder that lets
-    # go within the commit's retries gets the new video; one that stays fails the run
-    # naming the path, which keeps the video before, and no temporary file is left.
+    # go within the retries gets the new video; one that stays fails the run naming
+    # the path, which keeps the video before, and the finished video stays beside it,
+    # under a name no other file has.
     path = tmp_path / "out.mkv"
     path.write_bytes(b"the video before")
     os.utime(path, (OLD, OLD))
     others = foreign(tmp_path)
+    occupied = [tmp_path / "out.new.mkv"]
+    occupied += [tmp_path / f"out-{n}.new.mkv" for n in range(2, taken + 1)]
+    for other in occupied[:taken]:
+        other.write_bytes(b"another file")
+        others[other] = b"another file"
 
     class HeldAtCommit:
         def __init__(self, final: str):
@@ -322,13 +334,13 @@ def test_a_rename_failing_at_close(
         def abandon(self):
             self.target.abandon()
 
-        def commit(self) -> bool:
+        def commit_or_keep(self) -> bool:
             handle = hold(path)
             timer = threading.Timer(0.05, KERNEL32.CloseHandle, (handle,))
             if released:
                 timer.start()
             try:
-                return self.target.commit()
+                return self.target.commit_or_keep()
             finally:
                 timer.join() if released else KERNEL32.CloseHandle(handle)
 
@@ -336,10 +348,18 @@ def test_a_rename_failing_at_close(
     if released:
         save(tmp_path, frames(0.1))
         assert path.read_bytes()[:4] == bytes.fromhex("1a45dfa3")  # Matroska
-    else:
-        with pytest.raises(PermissionError) as raised:
-            save(tmp_path, frames(0.1))
-        assert raised.value.filename == str(path)
-        assert path.read_bytes() == b"the video before"
-        assert path.stat().st_mtime == OLD
-    assert contents(tmp_path) == {**others, path: path.read_bytes()}
+        assert contents(tmp_path) == {**others, path: path.read_bytes()}
+        return
+    with pytest.raises(PermissionError) as raised:
+        save(tmp_path, frames(0.1))
+    kept = tmp_path / ("out.new.mkv" if not taken else f"out-{taken + 1}.new.mkv")
+    assert repr(str(path)) in str(raised.value)  # the original error, as before
+    assert str(raised.value).endswith(f" The finished video was kept as {kept}.")
+    assert path.read_bytes() == b"the video before"
+    assert path.stat().st_mtime == OLD
+    assert decodes(kept)
+    assert contents(tmp_path) == {
+        **others,
+        path: b"the video before",
+        kept: kept.read_bytes(),
+    }

@@ -1,4 +1,4 @@
-"""PyTorch's CUDA allocator settings for the worker (2026-10-24). PyTorch reads them when
+"""PyTorch's CUDA allocator settings for the worker. PyTorch reads them when
 it first allocates, so the worker (server.py) calls apply() at its start, before any
 module imports torch; its child processes inherit them.
 

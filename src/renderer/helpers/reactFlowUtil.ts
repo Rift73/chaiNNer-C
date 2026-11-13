@@ -1,7 +1,7 @@
 import { Edge, Node, XYPosition } from 'reactflow';
 import { EdgeData, InputData, Mutable, NodeData } from '../../common/common-types';
 import { SchemaMap } from '../../common/SchemaMap';
-import { createUniqueId, deepCopy } from '../../common/util';
+import { createUniqueId } from '../../common/util';
 
 export interface NodeProto {
     id?: string;
@@ -35,6 +35,12 @@ export const createNode = (
     return newNode;
 };
 
+/** The middle of a rectangle, such as the editor's on the screen. */
+export const getCenter = ({ x, y, width, height }: Readonly<DOMRect>): XYPosition => ({
+    x: x + width / 2,
+    y: y + height / 2,
+});
+
 export const snapToGrid = (
     position: Readonly<XYPosition>,
     snapToGridAmount: number
@@ -48,7 +54,6 @@ export const isSnappedToGrid = (
     snapToGridAmount: number
 ): boolean => position.x % snapToGridAmount === 0 && position.y % snapToGridAmount === 0;
 
-export const copyNode = (node: Readonly<Node<NodeData>>): Node<Mutable<NodeData>> => deepCopy(node);
 export const withNewData = <K extends keyof NodeData>(
     node: Node<NodeData>,
     key: K,
@@ -58,9 +63,6 @@ export const withNewData = <K extends keyof NodeData>(
         return node;
     }
     return { ...node, data: { ...node.data, [key]: value } };
-};
-export const withNewDataMap = (node: Node<NodeData>, update: Partial<NodeData>): Node<NodeData> => {
-    return { ...node, data: { ...node.data, ...update } };
 };
 
 export const setSelected = <T extends { selected?: boolean }>(

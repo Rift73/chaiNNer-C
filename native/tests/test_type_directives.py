@@ -1,4 +1,4 @@
-"""Every type-check directive native/tests carries, recorded (Consults 13-15, D-34).
+"""Every type-check directive native/tests carries, recorded.
 
 pyright checks native/tests with no per-rule downgrade. Where a test deliberately
 breaks a declared contract, or a stub or pyright cannot express what runs, the line
@@ -32,9 +32,9 @@ OVERLOAD = "reportCallIssue, reportArgumentType"
 
 INVENTORY = Counter(
     {
-        # Consult 14 D-29: mangled private reads.
+        # Mangled private reads.
         ("test_execution_cleanup.py", "reportAttributeAccessIssue", MANGLING): 1,
-        # D-26 and D-33: protocol fixtures that break typeshed's declarations.
+        # Protocol fixtures that break typeshed's declarations.
         ("test_utility_scalar.py", "reportAssignmentType", UNHASHABLE): 1,
         (
             "test_utility_scalar.py",
@@ -57,7 +57,6 @@ INVENTORY = Counter(
             "deliberate contract violation: float.__mod__ returns a Fraction, a legal runtime result",
         ): 1,
         ("test_utility_scalar.py", OVERRIDE, CLASS_PROTOCOL): 1,
-        # D-32 and D-33.
         (
             "test_utility_random.py",
             "reportArgumentType",
@@ -75,7 +74,7 @@ INVENTORY = Counter(
             OVERRIDE,
             "deliberate contract violation: int.__add__ returns None to select the single-bound range",
         ): 1,
-        # Consult 15 A: third-party stub gaps.
+        # Third-party stub gaps.
         (
             "test_palette_complete.py",
             OVERLOAD,
@@ -91,7 +90,7 @@ INVENTORY = Counter(
             "reportArgumentType",
             "Pillow's stub gives ImagingCore no __iter__, but the mask is a sequence of pixel values; tobytes() packs mode-1 bits and _new() is private API",
         ): 1,
-        # Consult 15 B3 and C: deliberate calls outside upstream's signatures.
+        # Deliberate calls outside upstream's signatures.
         (
             "test_geometry.py",
             "reportArgumentType",
@@ -113,7 +112,7 @@ INVENTORY = Counter(
             "deliberate contract violation: keys() returns a list to pin iteration order",
         ): 1,
         ("test_utility_text.py", OVERRIDE, CLASS_PROTOCOL): 1,
-        # D-34: upstream's narrow annotations and deliberately invalid dims.
+        # Upstream's narrow annotations and deliberately invalid dims.
         (
             "test_onnx_graph.py",
             "reportArgumentType",

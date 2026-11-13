@@ -1,4 +1,4 @@
-/* The C runtime math that mirrors share with their reference libraries (Consult 6 D-4).
+/* The C runtime math that mirrors share with their reference libraries.
  *
  * Every target links the static UCRT. NumPy, SciPy, CPython and ncnn link it
  * dynamically: their scalar math is the one ucrtbase.dll of the process, which

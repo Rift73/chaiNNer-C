@@ -5,20 +5,18 @@ No timing measurements, GPU models, or application/profile access is needed.
 
 from __future__ import annotations
 
-import ast
 import ctypes as ct
 import importlib.util
 import math
 import re
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-
 from native_images import opaque
+from node_bodies import load_body
 
 from nodes.impl import cas
 from nodes.impl import native_analysis as native
@@ -41,26 +39,6 @@ PATHS = {
     "high_boost_filter": "image_filter/sharpen/high_boost_filter.py",
     "average_color_fix": "image_filter/correction/average_color_fix.py",
 }
-
-
-def load_body(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
 
 
 def load_helper(relative, name):
@@ -140,7 +118,7 @@ def test_statistics(size, percentile):
 
 
 def test_statistics_of_cropped_split_transparency_view():
-    # R2 I-1: Load RGBA -> Split Transparency -> Crop -> Image Statistics hands the
+    # Load RGBA -> Split Transparency -> Crop -> Image Statistics hands the
     # node an (H, W', 3) view with strides (16W, 16, 4), which NumPy 2.5.3 reduces in
     # buffer blocks that restart at every row. The executor's channels=1 input check
     # rejects three channels, so the node function is called directly.
@@ -278,7 +256,7 @@ TIE_NANS = np.array(
 @pytest.mark.parametrize("pixels", [1, 2, 3, 16, 17, 18, 19, 40, 300, 5000, 60000])
 @pytest.mark.parametrize("seed", range(3))
 def test_distinct_rows_are_numpy_uniques_bits(channels, pixels, seed):
-    # Consult 11 D-17.2: np.unique(axis=0) sorts the rows as structured voids with
+    # np.unique(axis=0) sorts the rows as structured voids with
     # NumPy's unstable npy_quicksort, then keeps the first row of each run, so which
     # of +0 and -0 it keeps, and the order of NaN rows that compare equal, are its
     # sort's. Few values make long runs of ties, at sizes either side of the
@@ -336,7 +314,7 @@ def quicksort_killer(n):
 
 @pytest.mark.parametrize("pixels", [2000, 20000])
 def test_distinct_rows_follow_numpys_heapsort_fallback(pixels):
-    # Consult 11 D-17.2: on the killer ranks every partition is degenerate, so the
+    # On the killer ranks every partition is degenerate, so the
     # sort runs out of its 2 log2(n) depth and heapsorts the rest. Pairs of adjacent
     # ranks whose every direct comparison had the larger rank first become ties (as
     # `< 0` was false, no comparison changes) told apart by a second channel of +0
@@ -606,7 +584,7 @@ def test_color_transfer_zero_variance_and_empty_mask(overflow, reciprocal, empty
         if results:
             arrays(*results)
     else:
-        # A channel without spread scales by 0 (ruling of 2026-10-23): the solid image takes the reference's mean,
+        # A channel without spread scales by 0: the solid image takes the reference's mean,
         # where upstream divides 0 by 0.
         arrays(results[0], np.full_like(image, 0.75))
 

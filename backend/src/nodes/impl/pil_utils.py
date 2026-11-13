@@ -60,7 +60,7 @@ def resize(
     resample = INTERPOLATION_METHODS_MAP[interpolation]
 
     pimg = Image.fromarray(to_uint8(img, normalized=True))
-    pimg = pimg.resize(out_dims, resample=resample)  # type: ignore
+    pimg = pimg.resize(out_dims, resample=resample)
     return normalize(np.array(pimg))
 
 
@@ -74,7 +74,7 @@ def rotate(
     """Perform Pillow-compatible byte rotation in C."""
 
     c = get_h_w_c(img)[2]
-    if fill == FillColor.TRANSPARENT:
+    if fill == FillColor.TRANSPARENT and c != 4:
         img = convert_to_bgra(img, c)
     fill_color = tuple([x * 255 for x in fill.get_color(c)])
 

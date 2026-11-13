@@ -13,7 +13,7 @@ import threading
 
 import numpy as np
 import pytest
-from test_isa_dispatch import isa_get, isa_set
+from test_isa_dispatch import isa_set
 
 from nodes.impl import native_framework_images as images
 from nodes.impl.native_framework_images import (
@@ -25,16 +25,6 @@ from nodes.impl.native_framework_images import (
 )
 
 ROWS, WIDTH, STRIDE = 64, 1027, 1040  # 1027 % 8 == 3: every row has a scalar tail
-
-
-@pytest.fixture
-def levels():
-    """Every level this CPU has, scalar first; the original level afterwards."""
-    effective, _, cpu = isa_get()
-    try:
-        yield range(cpu + 1)
-    finally:
-        assert isa_set(effective) == effective
 
 
 def _expected(planes: np.ndarray, reverse: bool) -> np.ndarray:

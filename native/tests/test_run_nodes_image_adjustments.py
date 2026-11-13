@@ -123,7 +123,7 @@ def test_log_to_linear_errors():
     # CPython's text for ERANGE is the C library's
     range_error = f"({errno.ERANGE}, {os.strerror(errno.ERANGE)!r})"
     assert overflow == ("error", ("OverflowError", range_error))
-    # Equal Black and White was "division by zero" (2026-10-23).
+    # Equal Black and White was "division by zero".
     zero = assert_native_matches("chainner:image:log2lin", [img, 300.0, 300.0, 0.25, True])
     assert zero == ("error", ("ValueError", "Black and White must differ"))
     assert assert_native_matches("chainner:image:log2lin", [img, 300.0, 300.1, 0.25, True])[0] == "outputs"

@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import importlib
 import io
+import re
 import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -433,17 +434,27 @@ DECLARED = {
 
 def short_of_declared(line: str, tag: bytes, length: int) -> bool:
     """Whether a .bin of `length` bytes ends before the weights the line declares
-    (after a recognized tag, for a tagged layer): an error since chaiNNer-C's
-    2026-10-23 fix, where upstream's reader allocated the declared size, then failed
+    (after a recognized tag, for a tagged layer): an error in chaiNNer-C,
+    where upstream's reader allocated the declared size, then failed
     on a shape or kept a shorter weight."""
     if line not in DECLARED:
         return False
     tagged, fp32, fp16 = DECLARED[line]
     if not tagged:
         return length < fp32
-    if length < 4 or tag not in (port.DTYPE_FP32, port.DTYPE_FP16):
-        return False  # the tag's own lookup fails first, as upstream's
+    if bad_tag(line, tag, length):
+        return False  # the tag's own check fails first
     return length - 4 < (fp32 if tag == port.DTYPE_FP32 else fp16)
+
+
+def bad_tag(line: str, tag: bytes, length: int) -> bool:
+    """Whether a tagged layer's .bin ends before its tag or holds an unknown one: an
+    error naming the layer, where upstream's reader raised a bare KeyError."""
+    return (
+        line in DECLARED
+        and DECLARED[line][0]
+        and (length < 4 or tag not in (port.DTYPE_FP32, port.DTYPE_FP16))
+    )
 
 
 @pytest.mark.parametrize("line", WEIGHT_LINES)
@@ -459,6 +470,10 @@ def test_weight_decoder_and_position(line, tag, length):
     rb = outcome(lambda: b.load_layer_weights(sb, ob, lb))
     if short_of_declared(line, tag, length):
         assert rb[0] == "ValueError" and "ends before the weights" in rb[1]
+        return
+    if bad_tag(line, tag, length):
+        assert ra[0] == "KeyError"
+        assert rb[0] == "ValueError" and "weight tag" in rb[1]
         return
     assert sa.tell() == sb.tell()
     if ra[0] == "ok":
@@ -508,6 +523,66 @@ def test_a_truncated_param_is_refused(tmp_path: Path):
         ValueError, match="ends before the layers it declares: 3 declared, 2"
     ):
         port.NcnnModel.load_from_file(str(param), str(weights))
+
+
+@pytest.mark.parametrize(
+    ("line", "weights", "message"),
+    [
+        (
+            "Convolution c 1 1 data out 0=0 1=3 11=3 5=0 6=9",
+            bytes(40),
+            "Convolution layer c has filter count 0 (param 0)",
+        ),
+        (
+            "ConvolutionDepthWise d 1 1 data out 0=4 1=1 11=1 5=0 6=4 7=0",
+            bytes(20),
+            "ConvolutionDepthWise layer d has group count 0 (param 7)",
+        ),
+        (
+            "ConvolutionDepthWise d 1 1 data out 0=2 1=1 11=1 5=0 6=2 7=4",
+            bytes(12),
+            "ConvolutionDepthWise layer d has fewer filters (2) than groups (4)",
+        ),
+        (
+            "InnerProduct i 1 1 data out 0=0 1=0 2=4",
+            bytes(20),
+            "InnerProduct layer i has output count 0 (param 0)",
+        ),
+        (
+            "Convolution c 1 1 data out 0=1 1=1 11=1 5=0 6=1",
+            bytes(2),
+            "ends before the weight tag of its Convolution layer c",
+        ),
+        (
+            "Scale s 1 1 data out 0=1 1=0",
+            b"FAIL" + bytes(4),
+            "holds no known weight tag (b'FAIL') for its Scale layer s",
+        ),
+    ],
+)
+def test_a_layer_whose_weights_cannot_be_shaped_is_named(
+    tmp_path: Path, line: str, weights: bytes, message: str
+):
+    # These failed as a bare ZeroDivisionError or KeyError naming no layer.
+    param = tmp_path / "m.param"
+    param.write_text(f"7767517\n2 2\nInput data 0 1 data\n{line}\n", encoding="utf-8")
+    (tmp_path / "m.bin").write_bytes(weights)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        port.NcnnModel.load_from_file(str(param), str(tmp_path / "m.bin"))
+
+
+@pytest.mark.parametrize("op", ["Convolution", "ConvolutionDepthWise"])
+def test_a_convolution_of_stride_0_is_named(tmp_path: Path, op: str):
+    # Load Model reads the model's scale from its strides: stride 0 raised a bare
+    # ZeroDivisionError.
+    param = tmp_path / "m.param"
+    group = " 7=1" if op == "ConvolutionDepthWise" else ""
+    line = f"{op} c 1 1 data out 0=1 1=1 11=1 3=0 5=0 6=1{group}"
+    param.write_text(f"7767517\n2 2\nInput data 0 1 data\n{line}\n", encoding="utf-8")
+    (tmp_path / "m.bin").write_bytes(bytes(8))
+    model = port.NcnnModel.load_from_file(str(param), str(tmp_path / "m.bin"))
+    with pytest.raises(ValueError, match=re.escape(f"{op} layer c has stride 0")):
+        port.NcnnModelWrapper(model)
 
 
 @pytest.mark.parametrize("size", ["1000000000", "-1"])
@@ -927,7 +1002,7 @@ def test_parameter_missing_alias_preserves_explicit_cause(monkeypatch):
 
 def fewer_layers_than_declared(text: str) -> bool:
     """Whether a .param text whose header parses has fewer layer lines than the header
-    declares: an error since chaiNNer-C's 2026-10-23 fix (as in ncnn itself), where
+    declares: an error in chaiNNer-C (as in ncnn itself), where
     upstream's reader kept the layers there were."""
     lines = text.split("\n")
     try:
@@ -960,6 +1035,11 @@ def test_file_parser_headers_errors_and_ignored_magic(text, tmp_path):
     rb = outcome(lambda: port.NcnnModel.load_from_file(str(param), str(binary)))
     if fewer_layers_than_declared(text):
         assert rb[0] == "ValueError" and "ends before the layers" in str(rb[1])
+        return
+    if "Convolution" in text:
+        # The empty .bin ends before the layer's weight tag: upstream's bare KeyError.
+        assert ra[0] == "KeyError"
+        assert rb[0] == "ValueError" and "ends before the weight tag" in str(rb[1])
         return
     if ra[0] == "ok":
         assert rb[0] == "ok"

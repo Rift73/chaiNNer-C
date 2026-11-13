@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from native_differential import assert_native_matches, node_data
+from native_differential import assert_native_matches, node_data, run_both
 from native_images import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
 
 import api
@@ -138,7 +138,7 @@ def test_convolve_matches(kernel, padding, size, channels):
 
 def test_convolve_edge_cases():
     img = image(1, 6, 7, 3)
-    for text in ("1 2\n3","\n", "a b", "1_0", "inf", "1\n\n2", "0x10", "1 2\n3 4 "):
+    for text in ("1 2\n3","\n", "a b", "1_0", "inf", "1 2\n\n3", "0x10", "1 2\n3 4 "):
         assert_native_matches("chainner:image:image_convolve", [img, text, 0], declines=True)
     # 50 coefficients and more: OpenCV's DFT path (without SSE3) or spatial path, both cv2 here.
     big = "\n".join(" ".join("1" for _ in range(12)) for _ in range(12))
@@ -146,6 +146,15 @@ def test_convolve_edge_cases():
     assert_native_matches("chainner:image:image_convolve", [img, "1", 2**31])
     for shape in EMPTY_SHAPES:
         assert_native_matches("chainner:image:image_convolve", [np.zeros(shape, np.float32), "1 2", 0])
+
+
+@pytest.mark.parametrize("text", ["1 2\n\n3 4", "1 2\n3 4\n\n", "\n1 2\n \t\n3 4\r\n\r\n"])
+def test_convolve_skips_blank_lines(text):
+    # As convolve.py: blank lines are no rows (natively, without a decline).
+    img = image(3, 6, 7, 3)
+    native = assert_native_matches("chainner:image:image_convolve", [img, "1 2\n3 4", 1])
+    _, blank = run_both("chainner:image:image_convolve", [img, text, 1])
+    assert blank == native
 
 
 @pytest.mark.parametrize("text", ["1e400", "-1e400", "-1e-400", "1e-0400", "+0.1e310 -00.10e-323\n1 -1e400"])
@@ -357,7 +366,7 @@ def transparent_pairs(size):
 
 @pytest.mark.parametrize("size", [(5, 3), (1, 1)])
 def test_color_transfer_fully_transparent_returns_the_image(size):
-    # Mean+Std gave NaN or failed, the others raised LinAlgError (2026-10-23).
+    # Mean+Std gave NaN or failed, the others raised LinAlgError.
     node = node_data("chainner:image:color_transfer")
     for img, ref in transparent_pairs(size):
         for colorspace in ("L*a*b*", "RGB"):

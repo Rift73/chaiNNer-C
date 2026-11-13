@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import ast
 import ctypes as ct
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-
 from native_images import opaque
+from node_bodies import load_body
 
 from nodes.impl import native_filters as native
 from nodes.impl.native import lib
@@ -28,26 +26,6 @@ PATHS = {
     "distance_transform": "miscellaneous/distance_transform.py",
     "quantize_to_reference": "quantize/quantize_to_reference.py",
 }
-
-
-def load_body(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
 
 
 MODULES = {

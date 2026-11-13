@@ -70,6 +70,7 @@ export const NumberInput = memo(
                 </MenuItem>
                 <MenuItem
                     icon={<MdContentPaste />}
+                    isDisabled={isLocked || isConnected}
                     onClick={() => {
                         navigator.clipboard
                             .readText()

@@ -1,4 +1,4 @@
-/* Native image decoding with today's results (GPL-3.0); see native/include/image_decode.hpp. */
+/* Native image decoding as Python decodes (GPL-3.0); see native/include/image_decode.hpp. */
 #include "image_decode.hpp"
 
 #include "file_handle.hpp"

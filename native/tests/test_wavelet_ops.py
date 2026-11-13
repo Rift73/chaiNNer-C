@@ -42,6 +42,7 @@ def load(path):
         np=np,
         torch=torch,
         F=functional,
+        functional=functional,
         native_wavelet=native,
         np2tensor=np2tensor,
         tensor2np=tensor2np,

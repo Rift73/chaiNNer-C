@@ -65,10 +65,10 @@ static void gradient_rows(void *opaque, size_t begin, size_t end)
 
 /* The coordinate math intentionally follows the original NumPy float64
  * projections and float32 centers/directions. Where the original divides 0 by 0
- * (NaN pixels) chaiNNer-C takes the limits instead (ruling of 2026-10-23): a
+ * (NaN pixels) chaiNNer-C takes the limits instead: a
  * one-pixel axis is position 0, and a zero-width diagonal or radial interval is a
  * step, 0 before its edge and 1 at or after it. The radial position is clamped to
- * 0..1 as the diagonal's is (2026-10-23): upstream extrapolated past both
+ * 0..1 as the diagonal's is: upstream extrapolated past both
  * colours inside the inner and beyond the outer radius. */
 CN_EXPORT cn_status cn_gradient(float *out, size_t height, size_t width,
                                 int kind, double a, double b, int wide_start)

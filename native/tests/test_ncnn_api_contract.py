@@ -2,7 +2,7 @@
 
 Upstream wrote these sites for the ncnn_vulkan bindings. PyPI ncnn's Extractor has
 none of their Vulkan allocator setters, so every NCNN upscale on a Vulkan GPU raised
-AttributeError (D-15); a fake Extractor in a test cannot catch that. This reads the
+AttributeError; a fake Extractor in a test cannot catch that. This reads the
 sites' source and looks every attribute of a known receiver up on the wheel's real
 class. The receivers are the names the sites give their ncnn objects. Only class
 objects are inspected, so nothing here creates a Vulkan instance.

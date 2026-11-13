@@ -1,4 +1,4 @@
-"""SP4c NumPy data-memory handler (numpy_pool.cpp in _chainner_graph).
+"""The NumPy data-memory handler (numpy_pool.cpp in _chainner_graph).
 
 Requests of 512 KiB or more are served by a pool that keeps freed blocks warm; smaller
 ones go to NumPy's default handler. Each handler test runs its body in a fresh
@@ -831,7 +831,7 @@ def test_release_returns_idle_bytes_and_empties_the_pool(profile):
 
 @BOTH
 def test_video_frames_are_served_by_the_pool(profile):
-    # D8 (spec 4.7): Load Video reads each frame into a fresh NumPy buffer, so a
+    # Load Video reads each frame into a fresh NumPy buffer, so a
     # 1280x720 frame (2.76 MB) is a pool block: never another live frame's, and reused
     # warm by the next frame once freed.
     result = child(
@@ -1001,7 +1001,7 @@ def sanic_records(caplog):
 def test_install_warns_once_for_invalid_or_unsupported(
     monkeypatch, caplog, status, message
 ):
-    # Review focus 1 and 4: a typo in the variable, or a NumPy without the handler
+    # A typo in the variable, or a NumPy without the handler
     # API, gives one warning and NumPy's default handler, never a raise.
     assert numpy_pool.VARIABLE == POOL_VARIABLE
     calls = []

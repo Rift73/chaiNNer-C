@@ -316,7 +316,7 @@ def test_percentile_nan_payloads(size, layout):
 
 
 def _period_view(name, kind, rng):
-    """R2 I-1's two views, whose buffered reduce restarts its blocks at every outer
+    """The two views of a cropped Split Transparency, whose buffered reduce restarts its blocks at every outer
     row: Split Transparency's RGB of an RGBA image cropped left and right, strides
     (16W, 16, 4), and a flipped two-channel view, strides (-16W, 16, 4)."""
     shape = (5, 4000, 4) if name == "rgb_crop" else (3, 9000, 4)

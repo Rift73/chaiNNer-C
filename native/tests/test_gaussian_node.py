@@ -1,8 +1,7 @@
 """Stage-two whole-node Gaussian checks against the untouched installed source.
 
 The node is compared as the user receives its output: ImageOutput.enforce of both
-nodes' returns, bitwise (SP4b Task 3b2; owner, 2026-10-04: a raw pre-enforce return
-is an internal detail). The blur's kernel parity stays exact at the helper:
+nodes' returns, bitwise (a raw pre-enforce return is an internal detail). The blur's kernel parity stays exact at the helper:
 fast_gaussian_blur's raw result (normalized=False, its default) against the
 installed one. The schema guard compares the register(...) call and the signature.
 """

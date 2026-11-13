@@ -114,7 +114,7 @@ class TiffCompression(Enum):
 
     @property
     def cv2_code(self) -> int:
-        # OpenCV is a beautiful piece of software, so surely they won't forget to define the TIFF compression constants, right?
+        # OpenCV defines no TIFF compression constants; the values are libtiff's.
         return self.value
 
 
@@ -603,8 +603,7 @@ def get_full_path(
 
 def prepare_save_image(inputs: list[object]) -> bytes | np.ndarray | None:
     """The bytes Save Image would write for these inputs, input 0 being the image, as
-    bytes or an encoder's buffer array; None for DDS, which texconv writes itself
-    (SP3-P9)."""
+    bytes or an encoder's buffer array; None for DDS, which texconv writes itself."""
     return graph().image_io_save_prepare(globals(), tuple(inputs))
 
 

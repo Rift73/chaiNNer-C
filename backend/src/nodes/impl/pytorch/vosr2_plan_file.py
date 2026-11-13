@@ -1,7 +1,7 @@
 """VOSR's TensorRT plans as its engine caches keep them: Zstandard-compressed (about a
 quarter smaller) in independent frames, which threads decompress at about 3 GB/s (one
 thread: 1 GB/s). A build writes plain plans; the cache compresses them, and a set cached
-plain (before 2026-10-17) on its next use."""
+plain (by older versions) on its next use."""
 
 from __future__ import annotations
 
@@ -69,8 +69,8 @@ def compress(source: Path, target: Path) -> None:
 
 
 def open_plan(path: Path) -> BytesIO | BufferedReader:
-    """A plan to read, whole in memory if it is compressed (a set compressed before
-    2026-11-08 is one frame, which takes one thread)."""
+    """A plan to read, whole in memory if it is compressed (a set compressed by older
+    versions is one frame, which takes one thread)."""
     if not path.name.endswith(".zst"):
         return path.open("rb")
     with path.open("rb") as file, mmap.mmap(

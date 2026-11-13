@@ -4,6 +4,7 @@ import { useContext } from 'use-context-selector';
 import { getUniqueKey } from '../../../common/group-inputs';
 import { BackendContext } from '../../contexts/BackendContext';
 import { NodeState } from '../../helpers/nodeState';
+import { getSeekUnderPreview } from '../../helpers/videoSeek';
 import { GroupElement } from '../groups/Group';
 import { InputItemRenderer } from '../groups/props';
 import { SchemaInput } from '../inputs/SchemaInput';
@@ -20,6 +21,10 @@ const ItemRenderer: InputItemRenderer = memo(({ item, nodeState }) => {
             />
         );
     }
+
+    // drawn under the node's Preview (NodeOutputs)
+    const seek = getSeekUnderPreview(nodeState.schema);
+    if (seek && (seek.input === item || seek.companions.includes(item))) return null;
 
     return (
         <SchemaInput

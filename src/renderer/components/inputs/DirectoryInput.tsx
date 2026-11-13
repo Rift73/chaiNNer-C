@@ -123,8 +123,9 @@ export const DirectoryInput = memo(
                 <MenuItem
                     icon={<BsFolderPlus />}
                     isDisabled={isLocked || isConnected}
-                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-                    onClick={onButtonClick}
+                    onClick={() => {
+                        onButtonClick().catch(log.error);
+                    }}
                 >
                     {t('inputs.directory.selectDirectory', 'Select a directory...')}
                 </MenuItem>
@@ -198,8 +199,9 @@ export const DirectoryInput = memo(
                             size="sm"
                             textOverflow="ellipsis"
                             value={displayDirectory ?? ''}
-                            // eslint-disable-next-line @typescript-eslint/no-misused-promises
-                            onClick={onButtonClick}
+                            onClick={() => {
+                                onButtonClick().catch(log.error);
+                            }}
                         />
                     </InputGroup>
                 </Tooltip>

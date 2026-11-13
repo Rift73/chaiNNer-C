@@ -606,7 +606,7 @@ def run_node(
     seek: int = 0,
 ) -> tuple[Any, ...]:
     """Load Video's outputs: the generator, directory, name, FPS, audio, Colour Info,
-    Colour, Preview and Frame Count; Frames All, or the Range `frames` (In, Out)."""
+    Colour, Preview and Frame Count; Frames All, or the Range `frames` (Start, End)."""
     first, last = frames or (0, 0)
     return load_video_node(
         cast(NodeContext, context),
@@ -765,9 +765,9 @@ def test_out_is_an_upper_bound_and_in_past_the_end_fails(
             cut = {"ss": first / fps, **cut}
         assert audio.node.kwargs == {"filename": path, **cut}
     for frames, message in [
-        ((12, 8), r"^In \(frame 12\) is after Out \(frame 8\)\.$"),
+        ((12, 8), r"^Start \(frame 12\) is after End \(frame 8\)\.$"),
         ((150, 155), r"^frame 150 is past the end \(the video has 150 frames\)$"),
-        # A one-frame Range past the end: the In error.
+        # A one-frame Range past the end: the Start error.
         ((150, 150), r"^frame 150 is past the end \(the video has 150 frames\)$"),
     ]:
         outputs = run_node(context, path, frames=frames, seek=500)
@@ -888,3 +888,19 @@ def test_a_file_without_timestamps_reads_through_the_cli(
     # A Seek past the end shows the last frame, by that count.
     np.testing.assert_array_equal(run_node(context, path, seek=500)[7], full[149])
     context.cleanup()
+
+
+def test_start_and_end_keep_the_ids_of_in_and_out():
+    """The Range's inputs are named Start and End under the ids In and Out had (11 and
+    12), so a chain saved with In and Out loads its values into them; the node's own
+    check names them too."""
+    from packages.chaiNNer_standard.image import video_frames_group
+
+    (node,) = (
+        n
+        for n in video_frames_group.nodes
+        if n.schema_id == "chainner:image:load_video"
+    )
+    labels = {int(i.id): i.label for i in node.inputs}
+    assert (labels[10], labels[11], labels[12]) == ("Frames", "Start", "End")
+    assert "Start is after End." in [o.never_reason for o in node.outputs]

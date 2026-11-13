@@ -4,7 +4,7 @@
 
 import numpy as np
 import torch
-import torch.nn.functional as F  # noqa: N812
+from torch.nn import functional
 
 from api import NodeContext
 from nodes.impl import native_wavelet
@@ -29,8 +29,8 @@ def wavelet_blur(image: torch.Tensor, radius: int) -> torch.Tensor:
     ]
     kernel = torch.tensor(kernel_vals, dtype=image.dtype, device=image.device)
     kernel = kernel[None, None].repeat(3, 1, 1, 1)
-    image = F.pad(image, (radius, radius, radius, radius), mode="replicate")
-    output = F.conv2d(image, kernel, groups=3, dilation=radius)
+    image = functional.pad(image, (radius, radius, radius, radius), mode="replicate")
+    output = functional.conv2d(image, kernel, groups=3, dilation=radius)
     return output
 
 

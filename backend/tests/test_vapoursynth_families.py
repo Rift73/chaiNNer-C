@@ -10,10 +10,12 @@ import logging
 import random
 import re
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
 
+import numpy as np
 import pytest
 
 # chaiNNer's inputs load the native backend, which GitHub's checks do not build.
@@ -189,6 +191,11 @@ def default_of(item: BaseInput) -> object:
     return item.to_dict().get("def")
 
 
+def _number(text: str) -> float:
+    value = float(text)
+    return int(value) if value.is_integer() else value
+
+
 def run(
     node: NodeData,
     node_id: str,
@@ -207,6 +214,12 @@ def run(
         ids = input_ids(node.name, [(method, key) for key in values])
         given = {ids[method, key]: value for key, value in values.items()}
         assert set(given) <= present, "a parameter key names no input"
+        # A number field gets a number from the app; a test may write it as text.
+        numbers = {i.id for i in node.inputs if i.to_dict()["kind"] == "number"}
+        given = {
+            k: _number(v) if k in numbers and isinstance(v, str) else v
+            for k, v in given.items()
+        }
         fixed: dict[int, object] = {MAIN_ID: clip, METHOD_ID: method}
         fixed.update({MODE_ID: "simple", FILTER_ID: int(as_filter)})
         given.update({k: v for k, v in fixed.items() if k in present})
@@ -241,8 +254,41 @@ def test_family_count_under_cap(tmp_path: Path) -> None:
         for path in PACKAGE_DIR.rglob("*.py")
         if path.name != "families.py"
     )
-    # AI Upscale (Task 7) registers in another package folder; count it too.
+    # AI Upscale registers in another package folder; count it too.
     assert len(FAMILIES) + hand_written + 1 <= NODE_CAP
+
+
+def test_hand_written_inputs_have_pop_ups() -> None:
+    """Every input of the hand-written VapourSynth nodes has a pop-up."""
+    from packages.chaiNNer_vapoursynth.vapoursynth import (
+        ai_upscale,
+        clip_frames,
+        clips_group,
+        frames_to_clip,
+        functions_group,
+        preview_clips,
+        save_script,
+        split_planes,
+    )
+
+    modules = [ai_upscale, clip_frames, frames_to_clip]
+    modules += [preview_clips, save_script, split_planes]
+    names = {f"chainner:vapoursynth:{m.__name__.rpartition('.')[2]}" for m in modules}
+    nodes = [
+        node
+        for node in [*clips_group.nodes, *functions_group.nodes]
+        if node.schema_id in names
+    ]
+    assert len(nodes) == len(names)
+    bare = [
+        f"{node.name}: {i.label}"
+        for node in nodes
+        for i in node.inputs
+        if not (i.hint and i.description)
+        # Frames to Clip's colour overrides are Load Video's (colour_inputs.py).
+        and not (node.name == "Frames to Clip" and 8 <= i.id <= 12)
+    ]
+    assert bare == []
 
 
 def test_bm3d_inputs_conditional_on_method(small: dict[str, NodeData]) -> None:
@@ -273,6 +319,131 @@ def test_bm3d_inputs_conditional_on_method(small: dict[str, NodeData]) -> None:
     }
 
 
+def test_pop_ups(tmp_path: Path) -> None:
+    """An input with a text is a hint input, its pop-up ending with the Python name and
+    default; Method and class dropdown entries end with the call. Inputs and entries
+    without a text get none."""
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vskernels.*.scale"]\n'
+        'help = "Resizes."\n'
+        'choices = { Catrom = "Sharp." }\n'
+        '[method."vsdenoise.bm3d"]\n'
+        'help = "Removes noise. Example: `sigma = 1`."\n'
+        'docs = { tr = "Frames on each side." }\n',
+        encoding="utf-8",
+    )
+    # Without the shipped texts, which would replace the docstrings checked here.
+    nodes = nodes_of(load_catalog(small_catalog(tmp_path), [overlay]))
+    denoise = nodes["Denoise"]
+    by_id: dict[int, BaseInput] = {i.id: i for i in denoise.inputs}
+    keys = ["sigma", "tr", "refine"]
+    ids = input_ids("Denoise", [("vsdenoise.bm3d", k) for k in keys])
+    pop_ups = {
+        key: (
+            by_id[ids["vsdenoise.bm3d", key]].description,
+            by_id[ids["vsdenoise.bm3d", key]].hint,
+        )
+        for key in keys
+    }
+    assert pop_ups == {
+        "sigma": ("Strength of denoising.\n\n`sigma` · default `0.5`", True),
+        "tr": ("Frames on each side.\n\n`tr` · default `None`", True),
+        "refine": (None, False),
+    }
+    options = {o["value"]: o for o in by_id[METHOD_ID].to_dict()["options"]}
+    assert options["vsdenoise.bm3d"]["description"] == (
+        "Removes noise. Example: `sigma = 1`.\n\n`chainner_vs.bm3d`"
+    )
+    assert by_id[METHOD_ID].hint and by_id[FILTER_ID].hint
+    tabs = by_id[MODE_ID].to_dict()["options"]
+    assert all(o["description"] for o in tabs)
+
+    resize: dict[int, BaseInput] = {i.id: i for i in nodes["Resize"].inputs}
+    method = {o["value"]: o for o in resize[METHOD_ID].to_dict()["options"]}
+    assert method["vskernels.*.scale"]["description"] == (
+        "Resizes.\n\n`vskernels.*.scale`"
+    )
+    class_id = input_ids("Resize", [("vskernels.*.scale", CLASS)])
+    kernels = {
+        o["value"]: o.get("description")
+        for o in resize[class_id["vskernels.*.scale", CLASS]].to_dict()["options"]
+    }
+    assert kernels["Catrom"] == "Sharp.\n\n`vskernels.Catrom(...).scale`"
+    assert kernels["Hermite"] is None
+    # The dropdown's own pop-up is generated from its label.
+    dropdown = resize[class_id["vskernels.*.scale", CLASS]]
+    assert dropdown.hint and str(dropdown.description).startswith("Picks the class")
+    # The width of every kernel: its docstring text, cleaned.
+    width = input_ids("Resize", [("vskernels.*.scale", "width")])
+    assert resize[width["vskernels.*.scale", "width"]].description == (
+        "Target width.\n\n`width` · default `None`"
+    )
+
+
+def test_use_as_filter_is_last_under_advanced(small: dict[str, NodeData]) -> None:
+    """The switch ends the node, shown under Advanced and whenever it is on (a saved
+    chain with it on shows it in Simple too); the output is "Clip"."""
+    node = small["Denoise"]
+    assert node.inputs[-1].id == FILTER_ID
+    (last,) = [g for g in node.group_layout if isinstance(g, Group)][-1:]
+    assert last.items == [FILTER_ID]
+    assert last.info.options["condition"] == {
+        "kind": "or",
+        "items": [
+            {"kind": "enum", "enum": MODE_ID, "values": ["advanced"]},
+            {"kind": "enum", "enum": FILTER_ID, "values": [1]},
+        ],
+    }
+    assert node.outputs[0].label == "Clip"
+
+
+def test_ranked_methods_come_first(tmp_path: Path) -> None:
+    """Ranked methods first by rank, then other Common ones, then All, each by label;
+    a new node starts on the first."""
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vsdenoise.Prefilter"]\nrank = 2\n'
+        '[method."std.Merge"]\nrank = 1\nfamily = "Denoise"\n'
+        '[method."vsdenoise.bm3d"]\nlabel = "BM3D"\n',
+        encoding="utf-8",
+    )
+    denoise = nodes_of(load_catalog(small_catalog(tmp_path), [overlay]))["Denoise"]
+    method = next(i for i in denoise.inputs if i.id == METHOD_ID).to_dict()
+    values = [o["value"] for o in method["options"]]
+    assert values[:3] == ["std.Merge", "vsdenoise.Prefilter", "vsdenoise.bm3d"]
+    assert method["def"] == "std.Merge"
+    assert method["groups"][0] == {"label": "Common", "startAt": "std.Merge"}
+
+
+def test_texts_keep_saved_chains(tmp_path: Path) -> None:
+    """Texts change no input id, input order or dropdown value: saved chains load."""
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vskernels.*.scale"]\n'
+        'choices = { Catrom = "Sharp." }\n'
+        'docs = { height = "New height." }\n'
+        '[method."vsdenoise.bm3d"]\n'
+        'docs = { refine = "Passes." }\n'
+        '[method."vsdeinterlace.vfm"]\n'
+        'help = "Matches fields."\n',
+        encoding="utf-8",
+    )
+
+    def contract(nodes: dict[str, NodeData]) -> dict[str, list[object]]:
+        return {
+            name: [
+                (i.id, [o["value"] for o in i.to_dict().get("options", [])])
+                for i in node.inputs
+            ]
+            for name, node in nodes.items()
+        }
+
+    path = small_catalog(tmp_path)
+    texts = nodes_of(load_catalog(path, [*SHIPPED, overlay]))
+    assert contract(texts) == contract(nodes_of(load_catalog(path, SHIPPED)))
+
+
 def test_simple_set_from_overlay(small: dict[str, NodeData]) -> None:
     bm3d = method_group(small["Denoise"], "vsdenoise.bm3d")
     by_id: dict[int, BaseInput] = {i.id: i for i in small["Denoise"].inputs}
@@ -292,8 +463,8 @@ def test_simple_set_from_overlay(small: dict[str, NodeData]) -> None:
         "Planes",
     }
     assert {by_id[i].label for i in ids_in(advanced.items)} == {
-        "Refine",
-        "More arguments",
+        "Final passes",
+        "More arguments (name: value)",
     }
 
 
@@ -314,13 +485,16 @@ def test_generated_statement_matches_reference(small: dict[str, NodeData]) -> No
         clip=SRC,
     )
     assert isinstance(out, VideoClip)
-    # Module-qualified: no two imports of a script can shadow each other.
+    # Module-qualified: no two imports of a script can shadow each other. BM3D goes
+    # through chaiNNer's helper, which takes any clip.
     assert out.stmt == (
-        "n_bm3d_0 = vsdenoise.bm3d(n_src_0, sigma=0.8, tr=4,"
+        "n_bm3d_0 = chainner_vs.bm3d(n_src_0, sigma=0.8, tr=4,"
         " profile=vsdenoise.bm3d.Profile.HIGH, ref=n_ref_0, planes=[0])"
     )
-    assert out.imports == frozenset(["import vsdenoise"])
+    assert out.imports == frozenset([BRIDGE_IMPORT, "import vsdenoise"])
     assert set(out.deps) == {SRC, REF}
+    # Preview Clips' tab name when the user gives none.
+    assert out.label == "Denoise, strong (BM3D)"
 
 
 def nnedi3(nodes: dict[str, NodeData]) -> VideoClip | VSFilter:
@@ -354,10 +528,10 @@ def test_use_as_filter_emits_bound_method(small: dict[str, NodeData]) -> None:
     # Arguments of the method itself: a partial; a function: itself or a partial.
     out = run(small["Denoise"], "b", "vsdenoise.bm3d", {"sigma": "0.8"}, as_filter=True)
     assert isinstance(out, VSFilter)
-    assert out.expr == "functools.partial(vsdenoise.bm3d, sigma=0.8)"
-    assert out.imports == frozenset(["import functools", "import vsdenoise"])
+    assert out.expr == "functools.partial(chainner_vs.bm3d, sigma=0.8)"
+    assert out.imports == frozenset(["import functools", BRIDGE_IMPORT])
     out = run(small["Denoise"], "b", "vsdenoise.bm3d", as_filter=True)
-    assert isinstance(out, VSFilter) and out.expr == "vsdenoise.bm3d"
+    assert isinstance(out, VSFilter) and out.expr == "chainner_vs.bm3d"
     # Positional arguments after the clip: a lambda.
     out = run(
         small["Convert Format"], "d", "vstools.depth", {"bitdepth": 16}, as_filter=True
@@ -401,8 +575,9 @@ def test_vfm_accepts_filter(small: dict[str, NodeData]) -> None:
     )
     assert isinstance(out, VideoClip)
     assert out.stmt == (
-        "n_vfm_0 = vsdeinterlace.vfm(n_src_0, postprocess=vsaa.NNEDI3(pscrn=0,"
-        " tff=True, double_rate=False).deinterlace)"
+        # The shipped overlays start Field order at top field first.
+        "n_vfm_0 = vsdeinterlace.vfm(n_src_0, tff=vstools.FieldBased.TFF,"
+        " postprocess=vsaa.NNEDI3(pscrn=0, tff=True, double_rate=False).deinterlace)"
     )
     script = compile_script([(out, "out")], cache_mb=64)
     lines = script.splitlines()
@@ -454,7 +629,7 @@ def test_group_collapses_classes(small: dict[str, NodeData]) -> None:
         resize,
         "k",
         "vskernels.*.scale",
-        {CLASS: "Mitchell", "width": "1280", "height": "1000", "linear": "True"},
+        {CLASS: "Mitchell", "width": 1280, "height": 1000, "linear": "True"},
         clip=SRC,
     )
     assert isinstance(out, VideoClip)
@@ -471,10 +646,12 @@ def test_group_collapses_classes(small: dict[str, NodeData]) -> None:
     assert out.stmt == (
         "n_k_0 = vskernels.Lanczos(taps=4.0).scale(n_src_0, width=1280, height=960)"
     )
+    # Its vsview tab: the Method entry with the picked kernel.
+    assert out.label == "Resize with a kernel (scale): Lanczos"
 
 
 def test_prefilter_members_as_filter(small: dict[str, NodeData]) -> None:
-    """R9: Denoise has the Prefilter method; as a filter it is the member itself."""
+    """Denoise has the Prefilter method; as a filter it is the member itself."""
     denoise = small["Denoise"]
     out = run(denoise, "p", "vsdenoise.Prefilter", {CLASS: "MINBLUR"}, as_filter=True)
     assert isinstance(out, VSFilter)
@@ -533,7 +710,7 @@ def test_overlay_defaults(
 
 def test_missing_required_value_names_the_input(small: dict[str, NodeData]) -> None:
     planes = small["Planes"]
-    with pytest.raises(ValueError, match="Second clip needs a value"):
+    with pytest.raises(ValueError, match=r"^Second clip needs a value.$"):
         run(planes, "m", "std.Merge", clip=SRC)
     with pytest.raises(ValueError, match="Connect a clip"):
         run(planes, "m", "std.Merge", {"clipb": REF})
@@ -541,25 +718,27 @@ def test_missing_required_value_names_the_input(small: dict[str, NodeData]) -> N
         run(planes, "m", "std.Merge", {"clipb": REF, "weight": "a, b"}, clip=SRC)
 
 
+VIDEO_SOURCE = {
+    "id": "bs.VideoSource",
+    "source": "plugin",
+    "module": "bs",
+    "import": "",
+    "call": "core.bs.VideoSource",
+    "kind": "plugin",
+    "params": [
+        _param("source", "str | bytes", None),
+        _param("track", "int | None", "None"),
+    ],
+    "returns": "VideoNode",
+    "doc": "BestSource.",
+    "arg_docs": {},
+}
+
+
 def test_missing_file_says_why(tmp_path: Path) -> None:
     """A required file input whose file is gone (a saved chain's video was moved)
     says so, not that it has no value."""
-    video_source = {
-        "id": "bs.VideoSource",
-        "source": "plugin",
-        "module": "bs",
-        "import": "",
-        "call": "core.bs.VideoSource",
-        "kind": "plugin",
-        "params": [
-            _param("source", "str | bytes", None),
-            _param("track", "int | None", "None"),
-        ],
-        "returns": "VideoNode",
-        "doc": "BestSource.",
-        "arg_docs": {},
-    }
-    cat = load_catalog(small_catalog(tmp_path, extra=[video_source]), SHIPPED)
+    cat = load_catalog(small_catalog(tmp_path, extra=[VIDEO_SOURCE]), SHIPPED)
     load = nodes_of(cat)["Load Clip"]
     video = tmp_path / "clip.mkv"
     video.write_bytes(b"")
@@ -572,6 +751,28 @@ def test_missing_file_says_why(tmp_path: Path) -> None:
     assert "needs a value" not in str(error.value)
     with pytest.raises(ValueError, match="needs a value"):
         run(load, "l", "bs.VideoSource")
+
+
+def test_on_clip_gets_the_clip_a_node_makes(tmp_path: Path) -> None:
+    """A node registered with on_clip (Load Clip, with what its node shows of the clip)
+    returns what on_clip makes of its clip, with the node's context."""
+    cat = load_catalog(small_catalog(tmp_path, extra=[VIDEO_SOURCE]), SHIPPED)
+    seen: list[tuple[str, VideoClip]] = []
+
+    def on_clip(context: Any, clip: VideoClip) -> VideoClip:
+        seen.append((context.node_id, clip))
+        return replace(clip, label="shown")
+
+    group = new_group()
+    register_families(cat.methods, group, cat.enums, ["Load Clip"], on_clip=on_clip)
+    (load,) = group.nodes
+    video = tmp_path / "clip.mkv"
+    video.write_bytes(b"")
+    out = run(load, "l", "bs.VideoSource", {"source": str(video)})
+    assert isinstance(out, VideoClip) and out.label == "shown"
+    assert [(node, clip.stmt) for node, clip in seen] == [
+        ("l", f"n_l_0 = core.bs.VideoSource(source={str(video)!r})")
+    ]
 
 
 def test_unknown_input_values_are_dropped_with_warning(
@@ -606,10 +807,10 @@ def test_unknown_input_values_are_dropped_with_warning(
     with caplog.at_level(logging.WARNING):
         out = run(denoise, "bm3d", method, raw=raw)
     assert isinstance(out, VideoClip)
-    assert out.stmt == "n_bm3d_0 = vsdenoise.bm3d(n_src_0, sigma=0.8)"
+    assert out.stmt == "n_bm3d_0 = chainner_vs.bm3d(n_src_0, sigma=0.8)"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "the values of Refine, Profile are missing" in warnings[0].getMessage()
+    assert "the values of Final passes, Profile are missing" in warnings[0].getMessage()
     # A method the catalog lost is a clear error on the node.
     raw[METHOD_ID] = "vsdenoise.gone"
     with pytest.raises(ValueError, match=r"'vsdenoise\.gone' is not among"):
@@ -648,8 +849,12 @@ def test_schema_ids_stable_across_rescan(tmp_path: Path) -> None:
 
 def test_keywords_list_methods(small: dict[str, NodeData]) -> None:
     denoise = small["Denoise"]
-    assert {"BM3D", "vsdenoise.bm3d", "Prefilter", "MINBLUR"} <= set(denoise.keywords)
+    labels = {"Denoise, strong (BM3D)", "Quick prefilter for motion search (Prefilter)"}
+    assert {*labels, "vsdenoise.bm3d", "MINBLUR"} <= set(denoise.keywords)
     assert "Mitchell" in small["Resize"].keywords
+    # Everyday words: "ivtc" finds Deinterlace, "upscale" Resize.
+    assert {"IVTC", "Detelecine"} <= set(small["Deinterlace"].keywords)
+    assert "Upscale" in small["Resize"].keywords
     # Typing a method's label or function name offers the node with it picked.
     found = {
         (s.query, value) for s in denoise.suggestions for value in s.inputs.values()
@@ -658,7 +863,8 @@ def test_keywords_list_methods(small: dict[str, NodeData]) -> None:
     # An overlay's plain name too, when it is another word.
     deinterlace = {s.query: dict(s.inputs) for s in small["Deinterlace"].suggestions}
     nnedi3 = {METHOD_ID: "vsaa.NNEDI3.deinterlace"}
-    assert deinterlace["NNEDI3 deinterlace"] == deinterlace["deinterlace"] == nnedi3
+    label = deinterlace["Deinterlace, smooth edges (NNEDI3)"]
+    assert label == deinterlace["deinterlace"] == nnedi3
     # The /nodes handler sends them.
     server = (Path(__file__).parents[1] / "src" / "server.py").read_text(
         encoding="utf-8"
@@ -1008,9 +1214,8 @@ STACK_CLIPS = {
 
 
 def test_clips_of_vstools_iterable_take_the_clip_inputs(tmp_path: Path) -> None:
-    nodes = nodes_of(
-        load_catalog(small_catalog(tmp_path, extra=[STACK_CLIPS]), SHIPPED)
-    )
+    # Without the shipped overlays, which hide it.
+    nodes = nodes_of(load_catalog(small_catalog(tmp_path, extra=[STACK_CLIPS]), []))
     (node,) = [n for n in nodes.values() if "vstools.stack_clips" in n.keywords]
     out = run(node, "st", "vstools.stack_clips", clip=SRC)
     assert isinstance(out, VideoClip)
@@ -1019,6 +1224,10 @@ def test_clips_of_vstools_iterable_take_the_clip_inputs(tmp_path: Path) -> None:
     raw: dict[int, object] = {int(i.id): default_of(i) for i in node.inputs}
     raw.update({MAIN_ID: SRC, METHOD_ID: "vstools.stack_clips", MODE_ID: "simple"})
     raw[second["vstools.stack_clips", "clips#2"]] = REF
+    (more,) = [
+        i for i in node.inputs if i.id == second["vstools.stack_clips", "clips#2"]
+    ]
+    assert more.hint and str(more.description).startswith("One more clip")
     out = run(node, "st", "vstools.stack_clips", raw=raw)
     assert isinstance(out, VideoClip)
     assert out.stmt == "n_st_0 = vstools.stack_clips([n_src_0, n_ref_0])"
@@ -1116,7 +1325,7 @@ def test_a_union_takes_its_other_values_as_a_python_value(tmp_path: Path) -> Non
     method = "vsdenoise.decrease_size"
     ids = input_ids(node.name, [(method, "prefilter"), (method, "prefilter#other")])
     other = next(i for i in node.inputs if i.id == ids[method, "prefilter#other"])
-    assert other.label == "Prefilter as a Python value (bool | tuple[int, int] | float)"
+    assert other.label == "Prefilter (other values)"
     assert other.optional
     group = method_group(node, method)
     advanced = [g for g in group.items if isinstance(g, Group)]
@@ -1218,22 +1427,18 @@ def real_nodes(real: Catalog) -> dict[str, NodeData]:
 
 # The shipped overlays' defaults: (family, method, parameter key, starting value).
 SHIPPED_DEFAULTS = [
-    # bitdepth defaults to None in vs-jetpack 2.2.6: an optional text field.
-    ("Convert Format", "vstools.depth", "bitdepth", "16"),
+    ("Convert Format", "vstools.depth", "bitdepth", 16),
     ("Convert Format", "resize.Point", "format", "vs.RGBS"),
-    ("Clip Properties", "std.SetFrameProps", "_Matrix", "6"),
-    ("Clip Properties", "std.SetFrameProps", "_Transfer", "6"),
-    ("Clip Properties", "std.SetFrameProps", "_Primaries", "6"),
-    ("Clip Properties", "std.AssumeFPS", "fpsnum", "25"),
-    ("Clip Properties", "std.AssumeFPS", "fpsden", "1"),
+    ("Clip Properties", "std.AssumeFPS", "fpsnum", 25),
+    ("Clip Properties", "std.AssumeFPS", "fpsden", 1),
     ("Clip Properties", "vstools.change_fps", "fps", "24000/1001"),
-    ("Resize", "vskernels.*.scale", "width", "1280"),
-    ("Resize", "vskernels.*.scale", "height", "960"),
-    ("Resize", "std.Crop", "top", "20"),
-    ("Resize", "std.Crop", "bottom", "20"),
-    ("Cut and Splice", "std.Trim", "first", "30"),
+    ("Resize", "vskernels.*.scale", "width", 1280),
+    ("Resize", "vskernels.*.scale", "height", 960),
+    ("Resize", "std.Crop", "top", 0),
+    ("Resize", "std.Crop", "bottom", 0),
+    ("Cut and Splice", "std.Trim", "first", 0),
     ("Cut and Splice", "std.DeleteFrames", "frames", "0"),
-    ("Cut and Splice", "std.BlankClip", "length", "1"),
+    ("Cut and Splice", "std.BlankClip", "length", 1),
 ]
 
 
@@ -1256,7 +1461,7 @@ def test_real_catalog_has_no_empty_group(real_nodes: dict[str, NodeData]) -> Non
 
 
 def test_real_catalog_families(real: Catalog, real_nodes: dict[str, NodeData]) -> None:
-    """Every family has a node; groups keep the nodes small (R13)."""
+    """Every family has a node; groups keep the nodes small."""
     assert set(real_nodes) == set(FAMILIES)
     methods = {
         name: len(n.inputs[1 if name != "Load Clip" else 0].to_dict()["options"])
@@ -1425,18 +1630,18 @@ def test_reference_lines_match_in_vspipe(
         _Matrix="6",
         _Transfer="6",
         _Primaries="6",
-        _SARNum="16",
-        _SARDen="15",
+        _SARNum=16,
+        _SARDen=15,
     )
     r_src = c.ref(
         f"core.std.SetFrameProps({r_src}, _Matrix=6, _Transfer=6, _Primaries=6,"
         " _SARNum=16, _SARDen=15)"
     )
     c.same(src, r_src, "SetFrameProps")
-    src = c("Clip Properties", "std.AssumeFPS", src, fpsnum="25", fpsden="1")
+    src = c("Clip Properties", "std.AssumeFPS", src, fpsnum=25, fpsden=1)
     r_src = c.ref(f"core.std.AssumeFPS(clip={r_src}, fpsnum=25, fpsden=1)")
     c.same(src, r_src, "AssumeFPS")
-    src = c("Cut and Splice", "std.Trim", src, first="3")
+    src = c("Cut and Splice", "std.Trim", src, first=3)
     r_src = c.ref(f"{r_src}[3:]")
     c.same(src, r_src, "Trim")
     src = c("Clip Properties", "vstools.change_fps", src, fps="24000/1001")
@@ -1464,7 +1669,7 @@ def test_reference_lines_match_in_vspipe(
     )
     r_cf = c.ref(f"Mitchell().scale({r_cf}, 128, 100, linear=True)")
     c.same(cf, r_cf, "Mitchell scale")
-    cf = c("Resize", "std.Crop", cf, top="4", bottom="4")
+    cf = c("Resize", "std.Crop", cf, top=4, bottom=4)
     r_cf = c.ref(f"core.std.Crop({r_cf}, top=4, bottom=4, left=0, right=0)")
     c.same(cf, r_cf, "Crop")
     cf = c("Sharpen and Blur", "cas.CAS", cf)
@@ -1493,8 +1698,8 @@ def test_reference_lines_match_in_vspipe(
         _Matrix="6",
         _Transfer="6",
         _Primaries="6",
-        _SARNum="8",
-        _SARDen="9",
+        _SARNum=8,
+        _SARDen=9,
     )
     r_src2 = c.ref(
         f"core.std.SetFrameProps({NTSC}, _Matrix=6, _Transfer=6, _Primaries=6,"
@@ -1569,7 +1774,7 @@ def test_reference_lines_match_in_vspipe(
         luma,
         **{CLASS: "Hermite", "width": "128", "height": "100", "linear": "True"},
     )
-    luma = c("Resize", "std.Crop", luma, top="4", bottom="4")
+    luma = c("Resize", "std.Crop", luma, top=4, bottom=4)
     luma = c("Convert Format", "vstools.depth", luma, bitdepth=16)
     r_luma = c.ref(
         f"depth(core.std.Crop(Hermite().scale(core.resize.Point({r_yf},"
@@ -1592,7 +1797,7 @@ def test_reference_lines_match_in_vspipe(
         chroma,
         **{CLASS: "Hermite", "width": "128", "height": "100", "linear": "True"},
     )
-    chroma = c("Resize", "std.Crop", chroma, top="4", bottom="4")
+    chroma = c("Resize", "std.Crop", chroma, top=4, bottom=4)
     r_chroma = c.ref(
         f"core.std.Crop(Hermite().scale(core.resize.Point({r_rgbs},"
         " format=vs.YUV444P16, matrix=6, transfer=6, primaries=6), 128, 100,"
@@ -1718,7 +1923,7 @@ def test_reference_lines_match_in_vspipe(
         " backend=nl_means.Backend.ISPC)"
     )
     c.same(denoise, r_dn, "nl_means")
-    # R9: the Prefilter method with Use as filter on, wired into mc_degrain.
+    # The Prefilter method with Use as filter on, wired into mc_degrain.
     pre = c.filter("Denoise", "vsdenoise.Prefilter", **{CLASS: "MINBLUR"})
     mv2 = c("Denoise", "vsdenoise.mc_degrain", decen, prefilter=pre)
     r_mv2 = c.ref(f"mc_degrain({r_decen}, prefilter=Prefilter.MINBLUR)")
@@ -1777,3 +1982,405 @@ def test_user_functions_do_not_collide(
     path = tmp_path / "averages.vpy"
     path.write_text("\n".join([script, *checks, ""]), encoding="utf-8")
     assert clip_info(path, 0).num_frames == 3
+
+
+# chaiNNer's own Range fix (chainner_vs.range_fix), in Convert Format.
+RANGE_FIX = "chainner_vs.range_fix"
+# Any: the calls pass them as range_fix's Literal mode.
+RANGE_MODES: list[Any] = ["Compress (Full to Limited)", "Expand (Limited to Full)"]
+
+
+@pytest.mark.parametrize(
+    "entry", catalog.CHAINNER_FUNCTIONS, ids=lambda fn: fn["id"].rpartition(".")[2]
+)
+def test_own_entry_matches_its_function(entry: Mapping[str, Any]) -> None:
+    """A CHAINNER_FUNCTIONS entry has its function's parameters, annotations and
+    defaults (read from the source: the worker never imports chainner_vs)."""
+    name = entry["call"].rpartition(".")[2]
+    package = catalog.SCAN_PY.parent / "chainner_vs"
+    tree, fn = next(
+        (tree, node)
+        for path in sorted(package.glob("*.py"))
+        for tree in [ast.parse(path.read_text(encoding="utf-8"))]
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    names = {
+        t.id: n.value
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        for t in n.targets
+        if isinstance(t, ast.Name)
+    }
+    args = fn.args.args
+    defaults = [None] * (len(args) - len(fn.args.defaults)) + list(fn.args.defaults)
+    found = [
+        (
+            a.arg,
+            ast.unparse(a.annotation) if a.annotation else "",
+            None if d is None else ast.unparse(names.get(getattr(d, "id", ""), d)),
+        )
+        for a, d in zip(args, defaults)
+    ]
+    expected = [(p["name"], p["annotation"], p["default"]) for p in entry["params"]]
+    # The clip is Any in the code (VapourSynth is imported by name there).
+    assert found[0] == ("clip", "Any", None)
+    assert found[1:] == expected[1:]
+
+
+def test_range_fix_in_convert_format(small: dict[str, NodeData]) -> None:
+    """A catalog scanned without it (as an older install's cached one) still gains
+    the method: listed under Common, its Mode dropdown starting at Compress, and the
+    run writes chainner_vs.range_fix."""
+    assert RANGE_FIX not in SMALL.read_text(encoding="utf-8")
+    node = small["Convert Format"]
+    method = node.inputs[1].to_dict()
+    assert RANGE_FIX in [o["value"] for o in method["options"]]
+    order = [o["value"] for o in method["options"]]
+    starts = {g["label"]: order.index(g["startAt"]) for g in method["groups"]}
+    assert starts["Common"] <= order.index(RANGE_FIX) < starts.get("All", len(order))
+    ids = input_ids("Convert Format", [(RANGE_FIX, "mode")])
+    by_id: dict[int, BaseInput] = {i.id: i for i in node.inputs}
+    dropdown = by_id[ids[RANGE_FIX, "mode"]].to_dict()
+    assert dropdown["label"] == "Direction"
+    assert [o["option"] for o in dropdown["options"]] == RANGE_MODES
+    assert all(label.isascii() for label in RANGE_MODES)
+    assert dropdown["def"] == dropdown["options"][0]["value"]
+    group = method_group(node, RANGE_FIX)
+    assert ids_in(group.items) == {ids[RANGE_FIX, "mode"]}
+    compress = run(node, "r", RANGE_FIX, clip=SRC)
+    assert isinstance(compress, VideoClip)
+    # The start value is the function's default, which the call leaves out.
+    assert compress.stmt == "n_r_0 = chainner_vs.range_fix(n_src_0)"
+    assert BRIDGE_IMPORT in compress.imports
+    expand = run(
+        node, "r", RANGE_FIX, {"mode": dropdown["options"][1]["value"]}, clip=SRC
+    )
+    assert isinstance(expand, VideoClip)
+    assert expand.stmt == (
+        "n_r_0 = chainner_vs.range_fix(n_src_0, mode='Expand (Limited to Full)')"
+    )
+
+
+# (format, mode, input value, its luma and chroma outputs); 0 compresses, 1 expands.
+RANGE_VALUES = [
+    ("YUV444P8", 0, (0, 0), (16, 16)),
+    ("YUV444P8", 0, (255, 255), (235, 240)),
+    ("YUV444P8", 0, (128, 128), (126, 128)),
+    ("YUV444P8", 1, (16, 16), (0, 0)),
+    ("YUV444P8", 1, (235, 240), (255, 255)),
+    ("YUV444P8", 1, (126, 100), (128, 96)),
+    ("YUV444P10", 0, (0, 0), (64, 64)),
+    ("YUV444P10", 0, (1023, 1023), (940, 960)),
+    ("YUV444P10", 0, (512, 512), (502, 512)),
+    ("YUV444P10", 1, (64, 64), (0, 0)),
+    ("YUV444P10", 1, (940, 960), (1023, 1023)),
+    ("YUV444P10", 1, (496, 400), (504, 384)),
+    ("YUV444P16", 0, (0, 0), (4096, 4096)),
+    ("YUV444P16", 0, (65535, 65535), (60160, 61440)),
+    ("YUV444P16", 0, (32768, 32768), (32128, 32768)),
+    ("YUV444P16", 1, (4096, 4096), (0, 0)),
+    ("YUV444P16", 1, (60160, 61440), (65535, 65535)),
+    ("YUV444P16", 1, (31744, 25600), (32319, 24576)),
+]
+
+
+@pytest.mark.parametrize(("fmt", "mode", "given", "expected"), RANGE_VALUES)
+def test_range_fix_values(
+    fmt: str, mode: int, given: tuple[int, int], expected: tuple[int, int]
+) -> None:
+    """The exact values at 8, 10 and 16 bits, whatever the clip's range flag says;
+    the flag stays."""
+    vs = pytest.importorskip("vapoursynth")
+    from nodes.impl.vapoursynth.chainner_vs import range_fix
+
+    y, uv = given
+    blank = vs.core.std.BlankClip(
+        format=getattr(vs, fmt), width=8, height=8, length=1, color=[y, uv, uv]
+    )
+    for flag in (None, 0, 1):
+        clip = blank if flag is None else blank.std.SetFrameProps(_Range=flag)
+        frame = range_fix(clip, RANGE_MODES[mode]).get_frame(0)
+        assert [frame[p][0, 0] for p in range(3)] == [expected[0], *[expected[1]] * 2]
+        assert frame.props.get("_Range") == flag
+
+
+def test_range_fix_gray_rgb_and_float() -> None:
+    """Gray and RGB rescale every plane as luma; float comes back unchanged."""
+    vs = pytest.importorskip("vapoursynth")
+    from nodes.impl.vapoursynth.chainner_vs import range_fix
+
+    def first(fmt: int, color: list[float], mode: Any) -> list[float]:
+        clip = vs.core.std.BlankClip(format=fmt, width=8, height=8, color=color)
+        frame = range_fix(clip, mode).get_frame(0)
+        return [frame[p][0, 0] for p in range(frame.format.num_planes)]
+
+    assert first(vs.GRAY8, [255], RANGE_MODES[0]) == [235]
+    assert first(vs.GRAY16, [4096], RANGE_MODES[1]) == [0]
+    assert first(vs.RGB24, [0, 128, 255], RANGE_MODES[0]) == [16, 126, 235]
+    assert first(vs.RGB24, [16, 126, 235], RANGE_MODES[1]) == [0, 128, 255]
+    color = [0.25, -0.375, 0.5]
+    for mode in RANGE_MODES:
+        assert first(vs.YUV444PS, color, mode) == color
+        assert first(vs.RGBS, [0.0, 0.5, 1.0], mode) == [0.0, 0.5, 1.0]
+    unknown: Any = "Full"
+    with pytest.raises(ValueError, match="mode"):
+        range_fix(vs.core.std.BlankClip(), unknown)
+
+
+# Formats BM3D's float backends refuse.
+BM3D_FORMATS = ["YUV420P8", "YUV420P10", "YUV444P16", "RGB24", "GRAY8"]
+
+
+def _noisy_clip(vs: Any, fmt: str, seed: int) -> Any:
+    """Three 64x48 frames of noise, the same at every request of a frame."""
+    blank = vs.core.std.BlankClip(
+        format=getattr(vs, fmt), width=64, height=48, length=3
+    )
+
+    def fill(n: int, f: Any) -> Any:
+        out = f.copy()
+        for plane in range(out.format.num_planes):
+            rng = np.random.default_rng((seed, n, plane))
+            samples = np.asarray(out[plane])
+            if out.format.sample_type == vs.FLOAT:
+                samples[:] = rng.random(samples.shape, dtype=np.float32)
+            else:
+                peak = 1 << out.format.bits_per_sample
+                samples[:] = rng.integers(0, peak, samples.shape)
+        return out
+
+    return blank.std.ModifyFrame(blank, fill)
+
+
+def _largest_difference(clip: Any, expected: Any) -> float:
+    """The largest difference of a sample of `clip` from `expected`, which has the same
+    format and length."""
+    assert clip.format.id == expected.format.id
+    assert clip.num_frames == expected.num_frames
+    largest = 0.0
+    for n in range(clip.num_frames):
+        frame, other = clip.get_frame(n), expected.get_frame(n)
+        for plane in range(frame.format.num_planes):
+            samples = np.asarray(frame[plane], dtype=np.float64)
+            difference = samples - np.asarray(other[plane], dtype=np.float64)
+            largest = max(largest, float(np.abs(difference).max()))
+    return largest
+
+
+class _StandInBM3D:
+    """A stand-in for vs-jetpack's BM3D that records the formats it is given: on the
+    clip, as exactly as the CPU computes it, half the clip plus half its Reference
+    clip, or 0.75 of the clip without one."""
+
+    def __init__(self, bm3d: Any) -> None:
+        self.Backend = bm3d.Backend
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    def __call__(self, clip: Any, **kwargs: Any) -> Any:
+        clips = {k: v.format.name for k, v in kwargs.items() if k in ("pre", "ref")}
+        self.calls.append((clip.format.name, clips))
+        ref = kwargs.get("ref")
+        return clip.std.Expr("x 0.75 *") if ref is None else clip.std.Merge(ref)
+
+
+def test_bm3d_goes_to_32_bit_float_only_where_its_backend_needs_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vs = pytest.importorskip("vapoursynth")
+    vsdenoise = pytest.importorskip("vsdenoise")
+    from nodes.impl.vapoursynth.chainner_vs import bm3d
+
+    stand_in = _StandInBM3D(vsdenoise.bm3d)
+    monkeypatch.setattr(vsdenoise, "bm3d", stand_in)
+    cuda, old = stand_in.Backend.CUDA, stand_in.Backend.OLD
+    clip = vs.core.std.BlankClip(format=vs.YUV420P8, length=1)
+    floats = vs.core.std.BlankClip(format=vs.YUV420PS, length=1)
+    assert bm3d(clip, backend=cuda, ref=clip).format.id == vs.YUV420P8
+    assert bm3d(floats, backend=cuda, ref=clip).format.id == vs.YUV420PS
+    assert bm3d(floats, backend=cuda, pre=floats).format.id == vs.YUV420PS
+    assert bm3d(clip, backend=old, ref=clip).format.id == vs.YUV420P8
+    assert stand_in.calls == [
+        ("YUV420PS", {"ref": "YUV420PS"}),
+        ("YUV420PS", {"ref": "YUV420PS"}),
+        ("YUV420PS", {"pre": "YUV420PS"}),
+        ("YUV420P8", {"ref": "YUV420P8"}),
+    ]
+
+
+@pytest.mark.parametrize("fmt", BM3D_FORMATS)
+def test_bm3d_gives_what_convert_format_around_it_gives(
+    monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    """On a clip that is not 32-bit float, Denoise's BM3D gives what Convert Format's
+    Bit depth 32, BM3D, then Convert Format back to the clip's bit depth give, byte
+    for byte, with or without a Reference clip in that format (also converted). BM3D
+    is the CPU stand-in here: the GPU plugin gives two copies of one chain results
+    that differ in the last float bits (the GPU test below)."""
+    vs = pytest.importorskip("vapoursynth")
+    vstools = pytest.importorskip("vstools")
+    vsdenoise = pytest.importorskip("vsdenoise")
+    from nodes.impl.vapoursynth.chainner_vs import bm3d
+
+    stand_in = _StandInBM3D(vsdenoise.bm3d)
+    monkeypatch.setattr(vsdenoise, "bm3d", stand_in)
+    cuda = stand_in.Backend.CUDA
+    clip, ref = _noisy_clip(vs, fmt, 1), _noisy_clip(vs, fmt, 2)
+    bits = clip.format.bits_per_sample
+    for clips in ({}, {"ref": ref}):
+        converted = {name: vstools.depth(c, 32) for name, c in clips.items()}
+        denoised = stand_in(vstools.depth(clip, 32), backend=cuda, **converted)
+        expected = vstools.depth(denoised, bits)
+        assert _largest_difference(bm3d(clip, backend=cuda, **clips), expected) == 0
+
+
+@pytest.mark.parametrize("fmt", [*BM3D_FORMATS, "YUV420PS", "RGBS"])
+def test_bm3d_on_the_gpu_agrees_with_convert_format_around_it(fmt: str) -> None:
+    """On the automatic (GPU) backend, which vs-jetpack's BM3D refuses a clip that is
+    not 32-bit float for, Denoise's BM3D gives what Convert Format's Bit depth 32,
+    BM3D and Convert Format back give; on a 32-bit float clip, what vs-jetpack's BM3D
+    gives. Within the plugin's own spread: two copies of one chain differ by up to
+    3e-7 in 32-bit float, and so by one level where that crosses a rounding step."""
+    vs = pytest.importorskip("vapoursynth")
+    vstools = pytest.importorskip("vstools")
+    vsdenoise = pytest.importorskip("vsdenoise")
+    from gpu import cuda_pci_addresses
+    from nodes.impl.vapoursynth.chainner_vs import bm3d
+
+    if not cuda_pci_addresses():
+        pytest.skip("BM3D's automatic backend needs a CUDA GPU")
+    clip, ref = _noisy_clip(vs, fmt, 1), _noisy_clip(vs, fmt, 2)
+    floats = clip.format.sample_type == vs.FLOAT
+    if not floats:
+        with pytest.raises(RuntimeError, match="only supports 32 bit float input"):
+            vsdenoise.bm3d(clip, sigma=2, tr=1)
+    spread = 1e-6 if floats else 1
+    for clips in ({}, {"ref": ref}):
+        if floats:
+            expected = vsdenoise.bm3d(clip, sigma=2, tr=1, **clips)
+        else:
+            converted = {name: vstools.depth(c, 32) for name, c in clips.items()}
+            denoised = vsdenoise.bm3d(
+                vstools.depth(clip, 32), sigma=2, tr=1, **converted
+            )
+            expected = vstools.depth(denoised, clip.format.bits_per_sample)
+        assert _largest_difference(bm3d(clip, sigma=2, tr=1, **clips), expected) <= (
+            spread
+        )
+
+
+def test_detelecine_and_scale_by_nodes(small: dict[str, NodeData]) -> None:
+    """Detelecine in Deinterlace and Scale by in Resize, under Common, run with only
+    a clip connected; a changed setting is written."""
+    for family, method_id, params in [
+        ("Deinterlace", "chainner_vs.detelecine", ["tff", "postprocess", "cycle"]),
+        ("Resize", "chainner_vs.scale_by", ["factor", "kernel", "linear"]),
+    ]:
+        node = small[family]
+        method = node.inputs[1].to_dict()
+        order = [o["value"] for o in method["options"]]
+        starts = {g["label"]: order.index(g["startAt"]) for g in method["groups"]}
+        assert starts["Common"] <= order.index(method_id) < starts.get("All", 10**6)
+        ids = input_ids(family, [(method_id, p) for p in params])
+        assert ids_in(method_group(node, method_id).items) == set(ids.values())
+        out = run(node, "m", method_id, clip=SRC)
+        assert isinstance(out, VideoClip)
+        assert out.stmt == f"n_m_0 = {method_id}(n_src_0)"
+        assert BRIDGE_IMPORT in out.imports
+    by_id: dict[int, BaseInput] = {i.id: i for i in small["Resize"].inputs}
+    ids = input_ids("Resize", [("chainner_vs.scale_by", "kernel")])
+    kernel = by_id[ids["chainner_vs.scale_by", "kernel"]].to_dict()
+    assert [o["option"] for o in kernel["options"]] == [
+        "Hermite",
+        "Catrom",
+        "Mitchell",
+        "Lanczos",
+        "Bilinear",
+    ]
+    assert kernel["def"] == kernel["options"][0]["value"]
+    out = run(
+        small["Deinterlace"],
+        "m",
+        "chainner_vs.detelecine",
+        {"tff": False, "postprocess": False, "cycle": 4},
+        clip=SRC,
+    )
+    assert isinstance(out, VideoClip)
+    assert out.stmt == (
+        "n_m_0 = chainner_vs.detelecine(n_src_0, tff=False, postprocess=False, cycle=4)"
+    )
+
+
+def telecined(vs: Any) -> tuple[Any, Any]:
+    """A 24000/1001 clip with a moving pattern, and it in 3:2 pulldown at 30000/1001
+    (top field first, unflagged)."""
+    core = vs.core
+    base = core.std.BlankClip(
+        format=vs.YUV420P8, width=160, height=96, length=40, fpsnum=24000, fpsden=1001
+    )
+    # Bars that move far enough per frame for field matching to tell the frames apart.
+    film = base.akarin.Expr(
+        [
+            "X N 12 * + 32 % 16 < 200 40 ? Y N 6 * + 24 % 12 < 30 0 ? +",
+            "X 2 * N 9 * + 255 %",
+            "128",
+        ]
+    )
+    fields = film.std.SeparateFields(tff=True)
+    pulled = fields.std.SelectEvery(cycle=8, offsets=[0, 1, 2, 3, 2, 5, 4, 7, 6, 7])
+    woven = pulled.std.DoubleWeave(tff=True).std.SelectEvery(cycle=2, offsets=0)
+    return film, woven.std.AssumeFPS(fpsnum=30000, fpsden=1001)
+
+
+def test_detelecine_restores_the_film_frames() -> None:
+    """On 3:2 pulldown: 24000/1001 fps again, the film frames, and the same frames as
+    the three lines it replaces."""
+    vs = pytest.importorskip("vapoursynth")
+    from nodes.impl.vapoursynth.chainner_vs import detelecine
+
+    nnedi3 = pytest.importorskip("vsaa").NNEDI3
+    vsdeinterlace = pytest.importorskip("vsdeinterlace")
+    tff = pytest.importorskip("vstools").FieldBased.TFF
+
+    film, clip = telecined(vs)
+    out = detelecine(clip)
+    assert (out.fps_num, out.fps_den) == (24000, 1001)
+    reference = vsdeinterlace.vdecimate(
+        vsdeinterlace.vfm(
+            tff.apply(clip),
+            postprocess=nnedi3(pscrn=0, tff=2, double_rate=0).deinterlace,
+        )
+    )
+    assert out.num_frames == reference.num_frames == film.num_frames
+    for other in (reference, film):
+        for p in range(3):
+            stats = vs.core.std.PlaneStats(out, other, plane=p)
+            for n in range(out.num_frames):
+                assert stats.get_frame(n).props["PlaneStatsDiff"] == 0, (p, n)
+
+
+def test_scale_by_sizes_and_kernel() -> None:
+    """Width and height rounded to whole chroma samples; the frames of the kernel's
+    own scale at that size."""
+    vs = pytest.importorskip("vapoursynth")
+    from nodes.impl.vapoursynth.chainner_vs import scale_by
+
+    vskernels = pytest.importorskip("vskernels")
+
+    yuv = vs.core.std.BlankClip(format=vs.YUV420P16, width=1918, height=1080)
+    assert (scale_by(yuv).width, scale_by(yuv).height) == (960, 540)
+    assert (scale_by(yuv, 2).width, scale_by(yuv, 2).height) == (3836, 2160)
+    rgb = vs.core.std.BlankClip(format=vs.RGBS, width=1918, height=1077, length=1)
+    rgb = rgb.akarin.Expr(["X Y + 3000 /", "X 3000 /", "Y 1100 /"])
+    assert (scale_by(rgb).width, scale_by(rgb).height) == (959, 539)
+    kernel: Any
+    for kernel in ("Hermite", "Lanczos"):
+        out = scale_by(rgb, 0.5, kernel)
+        reference = getattr(vskernels, kernel)().scale(
+            rgb, width=959, height=539, linear=True
+        )
+        for p in range(3):
+            stats = vs.core.std.PlaneStats(out, reference, plane=p).get_frame(0)
+            assert stats.props["PlaneStatsDiff"] == 0
+    with pytest.raises(ValueError, match="factor"):
+        scale_by(rgb, 0)

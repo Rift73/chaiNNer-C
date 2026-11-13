@@ -11,8 +11,6 @@ from __future__ import annotations
 import base64
 import dataclasses
 import hashlib
-import importlib
-import sys
 import zipfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -278,7 +276,7 @@ def test_amd_stack_only_for_gpus_with_eight_compute_units(
     triton = pins(tensorrt_package.get_triton())
     if not kernels:
         assert triton == [
-            ("triton-windows", "3.5.1.post22")
+            ("triton-windows", "3.9.0.post30")
             if system == "windows"
             else ("triton", "3.8.0")
         ]
@@ -389,9 +387,9 @@ def test_onnx_runtime_on_amd_windows_is_the_directml_and_migraphx_build(
         ("linux", NVIDIA, ("gfx1100",), ("triton", "3.8.0")),
         ("linux", NO_NVIDIA, (), ("triton", "3.8.0")),
         ("linux", NO_NVIDIA, ("gfx1100",), ("triton", "3.8.0+git4cff872c.rocm10.0.0")),
-        ("windows", NVIDIA, (), ("triton-windows", "3.5.1.post22")),
-        ("windows", NVIDIA, ("gfx1100",), ("triton-windows", "3.5.1.post22")),
-        ("windows", NO_NVIDIA, (), ("triton-windows", "3.5.1.post22")),
+        ("windows", NVIDIA, (), ("triton-windows", "3.9.0.post30")),
+        ("windows", NVIDIA, ("gfx1100",), ("triton-windows", "3.9.0.post30")),
+        ("windows", NO_NVIDIA, (), ("triton-windows", "3.9.0.post30")),
         # The MIGraphX package lists its own there (triton_windows).
         ("windows", NO_NVIDIA, ("gfx1100",), None),
     ],
@@ -408,6 +406,47 @@ def test_tensorrt_triton(
     assert pins(dependencies) == ([triton] if triton else [])
     for dependency in dependencies:
         assert dependency.import_name == "triton" or dependency.pypi_name == "triton"
+
+
+@pytest.mark.parametrize(
+    ("system", "nvidia", "gfx", "listed"),
+    [
+        # CUDA's PyTorch requires Triton itself on Linux; ROCm's lists AMD's (get_pytorch).
+        ("linux", NVIDIA, (), False),
+        ("linux", NVIDIA, ("gfx1100",), False),
+        ("linux", NO_NVIDIA, (), False),
+        ("linux", NO_NVIDIA, ("gfx1100",), False),
+        ("windows", NVIDIA, (), True),
+        ("windows", NVIDIA, ("gfx1100",), True),
+        ("windows", NO_NVIDIA, (), False),
+        # The MIGraphX package lists its own there (triton_windows).
+        ("windows", NO_NVIDIA, ("gfx1100",), False),
+        ("macos", NO_NVIDIA, (), False),
+    ],
+)
+def test_pytorch_triton(
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    nvidia: SimpleNamespace,
+    gfx: tuple[str, ...],
+    listed: bool,
+):
+    """The PyTorch package lists Triton for spandrel's eager kernels where PyTorch does
+    not bring it, Windows with an NVIDIA GPU, once and as the TensorRT package does; its
+    other selections stay as they were."""
+    computer(monkeypatch, pytorch_package, nvidia=nvidia, gfx=gfx, system=system)
+    computer(monkeypatch, tensorrt_package, nvidia=nvidia, gfx=gfx, system=system)
+    triton = pytorch_package.get_triton()
+    names = [d.pypi_name for d in [*pytorch_package.get_pytorch(), *triton]]
+    if listed:
+        assert names.count("triton-windows") == 1
+        assert [d.to_dict() for d in triton] == [
+            d.to_dict() for d in tensorrt_package.get_triton()
+        ]
+        assert pins(triton) == [("triton-windows", "3.9.0.post30")]
+    else:
+        assert triton == []
+        assert "triton-windows" not in names
 
 
 @pytest.mark.parametrize("system", ["linux", "windows"])
@@ -509,13 +548,6 @@ def test_the_builder_empties_device_all_and_refuses_another_layout():
         )
 
 
-@pytest.fixture
-def server_host(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    # The module parses its command line when imported.
-    monkeypatch.setattr(sys, "argv", ["server_host.py"])
-    return importlib.import_module("server_host")
-
-
 def package(id: str, *names: str) -> SimpleNamespace:
     return SimpleNamespace(
         id=id, dependencies=[SimpleNamespace(pypi_name=n) for n in names]
@@ -552,8 +584,40 @@ def test_uninstall_keeps_what_another_installed_package_lists(
     for name in ("onnx", "onnxruntime-migraphx"):
         del installed[name]
     assert server_host.shared_distributions([pytorch], everything) == set()
-    # No package shares a dependency with another on NVIDIA GPUs and CPUs.
+    # A package that shares nothing keeps nothing.
     assert server_host.shared_distributions([ncnn], everything) == set()
+
+
+def test_uninstalling_pytorch_keeps_the_triton_tensorrt_lists_on_windows(
+    server_host: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    """On Windows with an NVIDIA GPU the PyTorch and TensorRT packages both list Triton:
+    it stays while either is installed, and goes with the last one."""
+    for module in (pytorch_package, tensorrt_package):
+        computer(monkeypatch, module, nvidia=NVIDIA, system="windows")
+    pytorch = package(
+        "pytorch",
+        *(d.pypi_name for d in pytorch_package.get_pytorch()),
+        *(d.pypi_name for d in pytorch_package.get_triton()),
+    )
+    tensorrt = package(
+        "tensorrt",
+        "tensorrt",
+        *(d.pypi_name for d in tensorrt_package.get_triton()),
+    )
+    everything = [pytorch, tensorrt]
+    installed = dict.fromkeys(
+        ["torch", "torchvision", "tensorrt", "triton-windows"], "1"
+    )
+    monkeypatch.setattr(server_host, "installed_packages", installed)
+
+    assert server_host.shared_distributions([pytorch], everything) == {"triton-windows"}
+    assert server_host.shared_distributions([tensorrt], everything) == {
+        "triton-windows"
+    }
+    assert server_host.shared_distributions([pytorch, tensorrt], everything) == set()
+    del installed["tensorrt"]
+    assert server_host.shared_distributions([pytorch], everything) == set()
 
 
 def selected_dependencies(
@@ -568,6 +632,7 @@ def selected_dependencies(
         computer(monkeypatch, module, nvidia=nvidia, gfx=gfx, system=system)
     return [
         *pytorch_package.get_pytorch(),
+        *pytorch_package.get_triton(),
         onnx_package.get_onnx_runtime(),
         *onnx_package.get_rocm(),
         *tensorrt_package.get_triton(),
@@ -657,14 +722,25 @@ def test_a_folder_from_nvidia_upgrades_to_amds_triton_with_nothing_removed(
     assert replaced_distributions([info]) == []
 
 
-def test_a_folder_from_amd_keeps_its_newer_triton_on_nvidia(
+def test_a_folder_from_amd_upgrades_to_nvidias_newer_triton(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # A pin is a floor: on NVIDIA, this folder stays on 3.8.0.post29.
+    # The TensorRT package's pin is above AMD's 3.8.0.post29, so on NVIDIA this
+    # folder upgrades.
     monkeypatch.setattr(store, "installed_packages", {"triton-windows": "3.8.0.post29"})
     computer(monkeypatch, tensorrt_package, nvidia=NVIDIA, system="windows")
     (dependency,) = tensorrt_package.get_triton()
-    assert dependency.version == "3.5.1.post22"
+    assert dependency.version == "3.9.0.post30"
+    info = store.DependencyInfo(
+        package_name=dependency.pypi_name, version=dependency.version
+    )
+    assert filter_necessary_to_install([info]) == [info]
+
+
+def test_a_folder_on_nvidias_triton_keeps_it(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(store, "installed_packages", {"triton-windows": "3.9.0.post30"})
+    computer(monkeypatch, tensorrt_package, nvidia=NVIDIA, system="windows")
+    (dependency,) = tensorrt_package.get_triton()
     info = store.DependencyInfo(
         package_name=dependency.pypi_name, version=dependency.version
     )

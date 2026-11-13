@@ -4,8 +4,6 @@ modules (server_host.import_packages)."""
 from __future__ import annotations
 
 import asyncio
-import importlib
-import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -56,13 +54,6 @@ class Worker:
 
     async def start(self, extra_flags: list[str] | None = None) -> None:
         self.calls.append(("start", extra_flags))
-
-
-@pytest.fixture
-def server_host(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    # The module parses its command line when imported.
-    monkeypatch.setattr(sys, "argv", ["server_host.py"])
-    return importlib.import_module("server_host")
 
 
 async def failing_install(*_args: object) -> None:

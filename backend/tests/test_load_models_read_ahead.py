@@ -23,7 +23,7 @@ from packages.chaiNNer_onnx.onnx.batch_processing.load_models import (
     load_models_node as load_onnx_models_node,
 )
 from packages.chaiNNer_onnx.onnx.io.load_model import (
-    load_model_node as load_onnx_model_node,
+    read_model as load_onnx_model_node,
 )
 from packages.chaiNNer_pytorch.pytorch.io.load_model import load_model
 from packages.chaiNNer_pytorch.pytorch.iteration import load_models

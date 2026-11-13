@@ -34,7 +34,8 @@ chaiNNer-org. For chaiNNer itself, its documentation and its community, see the
 3. On first start, chaiNNer-C downloads its own Python. Then open the **dependency manager** (as in chaiNNer) to
    install the packages for the nodes you want, for example PyTorch, ONNX Runtime, NCNN or TensorRT.
 
-chaiNNer-C doesn't update itself; check the Releases page for new versions.
+At start, chaiNNer-C says when a newer release is out (Settings can turn the check off); **Update now** downloads it,
+checks it, installs it over the current folder and starts again, keeping your settings and installed packages.
 
 On Linux, download `chaiNNer-C-…-linux-x64.zip` from the same page; it unzips to `chaiNNer-linux-x64/`, where you run
 `./chaiNNer.sh` ([On Linux](#on-linux)).
@@ -47,7 +48,8 @@ On Linux, download `chaiNNer-C-…-linux-x64.zip` from the same page; it unzips 
   runs Windows 11 qualifies. (Technically: x86-64-v2, the baseline NumPy 2 requires.) Newer CPUs with AVX2 or AVX-512
   are used automatically for extra speed.
 - **A GPU is optional.** PyTorch, ONNX Runtime (also through TensorRT) and TensorRT use NVIDIA GPUs, on Linux as on
-  Windows; NCNN runs on any Vulkan GPU. Without a supported GPU the CPU does the work.
+  Windows. On AMD GPUs that ROCm 10.0 supports, PyTorch runs on ROCm and ONNX models run through MIGraphX, on Linux
+  as on Windows. NCNN runs on any Vulkan GPU. Without a supported GPU the CPU does the work.
 
 Not supported: 32-bit systems, ARM PCs (such as Snapdragon laptops) and ARM Linux, Linux without glibc (such as
 Alpine), and macOS.

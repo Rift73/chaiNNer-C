@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "separable_avx512.c is an x86-64 /arch:AVX512 unit"
 #endif
-/* The separable filter's AVX-512 unit (/arch:AVX512, spec 4.3, D15): no export,
+/* The separable filter's AVX-512 unit (/arch:AVX512): no export,
  * reached only through box_complete_ops.c's row dispatch on the call's ISA level,
  * for lanes 8 (OpenCV's AVX2/FMA dispatch) with the coordinate tables.
  * separable_avx2.c's layout in groups of 16 at absolute columns = 0 (mod 16). The

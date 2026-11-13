@@ -1,4 +1,4 @@
-"""Consult 11 D-16: the 18 producers return upstream's memory layout.
+"""The 18 producers return upstream's memory layout.
 
 Each producer runs through the port and through its frozen upstream body (the
 differential modules' loaders) on inputs in Lens Blur's planar layout (a (c, h, w)
@@ -13,7 +13,7 @@ every other bit, and upstream's layout, the strides np.clip's order K gives the
 result at ImageOutput.enforce, or for an assume_normalized output the result's
 own strides, which enforce passes on.
 
-These are the goldens of D-16's planar-aware kernels: the channel runs of
+These are the goldens of the planar-aware kernels: the channel runs of
 cn_adjust_f32 and cn_levels_f32, the strided pixels of cn_chroma_key,
 cn_matting_trimap_output and the cn_transfer_* kernels, the output rows of
 cn_channels_crop, and the per-plane calls of cn_channels_assemble,

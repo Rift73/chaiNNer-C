@@ -56,10 +56,6 @@ def _into_standard_image_form(img: np.ndarray, change_shape: bool) -> np.ndarray
         raise ValueError("Unsupported output tensor shape")
 
 
-def _flip_r_b_channels(img: np.ndarray) -> np.ndarray:
-    return swap_red_blue(img)
-
-
 def _output_planes(output: np.ndarray, change_shape: bool) -> np.ndarray | None:
     """A (1, C, H, W) or (C, H, W) float16 or float32 output's (C, H, W) planes,
     rows contiguous, as planar_to_interleaved reads them; else None."""
@@ -143,7 +139,7 @@ def onnx_auto_split(
                 return reused
         try:
             lr_img, remove_pad = _pad(model_input(img), size_req or SizeReq())
-            lr_img = _flip_r_b_channels(lr_img)
+            lr_img = swap_red_blue(lr_img)
             lr_img = _into_batched_form(lr_img, change_shape)
             output = cast(
                 np.ndarray, session.run([output_name], {input_name: lr_img})[0]
@@ -158,7 +154,7 @@ def onnx_auto_split(
                 )
             else:
                 output = _into_standard_image_form(output, change_shape)
-                output = _flip_r_b_channels(output)
+                output = swap_red_blue(output)
                 output = remove_pad(output)
                 result = cast_numpy(output, np.dtype(np.float32))
             if tiles is not None:
@@ -167,7 +163,7 @@ def onnx_auto_split(
         except Exception as e:
             if is_out_of_memory(e):
                 raise RuntimeError(
-                    "A VRAM out-of-memory error has occurred. Please try using a more extreme tiling mode."
+                    "The model ran out of memory. Please try using a more extreme tiling mode."
                 ) from e
             elif isinstance(e, UnicodeDecodeError):
                 raise RuntimeError(ort_error_message(e)) from e

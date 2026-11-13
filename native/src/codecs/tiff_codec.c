@@ -542,22 +542,19 @@ cn_codec_status cn_tiff_decode(const uint8_t *data, size_t size, cn_codec_alloca
         const tiff_orientation fix = orientation_fix(image.orientation, image.dst_bits != 8);
         const size_t pixel = image.channels * (size_t)(image.sample & 0xFF);
         const uint32_t height = image.height, width = image.width;
-        uint8_t *work = fix.transpose ? (uint8_t *)malloc((size_t)height * width * pixel)
-                                      : allocate(context, height, width, image.channels, image.sample);
+        /* The output is asked for first, turned when transposed, so that its size limits apply before the read. */
+        uint8_t *const out = fix.transpose ? allocate(context, width, height, image.channels, image.sample)
+                                           : allocate(context, height, width, image.channels, image.sample);
+        uint8_t *const work = out && fix.transpose ? (uint8_t *)malloc((size_t)height * width * pixel) : out;
         if (work && tiff_read(tif, &image, tw, th, row_bytes, work) && !failed) {
             if (fix.before != NO_FLIP) flip_pixels(work, height, width, pixel, fix.before);
-            if (!fix.transpose) {
-                status = CN_CODEC_OK;
-            } else {
-                uint8_t *out = allocate(context, width, height, image.channels, image.sample);
-                if (out) {
-                    transpose_pixels(work, out, height, width, pixel);
-                    if (fix.after != NO_FLIP) flip_pixels(out, width, height, pixel, fix.after);
-                    status = CN_CODEC_OK;
-                }
+            if (fix.transpose) {
+                transpose_pixels(work, out, height, width, pixel);
+                if (fix.after != NO_FLIP) flip_pixels(out, width, height, pixel, fix.after);
             }
+            status = CN_CODEC_OK;
         }
-        if (fix.transpose) free(work);
+        if (work != out) free(work);
     }
     TIFFClose(tif);
     return failed ? CN_CODEC_FALLBACK : status;

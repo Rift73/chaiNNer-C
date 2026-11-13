@@ -8,7 +8,7 @@ import weakref
 import cv2
 import numpy as np
 
-from .native import check, f32, lib, ptr
+from .native import check, image_f32, lib, ptr
 from .native_opencv_simd import float32_lanes, target
 from .native_prepared import PreparedCache, float_state
 from .native_versions import CV_CN_MAX
@@ -66,16 +66,8 @@ DIFFUSION_IDS = {"FS": 0, "JJN": 1, "ST": 2, "A": 3, "B": 4, "S": 5, "S2": 6, "S
 MAX_HISTORY_LENGTH = 682541919
 
 
-def _image(image: np.ndarray) -> tuple[np.ndarray, int]:
-    source = f32(image)
-    if source.ndim not in (2, 3) or any(size == 0 for size in source.shape):
-        raise ValueError(f"Invalid image shape {source.shape}")
-    channels = source.shape[2] if source.ndim == 3 else 1
-    return source, channels
-
-
 def median(image: np.ndarray, radius: object) -> np.ndarray:
-    source, channels = _image(image)
+    source, channels = image_f32(image)
     if not isinstance(radius, int) or not 1 <= radius <= 1000:
         raise ValueError("Median radius must be an integer in [1,1000]")
     shape = source.shape[:2] if channels == 1 else source.shape
@@ -127,7 +119,7 @@ def uniform_dither(
     algorithm: int = 0,
     history_length: object = 16,
 ) -> np.ndarray:
-    source, channels = _image(image)
+    source, channels = image_f32(image)
     if channels not in (1, 3, 4):
         raise ValueError("Dithering requires 1, 3, or 4 channels")
     if not isinstance(colors, int) or not 2 <= colors <= 0xFFFFFFFF:
@@ -236,10 +228,10 @@ def palette_dither(
     of 300 or more unique colors are supported instead of triggering its
     one-dimensional R-tree panic. With 300 or more unique colors, a pixel with
     a nonfinite channel, or every pixel when the palette holds a nonfinite
-    color, takes the linear rule used below 300 colors (Consult 8 D-5).
+    color, takes the linear rule used below 300 colors.
     """
-    source, channels = _image(image)
-    colors, palette_channels = _image(palette)
+    source, channels = image_f32(image)
+    colors, palette_channels = image_f32(palette)
     if channels not in (1, 3, 4):
         raise ValueError("Dithering requires 1, 3, or 4 channels")
     if palette_channels != channels or colors.shape[0] != 1:

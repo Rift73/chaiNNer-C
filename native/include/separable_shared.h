@@ -43,7 +43,7 @@
  * the virtual row v in [-ry, height + ry): the column (row) that v reflects to.
  * Both are NULL when a radius exceeds box_complete_ops.c's
  * SEPARABLE_TABLE_RADIUS; each tap then reflects its own coordinate.
- * Row tiles (D9): band rows per band, block columns per block, blocks per band. */
+ * Row tiles: band rows per band, block columns per block, blocks per band. */
 typedef struct separable_context {
     const float *src, *kx, *ky;
     float *dst;

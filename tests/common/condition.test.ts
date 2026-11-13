@@ -23,6 +23,7 @@ import {
     simplifyCondition,
     testInputCondition,
 } from '../../src/common/nodes/condition';
+import { getInputCondition } from '../../src/common/nodes/inputCondition';
 import { ChainLineage } from '../../src/common/nodes/lineage';
 import { SchemaMap } from '../../src/common/SchemaMap';
 import { stringifySourceHandle, stringifyTargetHandle } from '../../src/common/util';
@@ -225,4 +226,31 @@ test('group checks accept an iterated condition on an input with a handle only',
     );
     const handleless = [genericInput(0, 'Image', false), genericInput(1, 'Temporal Strength')];
     expect(check(iteratedByVideo, handleless).isValid).toBe(false);
+});
+
+test("an input's documented condition includes the conditional groups inside other groups", () => {
+    const schema = makeSchema(
+        UPSCALE,
+        'regularNode',
+        [genericInput(0, 'Image'), genericInput(1, 'Temporal Strength')],
+        1,
+        [
+            IMAGE,
+            {
+                id: 0 as GroupId,
+                kind: 'optional-list',
+                options: {},
+                items: [
+                    {
+                        id: 1 as GroupId,
+                        kind: 'conditional',
+                        options: { condition: iteratedByVideo },
+                        items: [STRENGTH],
+                    },
+                ],
+            },
+        ]
+    );
+    expect(getInputCondition(schema, IMAGE)).toEqual({ kind: 'and', items: [] });
+    expect(getInputCondition(schema, STRENGTH)).toEqual({ kind: 'and', items: [iteratedByVideo] });
 });

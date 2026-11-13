@@ -290,3 +290,18 @@ def test_normal_map_checked_abi_before_writes():
     assert api.cn_normal_map(unaligned, ptr(out), 6, 4, 0, 0, 0) == 1
     assert api.cn_normal_map(None, None, 0, 4, 0, 0, 0) == 0
     exact((out,), (before,))
+
+
+def test_add_normals_names_different_sizes():
+    from packages.chaiNNer_standard.material_textures.normal_map.add_normals import (
+        add_normals_node,
+    )
+
+    a, b = np.full((8, 8, 3), 0.5, np.float32), np.full((4, 4, 3), 0.5, np.float32)
+    for method in addition.AdditionMethod:
+        with pytest.raises(ValueError, match="must be the same size"):
+            add_normals_node(a, 100, b, 100, method)
+        # A one-pixel, one-row or one-column map broadcasts, as NumPy gives it.
+        for shape in ((1, 1, 3), (1, 8, 3), (8, 1, 3)):
+            other = np.full(shape, 0.25, np.float32)
+            assert add_normals_node(a, 100, other, 100, method).shape == (8, 8, 3)

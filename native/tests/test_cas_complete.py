@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import ast
 import ctypes as ct
 import importlib.util
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
+from node_bodies import load_body
 
 from nodes.impl import cas, native_cas
 from nodes.impl.native import lib
@@ -31,30 +30,10 @@ def load_original_cas():
     return module
 
 
-def load_node(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
-
-
 ORIGINAL = load_original_cas()
 RELATIVE = "packages/chaiNNer_standard/image_filter/sharpen/high_boost_filter.py"
-BOOST = load_node(ROOT / "backend/src" / RELATIVE)
-BOOST_REF = load_node(REFERENCE / RELATIVE)
+BOOST = load_body(ROOT / "backend/src" / RELATIVE)
+BOOST_REF = load_body(REFERENCE / RELATIVE)
 BOOST_REF.__dict__.update(cas_mix=ORIGINAL.cas_mix)
 
 

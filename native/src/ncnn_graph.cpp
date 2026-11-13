@@ -38,7 +38,6 @@ namespace {
 using namespace graphpy;
 enum class Op { add,sub,mul,div,floordiv,pow,mod };
 O np() { return py::module_::import("numpy"); }
-O result(PyObject *value) { if(!value)throw py::error_already_set();return py::reinterpret_steal<O>(value); }
 void status(int code) {
     if(code==0)return;
     if(code==3)throw std::bad_alloc();
@@ -162,7 +161,7 @@ uint64_t weak_integer(const O &value,const py::dtype &dtype) {
     // @TYPE@_safe_pyint_setitem: C long parses a type up to its width (C long
     // long beyond), unsigned int/long parse unsigned and retry signed, and a
     // wrapped or narrowed value is out of bounds. CPython's own errors propagate.
-    O number=result(PyNumber_Long(value.ptr()));
+    O number=steal(PyNumber_Long(value.ptr()));
     PyObject *object=number.ptr();
     const auto bits=static_cast<size_t>(dtype.itemsize())*8;
     uint64_t stored;bool wrapped=false,narrowed=false;
@@ -199,7 +198,7 @@ uint64_t weak_integer(const O &value,const py::dtype &dtype) {
 long double weak_long_double(const O &value) {
     // LONGDOUBLE_setitem: a Python int through its decimal text and strtold
     // (npy_longdouble_from_PyLong), anything else through its double.
-    if(!PyLong_CheckExact(value.ptr()))return PyFloat_AS_DOUBLE(result(PyNumber_Float(value.ptr())).ptr());
+    if(!PyLong_CheckExact(value.ptr()))return PyFloat_AS_DOUBLE(steal(PyNumber_Float(value.ptr())).ptr());
     const std::string digits=py::str(value);
     errno=0;
     const long double parsed=std::strtold(digits.c_str(),nullptr);
@@ -225,7 +224,7 @@ O weak_operand(const O &value,const py::dtype &dtype) {
             return output;
         }
 #endif
-        O number=result(PyNumber_Float(value.ptr()));
+        O number=steal(PyNumber_Float(value.ptr()));
         double parsed=PyFloat_AS_DOUBLE(number.ptr());
         if(size==2) {
             uint16_t half=0;int ignored=0;
@@ -679,13 +678,13 @@ O array_sqrt(const O &input) {
 O binary(const O &a,const O &b,Op op) {
     if(py::isinstance<py::array>(a)||py::isinstance<py::array>(b))return array_binary(a,b,op);
     switch(op){
-    case Op::add:return result(PyNumber_Add(a.ptr(),b.ptr()));
-    case Op::sub:return result(PyNumber_Subtract(a.ptr(),b.ptr()));
-    case Op::mul:return result(PyNumber_Multiply(a.ptr(),b.ptr()));
-    case Op::div:return result(PyNumber_TrueDivide(a.ptr(),b.ptr()));
-    case Op::floordiv:return result(PyNumber_FloorDivide(a.ptr(),b.ptr()));
-    case Op::pow:return result(PyNumber_Power(a.ptr(),b.ptr(),Py_None));
-    case Op::mod:return result(PyNumber_Remainder(a.ptr(),b.ptr()));
+    case Op::add:return steal(PyNumber_Add(a.ptr(),b.ptr()));
+    case Op::sub:return steal(PyNumber_Subtract(a.ptr(),b.ptr()));
+    case Op::mul:return steal(PyNumber_Multiply(a.ptr(),b.ptr()));
+    case Op::div:return steal(PyNumber_TrueDivide(a.ptr(),b.ptr()));
+    case Op::floordiv:return steal(PyNumber_FloorDivide(a.ptr(),b.ptr()));
+    case Op::pow:return steal(PyNumber_Power(a.ptr(),b.ptr(),Py_None));
+    case Op::mod:return steal(PyNumber_Remainder(a.ptr(),b.ptr()));
     }throw std::logic_error("Unknown NCNN scalar operation");
 }
 O inplace(const O &a,const O &b,Op op) {
@@ -712,8 +711,8 @@ O inplace(const O &a,const O &b,Op op) {
         report_fp(events,op==Op::add?"add":"subtract");
         return a;
     }
-    if(op==Op::add)return result(PyNumber_InPlaceAdd(a.ptr(),b.ptr()));
-    return result(PyNumber_InPlaceSubtract(a.ptr(),b.ptr()));
+    if(op==Op::add)return steal(PyNumber_InPlaceAdd(a.ptr(),b.ptr()));
+    return steal(PyNumber_InPlaceSubtract(a.ptr(),b.ptr()));
 }
 
 #include "ncnn_optimizer_passes.hpp"
@@ -933,36 +932,62 @@ O read_array(const O &stream,const O &bytes,const O &dtype) {
     if(data.readonly)array.attr("setflags")(py::arg("write")=false);
     return array;
 }
+// A layer whose weights cannot be shaped names itself and the field, where the shape's
+// floor division or the tag's lookup would raise a bare ZeroDivisionError or KeyError.
+[[noreturn]] void bad_layer(const char *problem,const O &op,const O &layer,const O &value) {
+    raise(PyExc_ValueError,py::str("The NCNN model's {} layer {} {}, so its weights cannot be read. The .param is damaged.")
+        .attr("format")(op,layer.attr("name"),py::str(problem).attr("format")(value)));
+}
+O weight_tag(const O &stream,const O &op,const O &layer,const O &types) {
+    O tag=stream.attr("read")(4);
+    if(contains(types.attr("DTYPE_DICT"),tag))return tag;
+    if(py::len(tag)<4)
+        raise(PyExc_ValueError,py::str("The NCNN model's .bin file ends before the weight tag of its {} layer {}. "
+                                       "The .bin is truncated or belongs to another .param.").attr("format")(op,layer.attr("name")));
+    raise(PyExc_ValueError,py::str("The NCNN model's .bin file holds no known weight tag ({!r}) for its {} layer {}. "
+                                   "The .bin is damaged or belongs to another .param.").attr("format")(tag,op,layer.attr("name")));
+}
 O load_weights(const O &stream,const O &op,const O &layer,const O &types) {
     py::dict weights;O integer=builtin("int");
     auto is=[&](const char *name){return compare(op,py::str(name),Py_EQ);};
     auto count=[&](int id){return checked(integer,param_value(layer,id));};
+    auto nonzero=[&](const O &value,const char *field){
+        if(compare(value,py::int_(0),Py_EQ))bad_layer(field,op,layer,value);
+        return value;
+    };
     auto mul=[](const O &a,int b){return binary(a,py::int_(b),Op::mul);};
     auto add=[&](const char *name,const O &array,const O &tag=py::bytes("")){weights[py::str(name)]=types.attr("NcnnWeight")(array,tag);};
     if(is("BatchNorm")) {
         O bytes=mul(count(0),4);
         for(const char *name:{"slope","mean","variance","bias"})add(name,read_array(stream,bytes,py::dtype::of<float>()));
     }else if(is("Convolution")||is("ConvolutionDepthWise")||is("Deconvolution")) {
-        O tag=stream.attr("read")(4),dtype=types.attr("DTYPE_DICT")[tag],length=count(6);
+        O tag=weight_tag(stream,op,layer,types),dtype=types.attr("DTYPE_DICT")[tag],length=count(6);
         O bytes=mul(length,compare(tag,types.attr("DTYPE_FP16"),Py_EQ)?2:4);
         O has_bias=param_value(layer,5),filters=count(0),kw=count(1),kh=count(11),inputs,shape;
         if(is("ConvolutionDepthWise")) {
-            O group=count(7),per_group=binary(filters,group,Op::floordiv);
-            inputs=binary(binary(binary(length,per_group,Op::floordiv),kw,Op::floordiv),kh,Op::floordiv);
+            O group=nonzero(count(7),"has group count {} (param 7)"),per_group=binary(filters,group,Op::floordiv);
+            if(compare(per_group,py::int_(0),Py_EQ))
+                raise(PyExc_ValueError,py::str("The NCNN model's {} layer {} has fewer filters ({}) than groups ({}), so its weights cannot be read. "
+                                               "The .param is damaged.").attr("format")(op,layer.attr("name"),filters,group));
+            inputs=binary(length,per_group,Op::floordiv);
+            inputs=binary(inputs,nonzero(kw,"has kernel width {} (param 1)"),Op::floordiv);
+            inputs=binary(inputs,nonzero(kh,"has kernel height {} (param 11)"),Op::floordiv);
             shape=make_tuple({group,per_group,binary(inputs,group,Op::floordiv),kh,kw});
         }else {
-            inputs=binary(binary(binary(length,filters,Op::floordiv),kw,Op::floordiv),kh,Op::floordiv);
+            inputs=binary(length,nonzero(filters,"has filter count {} (param 0)"),Op::floordiv);
+            inputs=binary(inputs,nonzero(kw,"has kernel width {} (param 1)"),Op::floordiv);
+            inputs=binary(inputs,nonzero(kh,"has kernel height {} (param 11)"),Op::floordiv);
             shape=make_tuple({filters,inputs,kh,kw});
         }
         add("weight",array_reshape(read_array(stream,bytes,dtype),shape),tag);
         if(truth(has_bias))add("bias",read_array(stream,mul(filters,4),py::dtype::of<float>()));
     }else if(is("InnerProduct")) {
-        O tag=stream.attr("read")(4),dtype=types.attr("DTYPE_DICT")[tag],length=param_value(layer,2);
+        O tag=weight_tag(stream,op,layer,types),dtype=types.attr("DTYPE_DICT")[tag],length=param_value(layer,2);
         require(py::isinstance<py::int_>(length),py::str("Weight data size must be int"));
         O bytes=mul(length,compare(tag,types.attr("DTYPE_FP16"),Py_EQ)?2:4);
         O data=read_array(stream,bytes,dtype),outputs=param_value(layer,0);
         require(py::isinstance<py::int_>(outputs),py::str("Num output must be int"));
-        O inputs=binary(length,outputs,Op::floordiv);
+        O inputs=binary(length,nonzero(outputs,"has output count {} (param 0)"),Op::floordiv);
         add("weight",array_reshape(data,make_tuple({inputs,outputs})),tag);
         if(compare(param_value(layer,1),py::int_(1),Py_EQ))add("bias",read_array(stream,mul(outputs,4),py::dtype::of<float>()));
     }else if(is("PReLU")) {
@@ -971,7 +996,7 @@ O load_weights(const O &stream,const O &op,const O &layer,const O &types) {
     }else if(is("Scale")) {
         O length=param_value(layer,0);require(py::isinstance<py::int_>(length),py::str("Scale data size must be int"));
         if(!compare(length,py::int_(-233),Py_EQ)) {
-            O tag=stream.attr("read")(4),dtype=types.attr("DTYPE_DICT")[tag];
+            O tag=weight_tag(stream,op,layer,types),dtype=types.attr("DTYPE_DICT")[tag];
             O bytes=mul(length,compare(tag,types.attr("DTYPE_FP16"),Py_EQ)?2:4);
             add("weight",read_array(stream,bytes,dtype),tag);
             if(compare(param_value(layer,1),py::int_(1),Py_EQ))add("bias",read_array(stream,mul(length,4),py::dtype::of<float>()));
@@ -1033,7 +1058,11 @@ O broadcast_data(const O &model,const O &types) {
             // Only a PixelShuffle after the last convolution folds its channels: upstream divided by every one, so a
             // model whose last convolution follows its PixelShuffle (SwiftSRGAN, conv-after-upsample designs) read as
             // 0 output channels.
-            scale=binary(scale,checked(builtin("int"),param_value(layer,3)),Op::div);current=layer;shuffle=py::int_(1);
+            O stride=checked(builtin("int"),param_value(layer,3));
+            if(compare(stride,py::int_(0),Py_EQ))
+                raise(PyExc_ValueError,py::str("The NCNN model's {} layer {} has stride 0 (param 3), so its scale cannot be read. "
+                                               "The .param is damaged.").attr("format")(op,layer.attr("name")));
+            scale=binary(scale,stride,Op::div);current=layer;shuffle=py::int_(1);
         }else if(contains(make_tuple({py::str("Deconvolution"),py::str("DeconvolutionDepthWise")}),op)){
             if(!found){O dims=get_nf(layer);nf=item(dims,py::int_(0));inputs=grouped_inputs(layer,item(dims,py::int_(1)));found=true;}
             scale=binary(scale,checked(builtin("int"),param_value(layer,3)),Op::mul);current=layer;shuffle=py::int_(1);
@@ -1095,6 +1124,5 @@ void cn_bind_ncnn(pybind11::module_ &module) {
     module.def("ncnn_write_param",write_param);
     module.def("ncnn_load_weights",load_weights);
     module.def("ncnn_read_model",read_model);
-    module.def("ncnn_get_nf",get_nf);
     module.def("ncnn_broadcast_data",broadcast_data);
 }

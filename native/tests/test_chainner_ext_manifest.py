@@ -1,4 +1,4 @@
-"""chaiNNer-C's chainner_ext against the conformance manifest (spec 4), on CPython 3.14.
+"""chaiNNer-C's chainner_ext against the conformance manifest, on CPython 3.14.
 
 native/tests/chainner_ext/ holds what the real chainner_ext 0.3.10 did, recorded on
 native/.venv-py311 by native/tools/chainner_ext_conformance.py (record-regex, then

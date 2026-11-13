@@ -54,6 +54,17 @@ def test_pick_color_empty_image(pick, shape):
     assert_native_matches("chainner:image:pick_color", [np.zeros(shape, np.float32), *pick])
 
 
+def test_pick_color_outside_names_the_valid_ranges():
+    outcome = assert_native_matches("chainner:image:pick_color", [image(1, 3, 5, 3), 2, 0, 0, 30, 1])
+    assert outcome == (
+        "error",
+        (
+            "AssertionError",
+            "The given coordinates (X, Y) are outside the image. Expect X=30 to be 0 to 4 and Y=1 to be 0 to 2.",
+        ),
+    )
+
+
 def test_pick_color_edge_values():
     img = np.array([[np.nan, -0.0, np.inf, -np.inf, 1.5, 1e-45, 0.25]], np.float32)
     for x in range(img.shape[1]):

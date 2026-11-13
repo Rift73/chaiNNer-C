@@ -1,6 +1,6 @@
 /* Port of chainner_ext 0.3.10 crates/bindings/src/clipboard.rs, MIT OR Apache-2.0. */
 /* Clipboard over Win32, with the pinned arboard 3.2 / clipboard-win sequence and texts,
- * its failure messages included (line numbers as upstream). Corrected (Consult 6 D-1): a
+ * its failure messages included (line numbers as upstream). Corrected: a
  * failed image transfer frees its memory with GlobalFree, where upstream leaks it and calls
  * DeleteObject on the HGLOBAL; the node path (utility_clipboard.cpp) does the same.
  * Pixels: clipboard_ops.c's float32 -> BGRA. On Linux through clipboard_posix.h. */
@@ -69,16 +69,14 @@ static const char *publish(const payload *data, int image, char *scratch, size_t
     } else {
         void *pointer = GlobalLock(memory);
         if (!pointer) {
-            GlobalFree(memory); /* corrected: upstream's image branch leaks it (Consult 6 D-1) */
+            GlobalFree(memory); /* corrected: upstream's image branch leaks it */
             failure = image ? PREFIX "Could not lock the global memory object at line 94" : TEXT_FAILURE;
         } else {
             memcpy(pointer, data->bytes, data->size);
             GlobalUnlock(memory);
             if (!image) EmptyClipboard(); /* the text path ignores this result */
             if (!SetClipboardData(image ? CF_DIBV5 : CF_UNICODETEXT, memory)) {
-                /* corrected: upstream's image branch calls DeleteObject on the HGLOBAL and
-                 * leaks it (Consult 6 D-1) */
-                GlobalFree(memory);
+                GlobalFree(memory); /* corrected: upstream's image branch leaks it */
                 failure = image ? PREFIX "Call to `SetClipboardData` returned NULL at line 131" : TEXT_FAILURE;
             }
         }
@@ -187,12 +185,6 @@ static PyObject *clipboard_write_image(PyObject *self, PyObject *args, PyObject 
     }
     return finish(&data, 1);
 }
-
-static PyObject *clipboard_create_instance(PyObject *type, PyObject *unused)
-{
-    (void)type; (void)unused;
-    return PyType_GenericAlloc(chn_clipboard_type, 0);
-}
 #else
 /* Linux: the desktop's clipboard program (clipboard_posix.h), with text as UTF-8 and images as PNG; the arguments are
  * checked as on Windows, in the same order and with the same errors. */
@@ -283,13 +275,13 @@ static PyObject *clipboard_write_image(PyObject *self, PyObject *args, PyObject 
     free(png.data);
     return result;
 }
+#endif
 
 static PyObject *clipboard_create_instance(PyObject *type, PyObject *unused)
 {
     (void)type; (void)unused;
     return PyType_GenericAlloc(chn_clipboard_type, 0);
 }
-#endif
 
 static PyMethodDef clipboard_methods[] = {
     {"write_text", (PyCFunction)(void (*)(void))clipboard_write_text, METH_VARARGS | METH_KEYWORDS,

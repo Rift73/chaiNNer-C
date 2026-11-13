@@ -59,7 +59,7 @@ def test_box_branch_boundaries(radii, channels, pattern):
     elif pattern == "negative_zero":
         image.fill(-0.0)
     # As the user receives it (ImageOutput.enforce of both returns), and the helpers'
-    # raw results (RAW_BOX) for kernel parity, each bitwise (SP4b Task 3b2).
+    # raw results (RAW_BOX) for kernel parity, each bitwise.
     expected = ORIGINAL_BOX.box_blur_node(image, *radii)
     assert_enforced_equal(BOX.box_blur_node(image, *radii), expected)
     exact(RAW_BOX.box_blur_node(image, *radii), expected)

@@ -1,5 +1,5 @@
 /* The exceptional-value scan shared by cn_image_exceptional and the morphology
- * pre-scan (D11): prototypes only. */
+ * pre-scan: prototypes only. */
 #ifndef CHAINNER_EXCEPTIONAL_H
 #define CHAINNER_EXCEPTIONAL_H
 #include "chainner.h"

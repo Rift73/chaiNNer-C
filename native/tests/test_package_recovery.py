@@ -74,7 +74,7 @@ def test_python_bytecode_cache_churn_does_not_recopy_runtime(tmp_path):
 
 
 def test_first_copy_resumes_past_an_interrupted_compile(tmp_path):
-    # Consult 10 D-9: the build compiles the runtime's Lib after the copy; an
+    # The build compiles the runtime's Lib after the copy; an
     # interruption leaves some .pyc, which the rerun compiles again.
     source = "python/python/Lib/mod.py"
     pyc = "python/python/Lib/__pycache__/mod.cpython-314.pyc"

@@ -222,6 +222,28 @@ def test_the_node_says_the_free_bicubic_fits_better(tmp_path):
     )
 
 
+def test_the_node_says_when_the_free_bicubic_fits_exactly(tmp_path):
+    # This small upscale has a free bicubic that fits with a score of 0, where the
+    # carried preset does not: its advantage is infinite, null in the summary.
+    import cv2
+
+    source = np.random.default_rng(0).random((60, 80, 3), np.float32)
+    image = np.clip(cv2.resize(source, (128, 96), interpolation=cv2.INTER_CUBIC), 0, 1)
+    outputs = node.get_native_resolution_node(
+        Context(tmp_path),
+        *(node.NativeResolutionSource.IMAGE, image, None),
+        *(node.NativeResolutionSampling.EVEN, 5, 0.3, 1.0, ""),
+        *(False, False, False, False, 16, 95, 0, 0),
+        *(node.NativeResolutionKernels.ALL, 24, 64, True, 1, 0, None),
+    )
+    free = json.loads(outputs[12])["selection"]["free_bicubic"]
+    assert free["advantage"] is None
+    assert (
+        f"The free bicubic (b {free['b']:.3f}, c {free['c']:.3f}) fits exactly, where"
+        f" {outputs[9]} does not: Candidate {free['rank']} carries it." in outputs[11]
+    )
+
+
 def test_the_node_carries_the_decided_kernel(tmp_path):
     rgb = np.dstack([planted(CATMULL_ROM, seed) for seed in (1, 2, 3)]).astype(
         np.float32

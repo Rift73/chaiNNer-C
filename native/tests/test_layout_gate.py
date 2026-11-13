@@ -1,6 +1,6 @@
-"""D-7 condition 4: every image-input node on Lens Blur's permuted layout.
+"""Every image-input node on Lens Blur's permuted layout.
 
-Consult 9 ruled (A): ImageOutput.enforce keeps np.clip's order-K layout, so Lens
+ImageOutput.enforce keeps np.clip's order-K layout, so Lens
 Blur's planar (c, h, w) transpose(1, 2, 0) reaches the next node as it does
 upstream. layout_gate_worker.py runs every chaiNNer_standard node with an image
 input on 3- and 4-channel images in that permuted layout and C-contiguous. It runs
@@ -10,7 +10,7 @@ provisioned runtime this venv was made from, the interpreter
 verify_runtime.oracle_python picks from a package manifest.
 
 The other packages' image nodes are not run. PyTorch, ONNX and NCNN pick a GPU
-engine or need a model, and the owner's rule allows no GPU probe; Stable
+engine or need a model, and the gate makes no GPU probe; Stable
 Diffusion calls a network API. save_video and get_native_resolution are excluded
 too (EXCLUDED holds the reasons); save_dds_texture runs as a texture array with its
 default DDS format, BC1.
@@ -25,11 +25,11 @@ default DDS format, BC1.
   layouts differ. Without that difference, the comparison above could not tell a
   mirror that ignores the layout from one that follows it.
 - The nodes in ORACLE_VALUES equal the oracle bit for bit on both layouts too,
-  strides aside (Consult 11 D-17).
+  strides aside.
 - The producers in ORACLE_EXACT equal the oracle with their strides, on both
-  layouts and, where a case has more than one image, on the mixed ones (Consult 11
-  D-16: a mirror returns the strides upstream's np.clip result has), with
-  Premultiplied Alpha's approved transparent black (2026-10-23) applied by the
+  layouts and, where a case has more than one image, on the mixed ones (a mirror
+  returns the strides upstream's np.clip result has), with Premultiplied Alpha's
+  approved transparent black applied by the
   oracle worker. The oracle gives each of them a permuted result somewhere, so the
   strides are compared where they matter.
 - Every other node's permuted result equals its C-layout result:
@@ -95,7 +95,7 @@ CONSUMERS = frozenset(
 # checks its layouts.
 PORT_ONLY_CONSUMERS = frozenset({"chainner:image:white_balance"})
 # Nodes outside CONSUMERS whose values the oracle checks on both layouts, strides
-# aside (Consult 11 D-17): Alpha Matting and Chroma Key's foreground starts from
+# aside: Alpha Matting and Chroma Key's foreground starts from
 # PyMatting 1.1.16's mean colours, and Blend's clip is np.clip's, which keeps -0.
 ORACLE_VALUES = frozenset(
     {
@@ -110,8 +110,8 @@ PORT_ONLY_OPTIONS = ("|Blend Mode=23|", "|Blend Mode=24|")
 # Blend modes judged against the W3C compositing formulas, not the oracle: Color Burn, Color Dodge, Divide and Vivid
 # Light (test_blend.py); test_every_other_node_equals_its_c_layout_result still checks their layouts.
 JUDGED_OPTIONS = ("|Blend Mode=5|", "|Blend Mode=6|", "|Blend Mode=15|", "|Blend Mode=19|")
-# The producers whose upstream NumPy result np.clip keeps permuted (D-7's report,
-# concern 1): compared with the oracle strides included (Consult 11 D-16).
+# The producers whose upstream NumPy result np.clip keeps permuted: compared with
+# the oracle strides included.
 ORACLE_EXACT = frozenset(
     {
         "chainner:image:add",
@@ -332,7 +332,7 @@ def test_the_oracle_shows_a_layout_on_the_consumers_inputs(gate):
 
 
 def test_all_colors_sees_signed_zero_ties_and_its_colour_limit(gate):
-    """Consult 11 D-17.2: each rounded "All colors" image holds -0 and pixel rows
+    """Each rounded "All colors" image holds -0 and pixel rows
     that are equal but for the sign of a zero, so the comparison with the oracle
     sees which row np.unique keeps. The unrounded case exceeds MAX_COLORS: both
     trees raise the same ValueError (the oracle comparison covers its message)."""

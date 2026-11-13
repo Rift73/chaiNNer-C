@@ -204,10 +204,8 @@ export const CustomEdge = memo(
             [sourceStatus, targetStatus, isColliding, animateChain]
         );
 
-        // NOTE: I know that technically speaking this is bad
-        // HOWEVER: I don't want to cause a re-render on every edge change by properly settings the edges array
-        // This is a tradeoff I'm willing to make
-        // This is necessary because RF does not expose source/target X/Y on the edge
+        // React Flow does not expose an edge's source and target position. They are written into the
+        // edge data in place: setting the edges would re-render on every edge change.
         useEffect(
             () => {
                 // eslint-disable-next-line no-param-reassign

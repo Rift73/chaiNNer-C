@@ -3,7 +3,6 @@
 #include "parallel.h"
 #include "run_kernels.h"
 
-#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 

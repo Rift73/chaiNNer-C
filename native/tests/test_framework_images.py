@@ -744,8 +744,8 @@ def test_tiny_real_cpu_ncnn_roundtrip(channels, kind):
         kind,
     )
     # Upstream's Mat.from_pixels reads the raw buffer, so it reads a Fortran or
-    # planar image's memory as interleaved pixels. The port reads by logical index
-    # (Consult 11 D-18): its result is upstream's on the image's C copy. Upstream's
+    # planar image's memory as interleaved pixels. The port reads by logical index:
+    # its result is upstream's on the image's C copy. Upstream's
     # own read differs exactly where memory order is not logical order.
     expected = baseline.ncnn_auto_split(
         np.ascontiguousarray(image), network, "input", "output", None, None, None

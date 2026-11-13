@@ -1,6 +1,6 @@
 # Building, testing and packaging chaiNNer-C
 
-The developer reference that used to live in the root README. The full command reference is
+The full command reference is
 [`README.md`](README.md); design and exactness rules are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## What is converted
@@ -10,9 +10,9 @@ The developer reference that used to live in the root README. The full command r
   `chainner_ext.pyd`, a C replacement for upstream's Rust `chainner_ext`.
 - The Python backend (`backend/src`) is upstream's with the native paths wired in; nodes without one run upstream's
   Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN, TensorRT); the ONNX CPU session
-  adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native. chaiNNer-C adds two PyTorch
-  nodes for VOSR 2.0 generative upscaling ([`VOSR2.md`](VOSR2.md)).
-- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.11`, the
+  adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native. chaiNNer-C adds a PyTorch
+  node for VOSR 2.0 generative upscaling ([`VOSR2.md`](VOSR2.md)).
+- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (its own update check, `v0.3.12`, the
   drop repairs, the TensorRT types and Clear item, the VOSR model type and the iterated input condition), its
   integrated Python moved to CPython 3.14.8 and its own `%APPDATA%\chaiNNer-C`. The local portable package uses an
   installed upstream nightly's UI with reviewed patches, which do not include the VOSR changes.
@@ -100,7 +100,7 @@ expanded `_rocm_sdk_devel`, with `lib\amdhip64.lib` and `lib\llvm\bin\clang++.ex
 `dual_migx_ops.dll` and `vosr2_migx_ops.dll` in `nodes\impl\migraphx`, device code for ROCm 10.0's 22 Windows targets
 by the SDK's `clang++` (DUAL's library is host code only: `triton-windows`, 3.8.0.post29 or newer, compiles its kernels
 when a program is built)
-against the pinned MSVC toolset and Windows SDK; with `-MigraphxRoot <MIGraphX 2.16 install>` (the very MIGraphX whose
+against the pinned MSVC toolset and Windows SDK; with `-MigraphxRoot <MIGraphX 2.17 install>` (the very MIGraphX whose
 DLLs chaiNNer-C's Windows `onnxruntime-migraphx` wheel bundles; recipe in `native\tools\migraphx\windows`, below) also
 the runner `_chainner_migraphx.pyd`, which links MIGraphX's import libraries and, unlike the other modules, the DLL C
 runtime (`/MD`), MIGraphX's own. Without either root
@@ -127,7 +127,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 - It copies the installed app's shell and the provisioned runtime, writes `backend/src` byte for byte, and records
   everything in a manifest, `chainner-c-package.json`.
 - It accepts only that nightly, whose UI bundles are pinned by SHA-256 and get reviewed patches (updates removed, the
-  `v0.3.11` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
+  `v0.3.12` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
   `node native\tools\verify_independent_ui.cjs --package <dir> --installed-app <dir>` checks them.
 - The runtime's `Lib` is precompiled with hash-based bytecode (`unchecked-hash`), so two builds are byte-identical.
 - A `portable` marker keeps the profile inside the package; run `chaiNNer.exe` from its folder.
@@ -172,7 +172,7 @@ VapourSynth plugin, VapourSynth R81's `VapourSynth4.h` (`-D CHAINNER_C_VAPOURSYN
    The AMD GPU parts (`native/cmake/rocm.cmake`; Windows: Build.ps1's `-RocmRoot`, above) are built when `CHAINNER_C_ROCM_ROOT=<ROCm 10.0 SDK root>`
    is given (the `rocm-sdk-devel` wheel's expanded `_rocm_sdk_devel`): the HIP custom-op libraries of `src/<model>_hip`
    (`chainner_c_hip_module`, device code for all 25 ROCm 10.0 targets by the SDK's `clang++`); with
-   `CHAINNER_C_MIGRAPHX_ROOT=<MIGraphX 2.16 install>` also the MIGraphX runner `nodes/impl/migraphx/_chainner_migraphx.so`
+   `CHAINNER_C_MIGRAPHX_ROOT=<MIGraphX 2.17 install>` also the MIGraphX runner `nodes/impl/migraphx/_chainner_migraphx.so`
    (`native/migraphx_runner`), which links MIGraphX's and HIP's libraries by soname and, unlike the other modules,
    libstdc++ and libgcc shared, as MIGraphX's exceptions unwind through it. Its tests:
    `backend/tests/test_migraphx_runner.py`, with the build's `migraphx_runner/chainner_example_migx_ops.so` in
@@ -237,7 +237,7 @@ script prints the SHA-256 of the zip and of every module. The first run download
   runtime's files (`--third-party`) are listed, never failed.
 - `--rocm` and `--migraphx`, given together, add the AMD GPU parts (`native/cmake/rocm.cmake`): `--rocm` is the ROCm
   10.0 SDK root (`include/hip`, `lib/libamdhip64.so`, `lib/llvm/bin/clang++`; the `_rocm_sdk_devel` directory that
-  `rocm-sdk init` makes from AMD's `rocm-sdk-core`, `-libraries` and `-devel` wheels), `--migraphx` MIGraphX 2.16's
+  `rocm-sdk init` makes from AMD's `rocm-sdk-core`, `-libraries` and `-devel` wheels), `--migraphx` MIGraphX 2.17's
   install prefix (AMD ships none for ROCm 10.0; `native/tools/migraphx` builds it, below). The runner uses MIGraphX's
   C++ API, so the prefix must be the very MIGraphX build whose libraries chaiNNer-C's `onnxruntime-migraphx` wheel
   bundles. The

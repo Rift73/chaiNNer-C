@@ -30,7 +30,6 @@
 #include "run_kernels.h"
 #include <math.h>
 #include <stdlib.h>
-#include <string.h>
 
 #define DISTANCE_INF 1e10f
 

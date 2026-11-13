@@ -1,11 +1,11 @@
-"""Golden kernel tool and the B3 manifests (SP4 spec 4.4, SP4a Task 8, SP4b D3).
+"""Golden kernel tool and the B3 manifests.
 
 The manifests under golden/ are written only by `golden_kernels.py write` from the
-B3 DLL; a mismatch with the current DLL goes to the stand-in, never edited away.
+B3 DLL; a mismatch with the current DLL goes to review, never edited away.
 `golden_kernels.py rebase` can move a conversion case whose clamp reference
-differs from B3 to the oracle's np.clip, recording it: Task 3b1 moved 40 on NumPy
-1.24.4, and U2 restored them, since NumPy 2.5.3's np.clip gives B3's bits. No test
-reads the git-ignored reports or baselines (spec 4.4): the manifests carry B3's
+differs from B3 to the oracle's np.clip, recording it: 40 were moved on NumPy
+1.24.4, and restored later, since NumPy 2.5.3's np.clip gives B3's bits. No test
+reads the git-ignored reports or baselines: the manifests carry B3's
 outputs. A case's special set is the third-last part of its id, its group the
 first; a conversion case whose src is not float32 has its mapping (bits, ramp)
 there, and the ties group has "ties". A lens case's (a, b) pair is its third part;
@@ -140,7 +140,7 @@ GOLDEN = Path(__file__).resolve().parent / "golden"
 TOOL = ROOT / "native" / "tools" / "golden_kernels.py"
 CURRENT_DLL = native.library_path()  # lib()'s
 B3_SHA256 = "5123f21c78305edd30893e582273a23b2e073921c5599455ac1f808e7c27504d"
-# Controller ruling (2026-10-03): the matrix as briefed is ~140 kB, not tens of kB.
+# The matrix is about 140 kB.
 SIZE_LIMIT = 200_000
 
 
@@ -161,7 +161,7 @@ def expected_specials(name, input_name, shape):
 
 
 def bare_kernel(case, name):
-    """Controller ruling: group A and mixed convolution kernels hold no specials."""
+    """Group A and mixed convolution kernels hold no specials."""
     return case.id.split("-")[0] == "A" or name == "mixed"
 
 
@@ -273,7 +273,7 @@ def has_positive_denormal(case):
 
 
 def border_sets(case):
-    """The sets that reproduce a convolution_border case's inputs (SP4b D8): src holds
+    """The sets that reproduce a convolution_border case's inputs: src holds
     the set at the index rule; the kernel stays finite, holding the edges set or
     none, the (5,5) zero taps, and possibly DENORMAL_ROW."""
     src, kernel = case.inputs["src"], case.inputs["kernel"]
@@ -327,7 +327,7 @@ def lens_seed(case_id, name):
 
 
 def lens_specials(name, position, n):
-    """The set at the index rule, rotated by the input's position when mixed (D3)."""
+    """The set at the index rule, rotated by the input's position when mixed."""
     values = SPECIALS[name]["values"]
     shift = position if SPECIALS[name]["payloads"] == "mixed" else 0
     listed = [0, 1, 7, 8, n // 3, n // 2, n - 9, n - 8, n - 2, n - 1]
@@ -535,7 +535,7 @@ def test_recipes_are_exact_and_place_specials():
         0x3F000000,
         0x3F400000,
     }
-    # zeros (Task 5b): the top 6 bits pick one of 64 words, each ZERO_WEIGHTS word
+    # zeros: the top 6 bits pick one of 64 words, each ZERO_WEIGHTS word
     # repeated by its weight, in key order (f32::total_cmp) with half the weight below +0.
     zeros = make_array(
         {"shape": [64, 64], "seed": 8, "mapping": "zeros", "specials": []}
@@ -745,7 +745,7 @@ def check_twins(cases, sensitive, output=None):
 
 
 def check_conversion_manifest(kernel, cases):
-    """D3's groups (case counts per group) and their axes; outputs out and events.
+    """The conversion groups (case counts per group) and their axes; outputs out and events.
 
     conversion: A, every (type, output, normalize) at 196,613 (one chunk at the
     conversion grain, 262,144) at default MXCSR, plus daz_ftz twins of the six
@@ -753,7 +753,7 @@ def check_conversion_manifest(kernel, cases):
     (11 chunks of 251,345/251,346), float32 on clean and snan, uint8 on bits and
     ramp, both MXCSR states; T, ties for (0,1,0) and (0,1,1), both states.
     conversion_small: S, the hot combos at counts 1-17 in both states, float32 on
-    (edges, snan, inf)[(count + combo index) % 3] (controller ruling), uint8 on ramp
+    (edges, snan, inf)[(count + combo index) % 3], uint8 on ramp
     and bits.
     """
     groups = {}
@@ -804,7 +804,7 @@ def check_conversion_manifest(kernel, cases):
             )
             for state in states
         }
-    # The clamp (np.clip's, Task 3b1) keeps a positive denormal at the default MXCSR
+    # The clamp (np.clip's) keeps a positive denormal at the default MXCSR
     # and gives +0 for it under DAZ, so every f32->f32 clamp case holding one differs
     # from its twin in out.
     sensitive = check_twins(
@@ -816,7 +816,7 @@ def check_conversion_manifest(kernel, cases):
 
 
 def check_border_manifest(cases):
-    """convolution_border's groups (SP4b D8) and their axes; output out.
+    """convolution_border's groups and their axes; output out.
 
     R (108): the 61-tap reach, (1,61) on (3, n, c) and (61,1) on (n, 5, c) for n in
     58-66, c 1 or 3 by n, paddings 0/1/2, fused 0/8. W (66): (n, 34 - n, c) for n in
@@ -910,7 +910,7 @@ def check_border_manifest(cases):
 
 
 def check_lens_manifest(cases):
-    """lens's groups (SP4b D3) and their axes; output out.
+    """lens's groups and their axes; output out.
 
     W (48): count 196,613 (4 chunks of 49,153/49,154 at grain 65,536), accumulate 0/1,
     every (a, b) pair; every lens set at the default MXCSR, and edges, nan and inf
@@ -975,7 +975,7 @@ def check_lens_manifest(cases):
 
 
 def check_power_manifest(cases):
-    """lens_power's groups (SP4b Task 3b) and their axes; output out.
+    """lens_power's groups and their axes; output out.
 
     S (204): pixels 1-17, channels 1/3/4, both states, two cases each: with k = pixels
     + channel index, the exponent k % 3 and the set k % 4, then the exponent
@@ -1113,7 +1113,7 @@ def check_morph_recipe(case, sweep=False):
 
 
 def check_morphology_manifest(cases):
-    """morphology's groups (SP4b D3, golden_kernels._morph_matrix) and their axes;
+    """morphology's groups (golden_kernels._morph_matrix) and their axes;
     outputs out (result for cn_image_exceptional).
 
     A (216) and F (36): every MORPH_FORMS form of cn_morphology_complete and
@@ -1451,7 +1451,7 @@ def check_palette_manifest(cases):
     clean, default. Z (108): PALETTE_TIE_PIXELS x channels x capacities x PALETTE_TIES,
     both states. N (16): the nan or snan set's NaN word alone after the first pixel
     (golden_kernels.palette_nan_index), PALETTE_NAN_POSITIONS x PALETTE_NAN_PIXELS x
-    PALETTE_NAN_CHANNELS, capacity 2, default. M (16, Task 5b): PALETTE_MEDIAN_PIXELS x
+    PALETTE_NAN_CHANNELS, capacity 2, default. M (16): PALETTE_MEDIAN_PIXELS x
     PALETTE_MEDIAN_CHANNELS x PALETTE_MEDIAN_CAPACITIES on zeros, clean, both states. A
     NaN anywhere in src makes the first split's channel NaN, so every nan, snan and
     mixed case returns PALETTE_EMPTY_CHILD with no color (status 6 appears); every other
@@ -1863,7 +1863,7 @@ def check_composite_recipe(case, sweep=False):
 
 
 def shortcut_clauses(args):
-    """D13's shortcut predicate (full_overlap in composite_complete_ops.c) on the
+    """The full-overlap shortcut's predicate (full_overlap in composite_complete_ops.c) on the
     geometry golden_kernels.composite_geometry gives a composite case's args, clause by
     clause: the paste at (0, 0) over the whole canvas; the base at (0, 0) with the
     canvas's size; the base not constant; the base's channels the canvas's (4 when
@@ -1893,7 +1893,7 @@ def check_composite_manifest(cases):
     """composite's groups (golden_kernels._composite_matrix) and their axes; output out.
 
     Layers are two COMPOSITE_SHAPE images unless named; rotated(k) gives the k-th case's
-    set and state in each group but T and B. S (72): D13's shortcut, every
+    set and state in each group but T and B. S (72): the full-overlap shortcut, every
     COMPOSITE_PAIRS (base, overlay) channel pair p x SHORTCUT_MODES m (k = 8 p + m) at
     a full overlap (x = y = 0), crop (p + m) % 2. N (40): its near misses, every
     NEAR_MISSES kind x NEAR_PAIRS x NEAR_MODES. A (69): every mode x the blend's three
@@ -2577,7 +2577,7 @@ def tile_forms(gaussian, box, borders=(1, 2, 4), lanes=(4, 8)):
 
 
 def check_tiles_manifest(cases):
-    """separable_tiles' groups (SP4b D9) and their axes; output dst.
+    """separable_tiles' groups and their axes; output dst.
 
     H (128): every TILE_HEIGHTS height at (h, 13, 3), the Gaussian (21, 11) at
     borders 1/2/4 and the box (3.25, 4), lanes 4/8. G (14): TILE_PLANE with those and
@@ -2680,8 +2680,8 @@ def test_manifests_were_generated_from_b3_and_cover_the_matrix(kernel):
     # The NumPy version is recorded only; pcg64_check guards the stream.
     assert header["generated_with"]["dll_sha256"] == B3_SHA256
     assert "numpy" in header["generated_with"]
-    # A manifest records the sets defined when it was written: SP4a's, or every set
-    # once denorm exists (SP4b D3).
+    # A manifest records the sets defined when it was written: the first ones, or
+    # every set once denorm exists.
     sets = header["special_sets"]
     assert set(sets) in (set(SP4A_SETS), set(SPECIALS))
     assert sets == {name: SPECIALS[name] for name in sets}
@@ -2756,7 +2756,7 @@ def test_manifests_were_generated_from_b3_and_cover_the_matrix(kernel):
         assert case.payloads == SPECIALS[special_set(case)]["payloads"], case.id
         assert sorted(outputs) == [golden_kernels.ENTRIES[case.entry].output]
         assert all(len(value) == 64 for value in outputs.values())
-    # Controller ruling: every (form, border or padding, mirror value) of every
+    # Every (form, border or padding, mirror value) of every
     # entry has a case whose output is not all NaN, so no matrix change can void
     # a combination's coverage unnoticed.
     informative = {
@@ -2765,7 +2765,7 @@ def test_manifests_were_generated_from_b3_and_cover_the_matrix(kernel):
         if not set(outputs.values()) <= all_nan_digests(case)
     }
     assert informative == combinations(entries)
-    # Controller ruling (review I1): MXCSR is a first-class input. A daz_ftz case
+    # MXCSR is a first-class input. A daz_ftz case
     # shares its inputs with its default twin, and every group E daz_ftz case
     # (denormal-range src) differs from its twin on B3, so each (entry, form,
     # mirror value) has a DAZ-sensitive golden.
@@ -2777,7 +2777,7 @@ def test_manifests_were_generated_from_b3_and_cover_the_matrix(kernel):
 
 @pytest.mark.parametrize("kernel", KERNELS)
 def test_special_sets_reach_their_inputs(kernel):
-    # Controller rulings: spec 4.4 puts the set's NaN (or inf) in every input of
+    # The set's NaN (or inf) goes in every input of
     # group B; group A and mixed cases put it in src, and their convolution kernel
     # holds no NaN or inf, since one such tap reaches every output pixel; so does
     # every convolution_border kernel. A conversion's float32 src holds its set's
@@ -3038,7 +3038,7 @@ class WritesPast:
 
 
 def test_adapters_refuse_a_write_past_count():
-    # Review M3: the exact-size output could not show a group written past the
+    # The exact-size output could not show a group written past the
     # last chunk's end; the adapters' 32-byte tail does.
     case = next(c for c in matrix("conversion_small") if c.mxcsr == "default")
     with pytest.raises(RuntimeError, match="written past count"):
@@ -3088,7 +3088,7 @@ def test_adapters_refuse_a_write_past_count():
 
 
 def d5_corrected(case):
-    """Consult 8 D-5: a dither case B3 refused (300 unique colors and a NaN src:
+    """A dither case B3 refused (300 unique colors and a NaN src:
     compatible 0, out unwritten), which the current DLL dithers, its NaN pixels by
     the linear rule of smaller palettes. The manifest keeps B3's record; exactly
     these cases differ from it."""
@@ -3157,7 +3157,7 @@ def upstream_composite(case, blend_images_node=composite_reference.blend_images_
 
 
 def d17_outputs(case, outputs):
-    """Consult 11 D-17.1: upstream's outputs (upstream_blend, upstream_composite) of
+    """Upstream's outputs (upstream_blend, upstream_composite) of
     a cn_blend_images or cn_composite_canvas case whose B3 record is upstream's with
     every -0 made +0, and so differs from it; None for every other case. B3's blend
     clip, minimum(maximum(x, 0), 1), gave +0 for -0 (and, under DAZ, for a negative
@@ -3265,7 +3265,7 @@ def judged_blend_outputs(case):
 
 def current_outputs(case, outputs):
     """A manifest case's outputs on the current DLL: B3's record (outputs), except
-    the independent F26 saturation, judged blend modes or D-17.1 signed-zero
+    the independent integer-export saturation, judged blend modes or signed-zero
     reference."""
     return (
         f26_outputs(case)
@@ -3335,11 +3335,11 @@ def test_d5_cases_are_dithered_where_b3_refused():
 @pytest.mark.parametrize("kernel", CONVERSION_KERNELS)
 def test_rebased_conversion_cases_are_the_clamps_blast_radius(kernel):
     # B3's clamp, maxss(+0, v), keeps -0 and, under DAZ, makes -0 of a negative
-    # denormal. Task 3b1 re-based exactly the clamping cases with float32 output
+    # denormal. The rebase moved exactly the clamping cases with float32 output
     # (golden_kernels.clamps) whose float32 values (src.astype(np.float32) under the
     # case's MXCSR state) hold one, because NumPy 1.24.4's np.clip gave +0 there.
     # NumPy 2.5.3's np.clip (clip.cpp, built as maxps(0, x) then minps(1, x)) gives
-    # B3's bits, so U2 restored those cases to B3's outputs and none records ORACLE.
+    # B3's bits, so those cases hold B3's outputs and none records ORACLE.
     # Every clamping float32 output, those cases included, equals np.clip's, computed
     # here; the integer outputs cannot move (+-0 both scale to 0).
     path = GOLDEN / f"{kernel}.json"
@@ -3367,9 +3367,9 @@ def test_rebased_dither_cases_are_the_nan_key_order():
     # green NaN; the real chainner_ext gives the red one (numeric.h's cn_palette_key,
     # measured on every channel pair), which ties that color with a red-NaN one, kept in
     # input order. Only these cases' outputs moved, at every ISA level, and they hold
-    # chaiNNer-C's outputs under that order (SP5a-c, Consult 9 P3 item 3), marked PORT:
+    # chaiNNer-C's outputs under that order, marked PORT:
     # upstream orders the tied keys by its random AHashSet, so no upstream output exists
-    # to record as ORACLE (Consult 12 R-q).
+    # to record as ORACLE.
     assert rebased_ids(GOLDEN / "dither.json") == []
     assert rebased_ids(GOLDEN / "dither.json", PORT) == [
         f"S-apply-unit-n16-m2a0-mixed-{state}-17x23x{c}"
@@ -3415,7 +3415,7 @@ def zero_class_differences(a, b):
 
 
 def test_morphology_node_calls_equal_opencv():
-    """Parity at design time (2026-10-04; task4-verdict.md): every morphology
+    """Parity at design time: every morphology
     manifest case that is a node call (node_call) equals the installed chaiNNer's node
     code, cv2.dilate or cv2.erode with getStructuringElement(shape, (2 r + 1,) * 2) and
     the iterations, run in this venv (OpenCV 4.8.0, as installed) under the case's MXCSR
@@ -3471,7 +3471,7 @@ def test_composite_adapter_is_the_bridges_call():
     is native_composite.canvas's: on the current DLL the bridge, given each composite
     manifest case's layers (an image as its array, a constant as a Color of its floats),
     mode, x, y and crop under the case's MXCSR state, gives the case's outputs (B3's,
-    or upstream's for a D-17.1 case: current_outputs).
+    or upstream's for a signed-zero case: current_outputs).
     A Color holds Python floats, which canvas() turns back into float32 under that
     state: a signalling NaN comes back quiet, and under DAZ|FTZ a denormal comes back
     as zero. A constant those change cannot be a Color: such a case (the mixed set, or a
@@ -3531,7 +3531,7 @@ def test_golden_tool_imports_neither_pillow_cv2_nor_torch():
 
 
 def check_conversion_sweep(kernel):
-    """D4: each argument uniformly from the kernel's manifest values; count in 1-140,000."""
+    """The sweep: each argument uniformly from the kernel's manifest values; count in 1-140,000."""
     cases = sweep_cases(kernel, 1000, 11)
     assert cases == sweep_cases(kernel, 1000, 11)
     assert cases != sweep_cases(kernel, 1000, 12)
@@ -3557,7 +3557,7 @@ def check_conversion_sweep(kernel):
     assert seen["set"] == set(SP4A_SETS)
     assert ("float32", "tiny") in seen["mapping"]
     assert ("uint8", "ramp") in seen["mapping"] and ("uint8", "bits") in seen["mapping"]
-    # Review M2, N2: raw float32 bits reach scaled values beyond int32 (bit 2 for
+    # Raw float32 bits reach scaled values beyond int32 (bit 2 for
     # finite values) in a sweep case of (0,1,0), f32 -> u8 without the clamp, the
     # AVX2 path (with the clamp, scaled stays in [0, 255]).
     beyond = []
@@ -3579,7 +3579,7 @@ def check_conversion_sweep(kernel):
 
 
 def check_border_sweep():
-    """D4 for convolution_border: each argument from the manifest's values; h and w
+    """The sweep for convolution_border: each argument from the manifest's values; h and w
     in 1-64, and one case in eight with h in 65-300; c 1 or 3; a clean src on unit
     or tiny; some (5,5) kernels with DENORMAL_ROW."""
     cases = sweep_cases("convolution_border", 600, 11)
@@ -3619,7 +3619,7 @@ def check_border_sweep():
 
 
 def check_lens_sweep():
-    """D4 for lens: each argument from the manifest's values, count in 1-140,000; a
+    """The sweep for lens: each argument from the manifest's values, count in 1-140,000; a
     clean case on signed or tiny inputs."""
     cases = sweep_cases("lens", 1000, 11)
     assert cases == sweep_cases("lens", 1000, 11)
@@ -3651,7 +3651,7 @@ def check_lens_sweep():
 
 
 def check_power_sweep():
-    """D4 for lens_power: channels, exponent, set and MXCSR state from the manifest's
+    """The sweep for lens_power: channels, exponent, set and MXCSR state from the manifest's
     values, pixels * channels in 1-140,000; a clean case on signed or tiny src."""
     cases = sweep_cases("lens_power", 1000, 11)
     assert cases == sweep_cases("lens_power", 1000, 11)
@@ -3687,7 +3687,7 @@ def check_power_sweep():
 
 
 def check_tiles_sweep():
-    """D4 for separable_tiles: the entry, its TILE_FORMS form, lanes, border, set and
+    """The sweep for separable_tiles: the entry, its TILE_FORMS form, lanes, border, set and
     MXCSR state from the manifest's values; h and w in 1-64, and one case in eight with
     h in 65-300; c 1, 3 or 4; a clean src on unit or tiny."""
     cases = sweep_cases("separable_tiles", 600, 11)
@@ -3733,7 +3733,7 @@ def check_tiles_sweep():
 
 
 def check_morph_sweep():
-    """D4 for morphology: the entry; for cn_image_exceptional the count in 1-140,000,
+    """The sweep for morphology: the entry; for cn_image_exceptional the count in 1-140,000,
     word, position and state; otherwise the entry's MORPH_FORMS arguments, set and
     state from the manifest's values, h and w in 1-64 and one case in eight with h in
     65-300, c 1, 3 or 4, and a clean src on unit or tiny."""
@@ -3786,7 +3786,7 @@ def check_morph_sweep():
 
 
 def check_resample_sweep():
-    """D4 for resample: filter, gamma, vector_clip, channels, set and state from the
+    """The sweep for resample: filter, gamma, vector_clip, channels, set and state from the
     manifest's values, h and w in 1-64 and one case in eight with h in 65-300, th and tw
     in 1-64, and a clean src on unit or tiny."""
     cases = sweep_cases("resample", 600, 11)
@@ -3822,7 +3822,7 @@ def check_resample_sweep():
 
 
 def check_palette_sweep():
-    """D4 for palette: pixels in 1-300, channels, capacity, set and state from the
+    """The sweep for palette: pixels in 1-300, channels, capacity, set and state from the
     manifest's values, and a clean src on unit or tiny."""
     cases = sweep_cases("palette", 600, 11)
     assert cases == sweep_cases("palette", 600, 11)
@@ -3853,7 +3853,7 @@ def check_palette_sweep():
 
 
 def check_dither_sweep():
-    """D4 for dither: the entry, form, colors in 1-40, channels, mode (and algorithm with
+    """The sweep for dither: the entry, form, colors in 1-40, channels, mode (and algorithm with
     mode 2), set and state from the manifest's values; h and w in 1-64, and one case in
     eight with h in 65-300; a clean unit-form src on unit or grid; a mixed case on the
     unit form."""
@@ -3901,11 +3901,11 @@ def check_dither_sweep():
 
 
 def check_composite_sweep():
-    """D4 for composite: a geometry by canvas()'s rules with sizes 1-40. One case in
+    """The sweep for composite: a geometry by canvas()'s rules with sizes 1-40. One case in
     eight has a constant base and one in eight a constant overlay; one overlay in four
     overlaps fully (the base's size at x = y = 0), the others take their own size and an
     offset that can miss the base; every mode, channel count, crop, set and state; a
-    clean case's inputs on unit or tiny. Some cases take D13's shortcut, some miss it,
+    clean case's inputs on unit or tiny. Some cases take the full-overlap shortcut, some miss it,
     and some have no region (pixels 0)."""
     cases = sweep_cases("composite", 900, 11)
     assert cases == sweep_cases("composite", 900, 11)
@@ -3943,7 +3943,7 @@ def check_composite_sweep():
 
 
 def check_blend_sweep():
-    """D4 for blend: the entry, then one cn_blend_images case in four in the AVX2 unit's
+    """The sweep for blend: the entry, then one cn_blend_images case in four in the AVX2 unit's
     8-lane form (SIMD_MODES x SIMD_PAIRS), the others any mode and channel pair; the
     count (pixels or elements) in 1-SWEEP_MAX_COUNT elements, so some calls run several
     chunks with odd chunk lengths; every set and state; a clean case on unit or tiny."""
@@ -3983,7 +3983,7 @@ def check_blend_sweep():
 
 
 def check_tail_sweep():
-    """D4 for tail: the entry, then its arguments from the manifest's axes; image heights
+    """The sweep for tail: the entry, then its arguments from the manifest's axes; image heights
     in 1-64 and one in eight in 65-300, widths in 1-64, the tile's kernel sides in 1-33
     (some reach past the image, folding a border over several periods) and any tile of
     the padded image, a plane up to 2 (tile) or 3 (store) rows and columns larger than it
@@ -4170,7 +4170,7 @@ def test_diff_lists_the_mismatched_ids(tmp_path, capsys):
 def test_rebase_moves_only_the_cases_whose_reference_moved(
     tmp_path, monkeypatch, capsys
 ):
-    # Task 3b1 (plan, Protected): rebase runs every case again and moves one only from
+    # Rebase runs every case again and moves one only from
     # the DLL's outputs to its reference (oracle_outputs), recording ORACLE; the
     # header and every other line stay byte for byte. Stubs stand in for B3 and the
     # oracle, which moves the second case.

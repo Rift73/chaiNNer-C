@@ -5,8 +5,6 @@ import { useMutSetting } from './useSettings';
 
 export interface UseNodeFavorites {
     readonly favorites: ReadonlySet<SchemaId>;
-    readonly addFavorites: (...schemaIds: SchemaId[]) => void;
-    readonly removeFavorite: (schemaId: SchemaId) => void;
     readonly toggleFavorite: (schemaId: SchemaId) => void;
 }
 
@@ -15,18 +13,6 @@ export const useNodeFavorites = () => {
 
     const favorites = useMemo(() => new Set(favoritesArray), [favoritesArray]);
 
-    const addFavorites = useCallback(
-        (...schemaIds: SchemaId[]) => {
-            setFavorites((prev) => [...new Set([...prev, ...schemaIds])]);
-        },
-        [setFavorites]
-    );
-    const removeFavorite = useCallback(
-        (schemaId: SchemaId) => {
-            setFavorites((prev) => prev.filter((id) => id !== schemaId));
-        },
-        [setFavorites]
-    );
     const toggleFavorite = useCallback(
         (schemaId: SchemaId) => {
             setFavorites((prev) => {
@@ -41,8 +27,6 @@ export const useNodeFavorites = () => {
 
     return useMemoObject<UseNodeFavorites>({
         favorites,
-        addFavorites,
-        removeFavorite,
         toggleFavorite,
     });
 };

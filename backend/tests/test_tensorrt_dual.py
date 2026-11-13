@@ -178,6 +178,7 @@ def test_context_sites_past_their_window_export_as_neighborhood_attention(
     manifest = dual.export_manifest(model)
     assert manifest is not None
     assert manifest["context"] == "na-v1"
+    assert (manifest["local"], manifest["retrieval"]) == ("na-v1", "na-v1")
     assert "DualNA_c128_h32_w64_TRT" in manifest["plugin_names"]
     graph = model.graph
     na = [n for n in graph.node if n.op_type == "DualNA_c128_h32_w64_TRT"]
@@ -199,7 +200,8 @@ def test_the_neighborhood_oracle_matches_the_canonical_model(
 ):
     # The DualNA node evaluated densely per query (the exporter's FP32 oracle) against
     # the source's tiled _na_core, with nonzero RFB sine amplitudes (the bias's signed
-    # term): XS x2 at 48x40, where the three M32 sites are neighborhoods.
+    # term): XS x2 at 48x40, where the three M32 sites are neighborhoods. The oracle
+    # has no local neighborhoods, so the model keeps its local windows.
     monkeypatch.syspath_prepend(str(dual.VENDOR))
     export = importlib.import_module("scripts.dual_tensorrt.export")
     oracle = importlib.import_module("scripts.dual_tensorrt.cpu_graph_oracle")
@@ -211,6 +213,7 @@ def test_the_neighborhood_oracle_matches_the_canonical_model(
             for layer in group.layers:
                 if layer.attention.context_na:
                     layer.attention.factored_bias.amplitude_sin.normal_(std=0.3)
+                layer.attention.local_na = False
         model.prepare_for_export()
         x = torch.rand(1, 3, 48, 40)
         graph = oracle.FP32GraphOracle(
@@ -241,6 +244,7 @@ def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
     assert (spec["factory"], spec["scale"], spec["dynamic"]) == ("dual_xs", 1, True)
     assert (spec["alignment"], spec["plugin_key"]) == (dual.ALIGNMENT, "c128")
     assert manifest["context"] == "na-v1"
+    assert (manifest["local"], manifest["retrieval"]) == ("na-v1", "na-v1")
     graph = onnx.load_from_string(onnx_bytes).graph
     dims = graph.input[0].type.tensor_type.shape.dim
     assert [d.dim_value or d.dim_param for d in dims] == [1, 3, "in_height", "in_width"]
@@ -249,9 +253,12 @@ def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
         "DualNorm_c128_TRT",
         "DualCore_c128_TRT",
         "DualProject_c128_TRT",
-        "DualAttentionBarrier_TRT",
         "DualNA_c128_TRT",
+        "DualLocalNA_c128_TRT",
+        "DualXR_c128_TRT",
+        "DualRowSum_c128_TRT",
     }
+    assert set(manifest["plugin_names"]) == plugins
     # Every context site, whatever the run-time size (one that fits the window is a
     # single neighborhood, the whole-window attention).
     na = [n for n in graph.node if n.op_type == "DualNA_c128_TRT"]
@@ -361,11 +368,11 @@ def test_the_build_settings_reach_the_engine_worker(
     assert rest == ["12.5", "5", "1", "1", "full", *sizes]
 
 
-@pytest.mark.parametrize("context", [None, "na-v1"])
+@pytest.mark.parametrize("keys", [(), ("context",), ("context", "local", "retrieval")])
 def test_an_onnx_from_before_neighborhood_attention_builds_with_a_warning(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    context: str | None,
+    keys: tuple[str, ...],
 ):
     def child(args: list[str], *_: object) -> str:
         Path(args[3]).write_bytes(b"engine")
@@ -375,8 +382,14 @@ def test_an_onnx_from_before_neighborhood_attention_builds_with_a_warning(
     manifest: dict[str, object] = {
         "specialization": {"plugin_key": "c128_h256_w256", "alignment": 4}
     }
-    if context is not None:
-        manifest["context"] = context
+    manifest.update(dict.fromkeys(keys, "na-v1"))
     assert dual.build_engine(b"onnx", manifest, 0) == b"engine"
-    warned = [r for r in caplog.records if "old context windows" in r.getMessage()]
-    assert len(warned) == (context is None)
+    warned = [
+        r.getMessage()
+        for r in caplog.records
+        if "without neighborhood attention" in r.getMessage()
+    ]
+    missing = [key for key in dual.NA_KEYS if key not in keys]
+    assert len(warned) == bool(missing)
+    if missing:
+        assert f"at its {', '.join(missing)} sites" in warned[0]

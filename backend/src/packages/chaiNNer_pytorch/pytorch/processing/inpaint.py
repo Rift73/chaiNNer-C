@@ -29,7 +29,6 @@ def inpaint(
     options: PyTorchSettings,
 ):
     with torch.no_grad():
-        # TODO: use bfloat16 if RTX
         use_fp16 = options.use_fp16 and model.supports_half
         dtype = torch.float16 if use_fp16 else torch.float32
         device = options.device
@@ -49,33 +48,16 @@ def inpaint(
             d_mask = d_mask.to(dtype)
 
             result = model(d_img, d_mask)
-            result = tensor2np(
-                result.detach().cpu().detach(),
+            return tensor2np(
+                result.detach().cpu(),
                 change_range=False,
                 imtype=np.float32,
             )
-
-            del d_img
-            del d_mask
-
-            return result
         except RuntimeError:
-            # Collect garbage (clear VRAM)
-            if d_img is not None:
-                try:
-                    d_img.detach().cpu()
-                except Exception:
-                    pass
-                del d_img
-            if d_mask is not None:
-                try:
-                    d_mask.detach().cpu()
-                except Exception:
-                    pass
-                del d_mask
+            # Frees the GPU memory before the error reaches the user
+            d_img = d_mask = None
             gc.collect()
             safe_cuda_cache_empty()
-
             raise
 
 

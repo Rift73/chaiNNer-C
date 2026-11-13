@@ -13,6 +13,7 @@ from dependencies.rocm import (
     rocm_wheel,
     triton_rocm,
 )
+from dependencies.triton import triton_windows_nvidia
 from gpu import nvidia
 from system import is_arm_mac, is_linux, is_windows
 
@@ -150,6 +151,16 @@ def get_pytorch():
         ]
 
 
+def get_triton() -> list[Dependency]:
+    """Triton for spandrel's eager kernels on NVIDIA GPUs where PyTorch does not bring it:
+    on Windows. CUDA's PyTorch for Linux requires Triton itself, ROCm's and the CPU build
+    run these models without the kernels, and on AMD Windows the MIGraphX package lists
+    its own (dependencies.rocm)."""
+    if is_windows and nvidia.is_available:
+        return [triton_windows_nvidia()]
+    return []
+
+
 package = add_package(
     __file__,
     id="chaiNNer_pytorch",
@@ -157,6 +168,7 @@ package = add_package(
     description=package_description,
     dependencies=[
         *get_pytorch(),
+        *get_triton(),
         Dependency(
             display_name="FaceXLib",
             pypi_name="facexlib",
@@ -178,29 +190,15 @@ package = add_package(
         Dependency(
             display_name="Spandrel",
             pypi_name="spandrel",
-            # The fork's build of 0.4.2: adds DRFT, DUAL and SST; c2 computes fp16
-            # LayerNorm statistics in fp32 and pads exported ONNX graphs per input;
-            # c3 runs DUAL in fp16; c4 runs HAT and DAT in fp16; c5 lays out their
-            # attention for speed (DAT2 2x in PyTorch) and for ONNX export; c6 runs it
-            # through scaled_dot_product_attention (cuDNN or memory-efficient attention);
-            # c7 folds DRFT's edge branches without a per-channel Python loop; c8 adds
-            # WSR, GaterV3, SMoSR, FIGSR and GFISRv2; c9 loads released GaterV3 models
-            # (no flash buffer, resselt's upsamplers); c10 runs DUAL's context layers
-            # as neighborhood attention; c11 exports HAT's and DAT's attention in the
-            # layout MIGraphX fuses, on request; c12 runs depthwise 3x3 convolutions
-            # and ESRGAN's dense blocks on HIP kernels under ROCm; c13 runs DUAL's
-            # inference with fewer passes over memory; c14 makes DySample's ONNX grid
-            # follow the size, folds SPAN once and loads Flex Attention on first use; c15
-            # keeps FP16 HAT's and DAT's last two groups' sums in FP32. c16 runs DAT with fewer passes
-            # over memory; c17 runs HAT, ESRGAN and DUAL with fewer too. c18 runs DAT's
-            # channel attention a row of the image at a time and keeps FP16 FIGSR's Fourier
-            # norms in FP32.
-            version="0.4.2+c18",
+            # The fork's build of 0.4.2: adds DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR,
+            # GFISRv2 and RDUAL, FP16-safe and faster inference and exports, and HIP
+            # kernels under ROCm.
+            version="0.4.2+c21",
             size_estimate=600 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c18/"
-                "spandrel-0.4.2%2Bc18-py3-none-any.whl"
-                "#sha256=21b56e9b3a1b5fce4bc8f0d2063bbc8c2cea29fec3df8e862b012d7cc87ee585"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c21/"
+                "spandrel-0.4.2%2Bc21-py3-none-any.whl"
+                "#sha256=470a105f33470f1a2cd5a3b6900f3b00329875e9ab20a473e02298d0295df362"
             ),
         ),
         Dependency(

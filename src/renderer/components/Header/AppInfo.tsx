@@ -298,8 +298,11 @@ export const AppInfo = memo(() => {
                                         if (updateVersion) {
                                             ipcRenderer
                                                 .invoke('open-url', updateVersion.url)
-                                                .catch(() => {
-                                                    log.error('Failed to open the release page');
+                                                .catch((error) => {
+                                                    log.error(
+                                                        'Failed to open the release page',
+                                                        error
+                                                    );
                                                 });
                                         }
                                         onAlertClose();

@@ -38,7 +38,7 @@ from nodes.impl.vapoursynth.runner import vs_env, vs_python, vspipe
 from nodes.impl.vapoursynth.script import VideoClip, compile_script
 from nodes.properties.inputs import NumberInput
 from packages.chaiNNer_onnx.onnx.io.load_model import (
-    load_model_node as load_onnx_model_node,
+    read_model as load_onnx_model_node,
 )
 from packages.chaiNNer_onnx.onnx.processing.upscale_image import (
     upscale_image_node as onnx_upscale_image_node,
@@ -832,7 +832,7 @@ def test_models_that_are_not_upscalers_are_clear_errors(
         chainner_vs.upscale(rgb, str(pth), "PyTorch", "fp32", 0)
 
     monkeypatch.setattr(
-        onnx_io, "load_model_node", lambda path: (object(), path.parent, path.stem)
+        onnx_io, "read_model", lambda path: (object(), path.parent, path.stem)
     )
     with pytest.raises(ValueError, match="background removal"):
         chainner_vs.upscale(rgb, str(onnx_file), "ONNX", "fp32", 0)
@@ -840,7 +840,7 @@ def test_models_that_are_not_upscalers_are_clear_errors(
     unknown_scale = OnnxGeneric(b"", OnnxInfo(13, "fp32"))
     monkeypatch.setattr(
         onnx_io,
-        "load_model_node",
+        "read_model",
         lambda path: (unknown_scale, path.parent, path.stem),
     )
     with pytest.raises(ValueError, match="cannot tell the scale"):

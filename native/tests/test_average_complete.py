@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,6 +17,9 @@ from nodes.impl import native_cv_resize
 
 ROOT = Path(__file__).resolve().parents[2]
 RELATIVE = "packages/chaiNNer_standard/image_filter/correction/average_color_fix.py"
+DECLARED = (
+    Path(__file__).with_name("reference_analysis") / "average_color_fix_declared.json"
+)
 
 
 def load_node(path):
@@ -118,6 +122,32 @@ def test_average_full_node(channels, ref_channels, scale, shape, ref_shape, ipp)
         ACTUAL.average_color_fix_node(image, reference, scale),
         ORIGINAL.average_color_fix_node(image, reference, scale),
     )
+
+
+def test_reference_takes_the_declared_size(monkeypatch):
+    # The fixture's sizes come from the type system's own evaluation; they include every side up to 2048 where
+    # ceil(side * (scale / 100)) gives another size, and a sample of larger ones. Even cases scale the reference's width, odd ones its height.
+    sizes = []
+    resize = ACTUAL.resize
+
+    def recording_resize(img, out_dims, *args, **kwargs):
+        sizes.append(out_dims)
+        return resize(img, out_dims, *args, **kwargs)
+
+    monkeypatch.setattr(ACTUAL, "resize", recording_resize)
+    for index, (side, scale, declared) in enumerate(
+        json.loads(DECLARED.read_text(encoding="utf-8"))["cases"]
+    ):
+        axis = index % 2
+        reference = np.zeros((1, side, 3) if axis == 0 else (side, 1, 3), np.float32)
+        image = np.zeros(
+            (2, declared + 1, 3) if axis == 0 else (declared + 1, 2, 3), np.float32
+        )
+        sizes.clear()
+        ACTUAL.average_color_fix_node(image, reference, scale)
+        expected = (declared, 1) if axis == 0 else (1, declared)
+        # At 100 % the reference keeps its size and the first resize takes the image to it.
+        assert sizes[0] == expected, (side, scale, axis)
 
 
 @pytest.mark.parametrize("ref_channels", [3, 4])

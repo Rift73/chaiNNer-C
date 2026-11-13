@@ -1,4 +1,4 @@
-"""ISA probe, CHAINNER_C_ISA override and the cn_isa exports (SP4a, spec 4.3).
+"""ISA probe, CHAINNER_C_ISA override and the cn_isa exports.
 
 The level decides only which implementation runs a kernel's operation sequence;
 mirror parameters stay the bit-deciding axis. cn_isa_classify is the probe's
@@ -130,7 +130,7 @@ def isa_set(level):
 def straddling_cases():
     """{kernel: [(case, manifest outputs)]}: the convolution_border cases at fused 8
     and the separable_tiles cases at lanes 8 whose fused boundary (fused_columns, or
-    row_width / 8 * 8) is 8 (mod 16), so a 16-lane group straddles it (D15)."""
+    row_width / 8 * 8) is 8 (mod 16), so a 16-lane group straddles it."""
     found = {}
     for kernel, mirror in (
         ("convolution_border", "fused"),
@@ -263,7 +263,7 @@ def test_environment_override_in_a_child_process(value):
 
 
 def test_avx512_override_in_a_child_process():
-    """Review focus 5 (D15): CHAINNER_C_ISA=avx2 caps a child's level (cwd
+    """CHAINNER_C_ISA=avx2 caps a child's level (cwd
     backend/src) at avx2: cn_isa_get's effective level is 1 (on a CPU with avx2), the
     straddling cases at the default MXCSR equal B3 there, and the child imports
     neither PIL nor torch."""

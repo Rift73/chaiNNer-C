@@ -98,7 +98,7 @@ export const NumberSetting = memo(({ setting, value, setValue }: SettingsProps<'
                 width="171px"
                 onChange={(v) => {
                     const newValue = parseFloat(v);
-                    if (!Number.isNaN(newValue)) {
+                    if (Number.isFinite(newValue)) {
                         setValue(newValue);
                     }
                 }}

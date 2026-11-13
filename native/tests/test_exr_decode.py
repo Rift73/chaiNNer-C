@@ -432,7 +432,7 @@ def test_unknown_channels_raise():
 
 @pytest.mark.parametrize(("width", "taken"), [(40_000, True), (40_001, False)])
 def test_size_limit(width: int, taken: bool, monkeypatch: pytest.MonkeyPatch):
-    """The owner's limit, 40,000 x 40,000 pixels: the decoder asks for that buffer and declines a column more
+    """The image limit, 40,000 x 40,000 pixels: the decoder asks for that buffer and declines a column more
     before allocating anything (header-only files; the requests are refused)."""
     from nodes.impl.native_graph import graph
 

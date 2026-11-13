@@ -22,8 +22,8 @@ const getInvalidRegex = (pattern: string): RegExp | undefined => {
     if (!invalidRegexCache.has(pattern)) {
         try {
             invalidRegexCache.set(pattern, new RegExp(pattern, 'u'));
-        } catch (e) {
-            log.error('Invalid regex pattern:', pattern);
+        } catch (error) {
+            log.error('Invalid regex pattern:', pattern, error);
             invalidRegexCache.set(pattern, undefined);
         }
     }
@@ -150,7 +150,7 @@ export const TextInput = memo(
                 </MenuItem>
                 <MenuItem
                     icon={<MdContentPaste />}
-                    isDisabled={isConnected}
+                    isDisabled={isLocked || isConnected}
                     onClick={() => {
                         navigator.clipboard
                             .readText()

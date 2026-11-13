@@ -34,9 +34,9 @@ class ProgressController(ProgressToken):
 
         self.time_paused: float = 0
         """
-        The amount of time spend paused in seconds.
+        The time spent paused, in seconds.
 
-        Only time spend during `suspend` is counted.
+        Only the time spent in `suspend` counts.
         """
 
     @property

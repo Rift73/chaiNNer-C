@@ -10,7 +10,9 @@ import os
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +22,7 @@ import numpy as np
 import pytest
 from scratch_storage import NO_FFMPEG, STORAGE
 
+import navi
 from api import MB, Aborted, NodeAttributedError, NodeContext, SettingsParser
 from nodes.impl.colour_info import (
     FIELDS,
@@ -36,8 +39,15 @@ from nodes.impl.colour_info import (
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.vapoursynth import runner
 from nodes.impl.vapoursynth.colour_props import colour_stream
-from nodes.impl.vapoursynth.runner import VSScriptError, clip_info, read_frames
-from nodes.impl.vapoursynth.script import VideoClip, clip_var, compile_script
+from nodes.impl.vapoursynth.runner import (
+    VSScriptError,
+    clip_info,
+    clip_props,
+    read_frames,
+)
+from nodes.impl.vapoursynth.script import ClipShown, VideoClip, clip_var, compile_script
+from nodes.properties.outputs import VideoClipOutput
+from packages.chaiNNer_vapoursynth.chains import named_clips, shown_clip
 from packages.chaiNNer_vapoursynth.vapoursynth import preview_clips
 from packages.chaiNNer_vapoursynth.vapoursynth.preview_clips import (
     preview_clips_node,
@@ -54,6 +64,10 @@ class Context:
         self.settings = SettingsParser({"cache_mb": 256})
         self.cleanups: list[Callable[[], None]] = []
         self.aborted = False
+        self.warnings: list[str] = []
+
+    def warn(self, message: str):
+        self.warnings.append(message)
 
     def check_aborted(self):
         if self.aborted:
@@ -86,6 +100,24 @@ def pairs(*values: VideoClip | str | None) -> list[VideoClip | str | None]:
 
 
 BLANK = "core.std.BlankClip(width=64, height=48, length=5)"
+
+
+def clip_frames(
+    ctx: NodeContext,
+    record: VideoClip,
+    mode: VideoMode = VideoMode.RGB,
+    seek: int = 0,
+    frames: tuple[int, int] | None = None,
+) -> tuple[Any, ...]:
+    """A run of Clip Frames: All, or the Range `frames` (Start, End)."""
+    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
+        FrameSelection,
+        clip_frames_node,
+    )
+
+    selection = FrameSelection.ALL if frames is None else FrameSelection.RANGE
+    first, last = frames or (0, 9)
+    return clip_frames_node(ctx, record, seek, selection, first, last, mode)
 
 
 def test_split_planes_three_outputs_one_statement():
@@ -319,7 +351,9 @@ def test_preview_check_that_fails_keeps_the_open_viewers_script(
     # The check runs on a copy: Reload in the open vsview shows the last script that
     # worked, not the error.
     monkeypatch.setattr(preview_clips, "glibc_version", lambda: None)
-    monkeypatch.setattr(preview_clips, "launch_preview", lambda script, key: None)
+    monkeypatch.setattr(
+        preview_clips, "launch_preview", lambda script, key, title: None
+    )
 
     def check(script: Path, output: int, context: NodeContext | None = None) -> None:
         if "Crop(left=-4)" in script.read_text(encoding="utf-8"):
@@ -348,8 +382,9 @@ def vs() -> Any:
 class FakeViewer:
     """A vsview process that runs until `close()`."""
 
-    def __init__(self, script: Path):
+    def __init__(self, script: Path, title: str):
         self.script = script
+        self.title = title
         self.returncode: int | None = None
 
     def poll(self) -> int | None:
@@ -367,8 +402,8 @@ def viewers(monkeypatch: pytest.MonkeyPatch, vs: Any) -> list[FakeViewer]:
     monkeypatch.setattr(preview_clips, "glibc_version", lambda: None)
     started: list[FakeViewer] = []
 
-    def open_viewer(script: Path) -> FakeViewer:
-        started.append(FakeViewer(script))
+    def open_viewer(script: Path, title: str) -> FakeViewer:
+        started.append(FakeViewer(script, title))
         return started[-1]
 
     monkeypatch.setattr(runner, "_open_viewer", open_viewer)
@@ -390,7 +425,42 @@ def test_preview_writes_named_outputs(tmp_path: Path, viewers: list[FakeViewer])
     assert f"set_output({source.var}, 0, 'Source')" in text
     assert f"set_output({crop.var}, 1, 'Clip 3')" in text
     assert "core.max_cache_size = 256" in text
-    assert [v.script for v in viewers] == [script]
+    assert [(v.script, v.title) for v in viewers] == [
+        (script, "Source, Clip 3 - chaiNNer-C")
+    ]
+
+
+def test_unnamed_clips_take_their_methods_name_unless_two_share_it():
+    def made(node_id: str, label: str) -> VideoClip:
+        return replace(clip(node_id, BLANK), label=label)
+
+    values = pairs(
+        made("a", "BM3D"),
+        None,
+        made("b", "BM3D"),
+        None,
+        made("c", "DFTTest"),
+        None,
+        made("d", "DFTTest"),
+        "Mine",
+        made("e", ""),
+        None,
+    )
+    # A user's name never counts as a method name; Save Script keeps Clip <number>.
+    assert [name for _, name in named_clips(values, by_method=True)] == [
+        "Clip 1",
+        "Clip 2",
+        "DFTTest",
+        "Mine",
+        "Clip 5",
+    ]
+    assert [name for _, name in named_clips(values)] == [
+        "Clip 1",
+        "Clip 2",
+        "Clip 3",
+        "Mine",
+        "Clip 5",
+    ]
 
 
 def test_preview_reuses_running_viewer(tmp_path: Path, viewers: list[FakeViewer]):
@@ -429,10 +499,6 @@ def test_preview_error_shows_on_its_node_and_opens_nothing(
 def test_clip_frames_count_and_values(
     tmp_path: Path, vs: Any, monkeypatch: pytest.MonkeyPatch
 ):
-    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
-        clip_frames_node,
-    )
-
     # Every vspipe --info process (an evaluation of the script before the frames' run).
     info_runs: list[list[str]] = []
     popen = subprocess.Popen
@@ -451,18 +517,19 @@ def test_clip_frames_count_and_values(
         " fpsden=1, color=[10 * i, 20 * i, 30 * i]) for i in range(5)])",
     )
     ctx = context(tmp_path, "frames")
-    generator, fps, colour = clip_frames_node(ctx, frames, VideoMode.RGB)
+    generator, fps, colour, preview, count = clip_frames(ctx, frames, seek=3)
 
-    assert fps == 25
+    assert (fps, count) == (25, 5)
     assert generator.expected_length == 5
     # An RGB clip without colour properties: identity matrix, full range.
     assert (colour.matrix, colour.range) == (Matrix.RGB, Range.FULL)
     assert (colour.luma_size, colour.bit_depth) == ((8, 6), 8)
     items = cast(list[tuple[Any, ...]], list(generator.supplier()))
     cast(Context, ctx).run_cleanups()
-    # One --info for the length, FPS and colour; the frames' run reuses it.
+    # One --info for the length, FPS, colour and Preview; the frames' run reuses it.
     assert len(info_runs) == 1
     assert [item[1] for item in items] == list(range(5))
+    np.testing.assert_array_equal(preview, items[3][0])
     for i, (frame, _, *planes) in enumerate(items):
         # Mode RGB: no planes.
         assert planes == [None, None, None]
@@ -485,6 +552,63 @@ def test_clip_frames_count_and_values(
     assert list(folder.glob("*.frames.vpy")) == []
 
 
+def test_clip_frames_range_and_one_frame(
+    tmp_path: Path, vs: Any, monkeypatch: pytest.MonkeyPatch
+):
+    # Every vspipe process.
+    runs: list[list[str]] = []
+    popen = subprocess.Popen
+
+    def counting(command: list[str], **kwargs: Any) -> Any:
+        runs.append(command)
+        return popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", counting)
+    # Frame i has the value 10i.
+    record = clip(
+        "src",
+        "core.std.Splice([core.std.BlankClip(width=8, height=6, length=1,"
+        " color=[10 * i] * 3) for i in range(6)])",
+    )
+
+    def run(seek: int, frames: tuple[int, int] | None) -> list[tuple[Any, ...]]:
+        ctx = context(tmp_path, "frames")
+        generator, _, _, preview, count = clip_frames(
+            ctx, record, seek=seek, frames=frames
+        )
+        assert count == 6
+        # Past the end, the last frame.
+        assert preview[0, 0, 0] == pytest.approx(10 * min(seek, 5) / 255)
+        items = cast(list[tuple[Any, ...]], list(generator.supplier()))
+        cast(Context, ctx).run_cleanups()
+        assert generator.expected_length == len(items)
+        return items
+
+    every = run(9, None)
+    assert [item[1] for item in every] == list(range(6))
+    # A Range: the clip's own frame numbers; an Out past the end reads to the end.
+    for frames, indexes in (((1, 3), [1, 2, 3]), ((4, 20), [4, 5])):
+        runs.clear()
+        items = run(0, frames)
+        assert len(runs) == 2
+        assert [item[1] for item in items] == indexes
+        for item in items:
+            np.testing.assert_array_equal(item[0], every[item[1]][0])
+    # Run this frame: the Preview's render is the frame, one vspipe in all.
+    runs.clear()
+    (item,) = run(2, (2, 2))
+    assert len(runs) == 1
+    assert item[1] == 2
+    np.testing.assert_array_equal(item[0], every[2][0])
+    # A Range that cannot run fails at its first item, after the Preview and count.
+    for frames, message in (
+        ((3, 2), r"^Start \(3\) is after End \(2\)\.$"),
+        ((6, 9), "past"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            run(0, frames)
+
+
 @pytest.mark.parametrize(
     "output",
     [
@@ -502,6 +626,11 @@ def test_clip_frames_count_and_values(
             "core.std.BlankClip(format=vs.YUV420P10, width=1280, height=720, length=2,"
             " color=[300, 400, 700])"
         ),
+        # SD YUV without _Matrix: SMPTE 170M.
+        (
+            "core.std.BlankClip(format=vs.YUV420P8, width=720, height=480, length=2,"
+            " color=[80, 100, 200])"
+        ),
     ],
 )
 def test_read_frames_with_info_matches_without(tmp_path: Path, vs: Any, output: str):
@@ -515,6 +644,9 @@ def test_read_frames_with_info_matches_without(tmp_path: Path, vs: Any, output: 
     assert len(reused) == 2
     for a, b in zip(plain, reused, strict=True):
         np.testing.assert_array_equal(a, b)
+    # The Preview frame is the frame read_frames gives.
+    *_, preview = clip_props(script, 0, preview=1)
+    np.testing.assert_array_equal(preview, plain[1])
 
 
 @pytest.fixture
@@ -535,9 +667,10 @@ def collect(
     precision: str = "16",
     colour: ColourInfo | None = None,
     choices: tuple[Enum, ...] = (),
+    ctx: NodeContext | None = None,
 ) -> VideoClip:
     """A run of Frames to Clip, node "collect", at 23.976 fps over `items` (Frames, Y,
-    U, V each), with these settings and colour choices (the rest Auto)."""
+    U, V each), with these settings and colour choices (the rest Auto), in `ctx`."""
     from packages.chaiNNer_vapoursynth.vapoursynth.frames_to_clip import (
         ClipPrecision,
         ClipSource,
@@ -545,7 +678,7 @@ def collect(
     )
 
     chosen: dict[type, Any] = {type(choice): choice for choice in choices}
-    ctx = context(storage, "collect")
+    ctx = ctx or context(storage, "collect")
     collector = frames_to_clip_node(
         ctx,
         ClipSource(source),
@@ -762,6 +895,21 @@ def test_frames_to_clip_planes_keep_their_codes_on_a_newer_ffmpeg(
     ).stdout
     expected = b"".join(c.astype("<u2").tobytes() for codes, _ in frames for c in codes)
     assert decoded == expected
+
+
+def test_frames_to_clip_warns_of_a_one_frame_clip(
+    tmp_path: Path, integrated_ffmpeg: FFMpegEnv
+):
+    """A clip of one frame (Run this frame) runs, with a warning: filters that look at
+    neighbouring frames cannot work on it. Two frames give none."""
+    rgb = np.zeros((4, 6, 3), np.float32)
+    one = context(tmp_path, "collect")
+    assert collect(tmp_path, [(rgb, None, None, None)], ctx=one).stmt
+    (warning,) = cast(Context, one).warnings
+    assert warning.startswith("This clip has one frame (Run this frame")
+    two = context(tmp_path, "collect")
+    collect(tmp_path, [(rgb, None, None, None)] * 2, ctx=two)
+    assert cast(Context, two).warnings == []
 
 
 def test_frames_to_clip_errors(
@@ -1021,15 +1169,11 @@ def test_save_script_runs_in_vspipe(tmp_path: Path, vs: Any):
 
 
 def test_vspipe_failure_names_the_node(tmp_path: Path, vs: Any):
-    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
-        clip_frames_node,
-    )
-
     source = clip("src", BLANK)
     # An error when vspipe evaluates the script: the node run fails.
     bad = clip("bad", f"{clip_var('src')}.std.Crop(left=-4)", source)
     with pytest.raises(VSScriptError, match="negative corner coordinates") as raised:
-        clip_frames_node(context(tmp_path, "frames"), bad, VideoMode.RGB)
+        clip_frames(context(tmp_path, "frames"), bad)
     assert raised.value.node_id == "bad"
 
     # An error at frame 2: the iteration fails (vspipe renders ahead in parallel, so
@@ -1041,7 +1185,7 @@ def test_vspipe_failure_names_the_node(tmp_path: Path, vs: Any):
         source,
     )
     ctx = context(tmp_path, "frames")
-    generator, _, _ = clip_frames_node(ctx, late, VideoMode.RGB)
+    generator, *_ = clip_frames(ctx, late)
     delivered = []
     with pytest.raises(VSScriptError, match="ZeroDivisionError") as raised:
         for item in generator.supplier():
@@ -1052,19 +1196,30 @@ def test_vspipe_failure_names_the_node(tmp_path: Path, vs: Any):
 
 
 def test_plugin_frame_error_shows_on_clip_frames(tmp_path: Path, vs: Any):
-    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
-        clip_frames_node,
-    )
     from process import NodeExecutionError, on_failing_node
 
     # A plugin's error at frame time has no line of the script in its message: YUV
     # without a matrix cannot become RGB, which the resizer finds per frame.
     source = clip("src", "core.std.BlankClip(format=vs.YUV420P8, width=64, height=48)")
     rgb = clip("rgb", f"{clip_var('src')}.resize.Bicubic(format=vs.RGB24)", source)
+    # The Preview's frame fails: the node run fails, on this node.
+    with pytest.raises(VSScriptError, match="no path between colorspaces") as raised:
+        clip_frames(context(tmp_path, "frames"), rgb)
+    assert raised.value.node_id == "frames"
+    # A first frame that fails gives no colour properties.
+    script = tmp_path / "vapoursynth" / "chains" / "frames" / "frames.vpy"
+    assert clip_props(script, 0)[1] == {}
+
+    # Frames after the first fail: the iteration fails.
+    tagged = clip(
+        "tagged",
+        f"core.std.Splice([{clip_var('src')}[0].std.SetFrameProps(_Matrix=1),"
+        f" {clip_var('src')}[1:]])",
+        source,
+    )
+    later = clip("rgb", f"{clip_var('tagged')}.resize.Bicubic(format=vs.RGB24)", tagged)
     ctx = context(tmp_path, "frames")
-    generator, _, colour = clip_frames_node(ctx, rgb, VideoMode.RGB)
-    # The first frame fails: no colour properties, every value guessed.
-    assert {colour.origin_of(name) for name in FIELDS} == {"guessed"}
+    generator, *_ = clip_frames(ctx, later)
     with pytest.raises(VSScriptError, match="Failed to retrieve frame") as raised:
         for _ in generator.supplier():
             pass
@@ -1117,6 +1272,84 @@ def test_colour_props_as_an_ffprobe_entry():
     # Codes FFmpeg has no name for keep their number.
     stream = colour_stream({"_Transfer": 99, "_Range": 1}, "gray", 8, 8)
     assert (stream["color_transfer"], stream["color_range"]) == ("H.273 code 99", "pc")
+
+
+def test_clip_frames_seek_bar_inputs():
+    from nodes.properties.inputs import VideoSeekInput
+    from packages.chaiNNer_vapoursynth.vapoursynth import clip_frames, clips_group
+
+    assert clip_frames.clip_frames_node
+    data = next(
+        n
+        for n in clips_group.nodes
+        if n.schema_id == "chainner:vapoursynth:clip_frames"
+    )
+    inputs = {int(i.id): i for i in data.inputs}
+    outputs = {int(o.id): o.label for o in data.outputs}
+    labels = {key: i.label for key, i in inputs.items()}
+    # Start and End keep the ids In and Out had: a chain saved with those loads its values.
+    assert labels == {
+        0: "Clip",
+        1: "Mode",
+        2: "Seek",
+        3: "Frames",
+        4: "Start",
+        5: "End",
+    }
+    order = ["Clip", "Seek", "Frames", "Start", "End", "Mode"]
+    assert [i.label for i in data.inputs] == order
+    assert (outputs[2], outputs[7], outputs[8]) == ("FPS", "Preview", "Frame Count")
+    seek = inputs[2]
+    assert isinstance(seek, VideoSeekInput)
+    # The bar's buttons set Frames, Start and End; it spans Frame Count, steps by FPS.
+    wiring = (seek.frames_input, seek.in_input, seek.out_input)
+    assert wiring == (3, 4, 5)
+    assert (seek.frame_count_output, seek.fps_output) == (8, 2)
+    assert inputs[3].to_dict()["options"][1]["value"] == "range"
+    assert all(i.hint and i.description for i in data.inputs)
+
+
+def test_a_one_frame_range_is_the_chosen_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Run this frame (a Range whose Start is its End) is a one-item run of that frame,
+    as Load Video's: Save Video then saves a PNG instead of a one-frame video. A
+    Range's items are numbered from Start; All is no one-item run."""
+    from nodes.impl.vapoursynth.runner import ClipInfo
+    from packages.chaiNNer_vapoursynth.vapoursynth import clip_frames as node
+
+    info = ClipInfo(8, 6, 20, 24, 1, "RGB24")
+    monkeypatch.setattr(node, "write_script", lambda *_: tmp_path / "frames.vpy")
+    monkeypatch.setattr(
+        node,
+        "clip_props",
+        lambda *_, **__: (info, {}, np.zeros((6, 8, 3), np.float32)),
+    )
+    ctx = context(tmp_path, "frames")
+    record = clip("src", BLANK)
+    ranges = {
+        frames: (generator.index_base, generator.chosen_item)
+        for frames in (None, (5, 5), (5, 8))
+        for generator in [clip_frames(ctx, record, frames=frames)[0]]
+    }
+    assert ranges == {None: (0, None), (5, 5): (5, 5), (5, 8): (5, None)}
+
+
+def test_clip_frames_range_arithmetic():
+    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
+        FrameSelection,
+        frame_range,
+    )
+
+    assert frame_range(FrameSelection.ALL, 7, 3, 10) == (0, 10)
+    assert frame_range(FrameSelection.RANGE, 2, 4, 10) == (2, 5)
+    assert frame_range(FrameSelection.RANGE, 9, 9, 10) == (9, 10)
+    # An End past the end reads to the end.
+    assert frame_range(FrameSelection.RANGE, 8, 50, 10) == (8, 10)
+    with pytest.raises(ValueError, match="after End"):
+        frame_range(FrameSelection.RANGE, 5, 4, 10)
+    with pytest.raises(ValueError, match=r"^Start \(10\) is past the clip's last"):
+        frame_range(FrameSelection.RANGE, 10, 12, 10)
 
 
 def test_clip_frames_item_types_follow_the_mode():
@@ -1172,12 +1405,8 @@ def frames_items(
     storage: Path, record: VideoClip, mode: VideoMode, node_id: str = "frames"
 ) -> tuple[list[tuple[Any, ...]], ColourInfo]:
     """A run of Clip Frames over `record`: its items and its Colour Info."""
-    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
-        clip_frames_node,
-    )
-
     ctx = context(storage, node_id)
-    generator, _, colour = clip_frames_node(ctx, record, mode)
+    generator, _, colour, _, _ = clip_frames(ctx, record, mode)
     try:
         return cast(list[tuple[Any, ...]], list(generator.supplier())), colour
     finally:
@@ -1275,6 +1504,8 @@ def test_clip_frames_planes_of_float_and_retagged_clips(
     with caplog.at_level(logging.WARNING):
         items, colour = frames_items(tmp_path, tagged, VideoMode.PLANES)
     assert any("smpte2085" in r.getMessage() for r in caplog.records)
+    # RGB cannot convert that matrix: the Preview is the Y plane.
+    assert any("Y plane in gray" in r.getMessage() for r in caplog.records)
     assert colour.matrix is Matrix.BT2020_NCL
     assert colour.origin_of("matrix") == "guessed"
     assert (colour.transfer, colour.primaries) == (Transfer.PQ, Primaries.BT2020)
@@ -1296,3 +1527,79 @@ def test_clip_frames_planes_of_float_and_retagged_clips(
             ValueError, match=r"needs a YUV clip, and this clip is RGB24"
         ):
             frames_items(tmp_path, rgb_clip, mode)
+
+
+def test_load_clips_clip_shows_its_size_frame_rate_and_field_order(
+    tmp_path: Path, vs: Any
+):
+    """Load Clip's clip, after one evaluation, carries its size, frame rate and field
+    order, which its output gives the app as the clip's type to show on the node."""
+    output = VideoClipOutput()
+    for field_based, field_order in ((None, ""), (0, "Progressive"), (2, "TFF")):
+        call = "core.std.BlankClip(width=64, height=48, length=5, fpsnum=24000, fpsden=1001)"
+        if field_based is not None:
+            call += f".std.SetFieldBased({field_based})"
+        source = clip("src", call)
+        assert output.get_broadcast_type(source) is None
+        shown = shown_clip(context(tmp_path, "src"), source)
+        assert shown.shown == ClipShown(64, 48, 24000 / 1001, field_order)
+        assert replace(shown, shown=None) == source
+        fields: dict[str, navi.ExpressionJson] = {
+            "width": 64,
+            "height": 48,
+            "fps": navi.literal(24000 / 1001),
+        }
+        if field_order:
+            fields["fieldOrder"] = navi.literal(field_order)
+        assert output.get_broadcast_type(shown) == navi.named("VideoClip", fields)
+    # A clip whose size and frame rate vary shows 0 for them.
+    varying = clip(
+        "mixed",
+        "core.std.Splice([core.std.BlankClip(width=64, height=48, length=2, fpsnum=25),"
+        " core.std.BlankClip(width=32, height=24, length=2, fpsnum=30)],"
+        " mismatch=True)",
+    )
+    shown = shown_clip(context(tmp_path, "mixed"), varying)
+    assert shown.shown is not None
+    assert (shown.shown.width, shown.shown.height, shown.shown.fps) == (0, 0, 0.0)
+
+
+def test_load_clip_evaluates_a_source_again_only_when_it_changed(
+    tmp_path: Path, vs: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """A clip already shown is not evaluated again; an edited file it names (new size or
+    modification time) or a changed option is. The kept results are bounded."""
+    from packages.chaiNNer_vapoursynth import chains
+
+    evaluations: list[Path] = []
+
+    def counted(script: Path, *args: Any, **kwargs: Any):
+        evaluations.append(script)
+        return clip_props(script, *args, **kwargs)
+
+    monkeypatch.setattr(chains, "clip_props", counted)
+    monkeypatch.setattr(chains, "SHOWN", OrderedDict())
+    source = tmp_path / "source.txt"
+    source.write_text("a", encoding="utf-8")
+
+    def shown(width: int) -> ClipShown | None:
+        call = (
+            f"core.std.BlankClip(width={width}, height=48, length=2)"
+            f".std.SetFrameProp(prop='source', data={str(source)!r})"
+        )
+        return shown_clip(context(tmp_path, "load"), clip("load", call)).shown
+
+    assert shown(64) == shown(64) == ClipShown(64, 48, 24.0, "")
+    assert len(evaluations) == 1
+    source.write_text("ab", encoding="utf-8")
+    shown(64)
+    assert len(evaluations) == 2
+    stat = source.stat()
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    shown(64)
+    assert len(evaluations) == 3
+    assert shown(32) == ClipShown(32, 48, 24.0, "")
+    assert len(evaluations) == 4
+    monkeypatch.setattr(chains, "SHOWN_KEPT", 2)
+    shown(16)
+    assert len(chains.SHOWN) == 2

@@ -6,6 +6,7 @@ import { lazy } from '../../common/util';
 import { OpenArguments } from '../arguments';
 import { readSettings } from '../setting-storage';
 import { createMainWindow } from './main-window';
+import { registerRendererScheme } from './rendererProtocol';
 
 const mdCodeBlock = (code: string): string => {
     return `\`\`\`\n${code}\n\`\`\``;
@@ -28,7 +29,7 @@ const setupErrorHandling = () => {
                         const stack = error.stack
                             ? `\n${error.stack.replace(String(error), '')}`
                             : '';
-                        createIssue('https://github.com/chaiNNer-org/chaiNNer/issues/new', {
+                        createIssue('https://github.com/Rift73/chaiNNer-C/issues/new', {
                             title: `Error report: ${error.message}`,
                             body: [
                                 mdCodeBlock(String(error) + stack),
@@ -63,6 +64,8 @@ export const createGuiApp = (args: OpenArguments) => {
     // Electron builds a default menu if none is set before it is ready. The window sets its own.
     Menu.setApplicationMenu(null);
 
+    registerRendererScheme();
+
     const createWindow = lazy(() => {
         createMainWindow(args, settings).catch((error) => {
             log.error(error);
@@ -71,9 +74,6 @@ export const createGuiApp = (args: OpenArguments) => {
         });
     });
 
-    // This method will be called when Electron has finished
-    // initialization and is ready to create browser windows.
-    // Some APIs can only be used after this event occurs.
     app.on('ready', createWindow);
 
     // TODO: See if this can be fixed in the future. Currently an active app with
@@ -89,7 +89,6 @@ export const createGuiApp = (args: OpenArguments) => {
     });
     * */
 
-    // Quit when all windows are closed.
     app.on('window-all-closed', () => {
         app.quit();
     });

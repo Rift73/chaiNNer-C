@@ -5,7 +5,6 @@ import functools
 import gc
 import importlib
 import itertools
-import logging
 import os
 import sys
 import tempfile
@@ -51,13 +50,14 @@ from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
 from process_temp import use_process_temp_folder
 from progress_controller import Aborted
 from response import (
+    CLIENT_GONE,
     RESTART_WORKER_HEADER,
     already_running_response,
     error_response,
     no_executor_response,
     success_response,
 )
-from server_config import LOG_CONFIG, ServerConfig
+from server_config import LOG_CONFIG, ServerConfig, SSEFilter
 from system import load_system_cpp_runtime
 
 # Pillow's and OpenCV's image size limit, before any module imports cv2 (the node modules load later)
@@ -267,8 +267,7 @@ class NodeLoading:
         """Moves every object the start made (the modules, the node registry, the
         frameworks' state) out of the collector's reach, once: each later full
         collection (collect_failed_run, return_device_memory) then took about 0 ms
-        instead of 136-164 ms. Gate ruling R1 (the decision log,
-        "instant-exec gate R1"): skipped, and never retried, while a run is in flight
+        instead of 136-164 ms. Skipped, and never retried, while a run is in flight
         or once a run of a node outside the light set has completed (RunTracker), as
         their objects must stay collectable."""
         with run_tracker.lock:
@@ -317,7 +316,6 @@ class AppContext:
         self.run_paused_early = False
         self.individual_executors: dict[ExecutionId, Executor | NativeExecutor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
-        # Increased from 4 to 8 workers for better parallelism in batch processing
         self.pool: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
             max_workers=POOL_SIZE, initializer=numpy_pool.install
         )
@@ -334,7 +332,6 @@ class AppContext:
 
         default_sub_dir = "chaiNNer/backend-storage"
 
-        # try using the chaiNNer's app dir
         try:
             # appdirs is likely only installed on dev machines
             from appdirs import user_data_dir
@@ -342,8 +339,7 @@ class AppContext:
             app_data_dir = Path(user_data_dir(roaming=True)) / default_sub_dir
             logger.info(f"Using app data as storage directory: {app_data_dir}")
             return app_data_dir
-        except:  # noqa: E722
-            # ignore errors
+        except ImportError:
             pass
 
         # last resort: use the system's temporary directory
@@ -364,14 +360,6 @@ add_cors(app)
 # PyTorch's CUDA allocator settings, before any module imports torch (the node modules
 # load later); after the app, as its warning goes to the app's log
 cuda_allocator.apply()
-
-
-class SSEFilter(logging.Filter):
-    def filter(self, record):  # noqa: ANN001
-        request = record.request  # type: ignore
-        return not (
-            (request.endswith("/sse")) and record.status == 200  # type: ignore
-        )
 
 
 class ZeroCounter:
@@ -474,7 +462,7 @@ async def wait_for_background_work(stopped: Callable[[], bool]) -> None:
         await asyncio.sleep(0.01)
 
 
-access_logger.addFilter(SSEFilter())
+access_logger.addFilter(SSEFilter(("/sse",)))
 
 
 @app.route("/health")
@@ -569,7 +557,7 @@ async def run(request: Request):
             tracer.log_async = True
             tracer.start()
 
-        full_data: RunRequest = dict(request.json)  # type: ignore
+        full_data: RunRequest = request.json
         # wait until the chain's nodes have loaded and all previews are done
         await wait_for_nodes(
             {node["schemaId"] for node in full_data["data"]},
@@ -782,7 +770,7 @@ async def run_individual(request: Request):
     node_id: NodeId | None = None
     arrival: int | None = None
     try:
-        full_data: RunIndividualRequest = dict(request.json)  # type: ignore
+        full_data: RunIndividualRequest = request.json
         logger.debug(full_data)
 
         node_id = full_data["id"]
@@ -853,16 +841,10 @@ async def run_individual(request: Request):
                     old_executor.kill()
 
                 ctx.individual_executors[execution_id] = executor
-                if node_data.kind == "generator":
-                    assert isinstance(node, GeneratorNode)
+                if isinstance(node, GeneratorNode):
                     output = await executor.process_generator_node(node)
-                elif node_data.kind == "regularNode":
-                    assert isinstance(node, FunctionNode)
-                    output = await executor.process_regular_node(node)
                 else:
-                    raise ValueError(
-                        f"Invalid node kind {node_data.kind} attempted to run individually"
-                    )
+                    output = await executor.process_regular_node(node)
                 if (
                     not isinstance(node, GeneratorNode)
                     and latest_individual_arrival.get(node_id) == arrival
@@ -878,7 +860,6 @@ async def run_individual(request: Request):
                 release = asyncio.create_task(release_after_broadcasts(ctx, executor))
                 individual_releases.add(release)
                 release.add_done_callback(individual_releases.discard)
-                # gc.collect() removed - called after every individual node, too frequent
 
         # From the request's arrival, a wait for the node to load included: the time
         # from a launch to a startup chain's first preview reads from the log.
@@ -974,7 +955,7 @@ def return_device_memory_after_burst(ctx: AppContext) -> None:
 async def clear_cache_individual(request: Request):
     ctx = AppContext.get(request.app)
     try:
-        full_data = dict(request.json)  # type: ignore
+        full_data = request.json
         # TensorRT and VOSR engines, sessions and models outlive runs (every
         # SharedCache); a session in use is freed when its run returns it.
         latest_individual_arrival.pop(full_data["id"], None)
@@ -983,11 +964,24 @@ async def clear_cache_individual(request: Request):
         if individual is not None:
             individual.kill()
         tensorrt_cache.release_node(full_data["id"])
+        # A Load Video node's Preview reader holds its file open; the app never clears a
+        # node per seek, so seeking keeps its reader. Without the video module loaded no
+        # reader exists. A reader that fails to close stops nothing below; its error is
+        # the answer once the node is cleared.
+        close_error: Exception | None = None
+        video = sys.modules.get("nodes.impl.video")
+        if video is not None:
+            try:
+                video.close_preview(full_data["id"])
+            except Exception as error:
+                close_error = error
         return_device_memory_after_burst(ctx)
         if ctx.cache.get(full_data["id"], None) is not None:
             del ctx.cache[full_data["id"]]
             if ctx.executor is None:
                 numpy_pool.release()
+        if close_error is not None:
+            raise close_error
         return json({"success": True, "data": None})
     except Exception as exception:
         logger.error(exception, exc_info=True)
@@ -1013,13 +1007,13 @@ async def pause(request: Request):
         logger.info("Paused executor.")
         return json(success_response(), status=200)
     except Exception as exception:
-        logger.log(2, exception, exc_info=True)
+        logger.error(exception, exc_info=True)
         return json(error_response("Error pausing execution!", exception), status=500)
 
 
 @app.route("/resume", methods=["POST"])
 async def resume(request: Request):
-    """Pauses the current execution"""
+    """Resumes the current execution"""
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to resume executor...")
@@ -1036,7 +1030,7 @@ async def resume(request: Request):
         logger.info("Resumed executor.")
         return json(success_response(), status=200)
     except Exception as exception:
-        logger.log(2, exception, exc_info=True)
+        logger.error(exception, exc_info=True)
         return json(error_response("Error resuming execution!", exception), status=500)
 
 
@@ -1078,7 +1072,7 @@ async def kill(request: Request):
         logger.info("Killed executor.")
         return json(success_response(), status=200, headers=restart_headers())
     except Exception as exception:
-        logger.log(2, exception, exc_info=True)
+        logger.error(exception, exc_info=True)
         return json(error_response("Error killing execution!", exception), status=500)
 
 
@@ -1186,7 +1180,10 @@ async def sse(request: Request):
 
     while True:
         message = await ctx.queue.get()
-        await response.send(event_text(message))
+        try:
+            await response.send(event_text(message))
+        except CLIENT_GONE:
+            return
 
 
 def log_load_errors(load_errors: list[api.LoadErrorInfo]) -> None:
@@ -1238,13 +1235,12 @@ exit_code = 0
 
 
 async def close_server(sanic_app: Sanic):
-    # pylint: disable=global-statement
     global exit_code
 
     try:
         await nodes_available()
     except Exception as ex:
-        logger.error(f"Error waiting for server to start: {ex}")
+        logger.error(f"Error waiting for server to start: {ex}", exc_info=True)
         exit_code = 1
 
     # Sanic 25 serves only after the after_server_start listeners return, and loses
@@ -1259,7 +1255,6 @@ async def close_server(sanic_app: Sanic):
 
 @app.after_server_start
 async def after_server_start(sanic_app: Sanic):
-    # pylint: disable=global-statement
     global setup_task, close_task
     ctx = AppContext.get(sanic_app)
     loop = asyncio.get_running_loop()

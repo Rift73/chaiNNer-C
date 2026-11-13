@@ -153,7 +153,7 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(auto, "_build", build)
     monkeypatch.setattr(auto, "_engine_op", engine_op)
-    monkeypatch.setattr(auto, "_no_engine_here", lambda _device: None)
+    monkeypatch.setattr(auto, "no_engine_here", lambda _device: None)
     monkeypatch.setattr(tensorrt_cache, "release_node", fake.released.append)
     monkeypatch.setitem(sys.modules, "tensorrt", SimpleNamespace(__version__="11.4"))
     monkeypatch.setitem(
@@ -311,6 +311,8 @@ def test_the_automatic_fp16_architectures_have_a_recipe(arch):
     [
         ("RCAN", [], "fp16"),
         ("RetinexFormer", [], "fp16"),
+        ("HEART", [], "fp16"),
+        ("GaterV3", [], "fp16"),
         ("SwinIR", ["small", "60dim"], "fp16"),
         ("SwinIR", ["medium"], "fp16"),
         ("SwinIR", [], None),
@@ -461,13 +463,13 @@ def test_a_drft_that_is_not_legacy_says_why(fakes, tmp_path):
 def test_no_nvidia_stays_on_pytorch_quietly(monkeypatch):
     """The input is hidden there: a saved On could not be turned off."""
     monkeypatch.setattr(auto, "nvidia", SimpleNamespace(is_available=False))
-    assert auto._no_engine_here(GPU) == ""
+    assert auto.no_engine_here(GPU) == ""
 
 
 def test_rocm_stays_on_pytorch_quietly(monkeypatch):
     monkeypatch.setattr(auto, "nvidia", SimpleNamespace(is_available=True))
     monkeypatch.setattr(torch.version, "hip", "7.14")
-    assert auto._no_engine_here(GPU) == ""
+    assert auto.no_engine_here(GPU) == ""
 
 
 def test_a_chain_saved_on_warns_nothing_where_the_input_is_hidden(
@@ -486,7 +488,7 @@ def test_a_chain_saved_on_warns_nothing_where_the_input_is_hidden(
 def test_cpu_mode_stays_on_pytorch(monkeypatch):
     monkeypatch.setattr(auto, "nvidia", SimpleNamespace(is_available=True))
     monkeypatch.setattr(torch.version, "hip", None)
-    assert "CPU" in str(auto._no_engine_here(torch.device("cpu")))
+    assert "CPU" in str(auto.no_engine_here(torch.device("cpu")))
 
 
 def test_a_disabled_tensorrt_package_says_why(monkeypatch):
@@ -495,7 +497,7 @@ def test_a_disabled_tensorrt_package_says_why(monkeypatch):
     package = ModuleType("packages.chaiNNer_tensorrt")
     package.package = SimpleNamespace(disabled=True, disabled_reason="an old driver")
     monkeypatch.setitem(sys.modules, "packages.chaiNNer_tensorrt", package)
-    assert auto._no_engine_here(GPU) == "an old driver"
+    assert auto.no_engine_here(GPU) == "an old driver"
 
 
 def test_a_missing_tensorrt_says_so(monkeypatch):
@@ -505,7 +507,7 @@ def test_a_missing_tensorrt_says_so(monkeypatch):
     package.package = SimpleNamespace(disabled=False, disabled_reason=None)
     monkeypatch.setitem(sys.modules, "packages.chaiNNer_tensorrt", package)
     monkeypatch.setitem(sys.modules, "tensorrt", None)
-    assert "not installed" in str(auto._no_engine_here(GPU))
+    assert "not installed" in str(auto.no_engine_here(GPU))
 
 
 def test_a_reason_warns_once_per_chain_and_the_next_chain_tries_again(
@@ -513,7 +515,7 @@ def test_a_reason_warns_once_per_chain_and_the_next_chain_tries_again(
 ):
     context, model = Context(tmp_path), Model()
     reasons = ["PyTorch is set to the CPU."]
-    monkeypatch.setattr(auto, "_no_engine_here", lambda _d: reasons[0])
+    monkeypatch.setattr(auto, "no_engine_here", lambda _d: reasons[0])
     for _ in range(3):
         np.testing.assert_array_equal(run(context, model), IMAGE * 3)
     assert len(context.warnings) == 1
@@ -940,12 +942,18 @@ from nodes.condition import Condition
 from nodes.impl.pytorch import auto_engine
 auto_engine.migraphx_here = lambda: {migraphx}
 import packages.chaiNNer_pytorch
-__import__("packages.chaiNNer_pytorch.pytorch.processing.upscale_image", fromlist=["x"])
+module = __import__(
+    "packages.chaiNNer_pytorch.pytorch.processing.upscale_image", fromlist=["x"]
+)
 from packages.chaiNNer_pytorch.pytorch import processing_group
 node = next(n for n in processing_group.nodes if n.schema_id == "{schema}")
+# RDUAL's engine sets are TensorRT's: the input shows for it on NVIDIA only.
 wanted = (
     Condition.const({shown})
-    & Condition.type(0, auto_engine.ENGINE_MODEL_NAVI, if_not_connected=True)
+    & (
+        Condition.type(0, auto_engine.ENGINE_MODEL_NAVI, if_not_connected=True)
+        | (Condition.const(not {migraphx}) & module.TEMPORAL)
+    )
 ).to_json()
 def holds_it(item):
     return isinstance(item, Group) and any(i == 8 or holds_it(i) for i in item.items)
@@ -1143,7 +1151,7 @@ def test_a_kept_engine_does_not_outlive_the_cpu_setting(fakes, tmp_path, monkeyp
     """The app keeps Load Model's output between runs: one model sees the setting change."""
     monkeypatch.setattr(
         auto,
-        "_no_engine_here",
+        "no_engine_here",
         lambda d: None if d.type == "cuda" else "PyTorch is set to the CPU.",
     )
     context, model = Context(tmp_path), Model()
@@ -1234,7 +1242,7 @@ def test_another_architecture_keeps_its_weights_as_loaded():
     """RealPLKSR's sampler stays as loaded, so the FP16 setting changes its ONNX."""
     half = Model(arch="PLKSR")
     half.model.half()
-    assert auto._weights_digest(half) != auto._weights_digest(Model(arch="PLKSR"))
+    assert auto.weights_digest(half) != auto.weights_digest(Model(arch="PLKSR"))
 
 
 def a_restart():

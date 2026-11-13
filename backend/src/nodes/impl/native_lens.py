@@ -54,6 +54,8 @@ def power(image: np.ndarray, exponent: float, *, finish: bool = False) -> np.nda
 
 def straight(sums: np.ndarray, exponent: float) -> np.ndarray:
     source = f32(sums)
+    if source.ndim != 3 or source.shape[2] != 4:
+        raise ValueError("Lens sums must be an image of four-channel pixels")
     result = np.empty_like(source)
     check(
         _lib.cn_lens_straight(

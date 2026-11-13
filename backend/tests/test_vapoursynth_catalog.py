@@ -25,10 +25,11 @@ import pytest
 from nodes.impl.vapoursynth import catalog
 from nodes.impl.vapoursynth.catalog_types import Method, Param
 from nodes.impl.vapoursynth.runner import VSScriptError
+from nodes.impl.vapoursynth.script import BRIDGE_IMPORT
 
 SMALL = Path(__file__).parent / "data" / "vapoursynth" / "catalog_small.json"
 
-# The family names of the generated nodes (Task 4's FAMILIES).
+# The family names of the generated nodes (FAMILIES).
 FAMILY_NAMES = {
     "Load Clip",
     "Clip Properties",
@@ -752,8 +753,8 @@ def test_load_methods_overlay(tmp_path: Path) -> None:
         id="vsdenoise.bm3d",
         family="Denoise",
         label="Bm3d",
-        # Module-qualified: no two imports of one script can shadow each other.
-        call="vsdenoise.bm3d",
+        # Through chaiNNer's helper, which takes any clip (catalog.BRIDGED).
+        call="chainner_vs.bm3d",
         kind="function",
         init_params=(),
         params=(
@@ -779,9 +780,13 @@ def test_load_methods_overlay(tmp_path: Path) -> None:
             "sigma": "Strength of denoising.",
             "ref": "A clip to be used as the basic estimate.",
         },
+        docs={
+            "sigma": "Strength of denoising.",
+            "ref": "A clip to be used as the basic estimate.",
+        },
         # The first three non-clip parameters, and those without a default.
         simple=frozenset({"clip", "sigma", "tr", "refine"}),
-        import_line="import vsdenoise",
+        import_line=BRIDGE_IMPORT,
     )
     assert (
         catalog.load_catalog(SMALL, []).enums
@@ -917,6 +922,49 @@ def test_overlay_keys_of_the_wrong_type_are_left_out(
     assert "b.toml" in messages
 
 
+def test_rank_and_common(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rank lists a method under Common; other keys do so from the user's overlays
+    only, not from shipped files."""
+    monkeypatch.setattr(catalog, "SHIPPED_OVERLAYS", tmp_path)
+    names = tmp_path / "names_x.toml"
+    names.write_text(
+        '[method."vsdenoise.bm3d"]\nrank = 2\nlabel = "BM3D"\n'
+        '[method."std.Merge"]\nlabel = "Merge"\n',
+        encoding="utf-8",
+    )
+    help_file = tmp_path / "help_x.toml"
+    help_file.write_text(
+        '[method."vstools.depth"]\nlabels = { bitdepth = "Bits" }\n', encoding="utf-8"
+    )
+    common = tmp_path / "common.toml"
+    common.write_text('[method."vstools.padder"]\nlabel = "Pad"\n', encoding="utf-8")
+    user = tmp_path / "user" / "mine.toml"
+    user.parent.mkdir()
+    user.write_text(
+        '[method."good.brighten"]\nfamily = "Colour"\n[method."vsdenoise.bm3d"]\nrank = 1\n'
+        '[method."vstools.depth"]\nrank = "1"\n',
+        encoding="utf-8",
+    )
+    methods = methods_of(SMALL, [common, help_file, names, user])
+    found = {m: (methods[m].common, methods[m].rank) for m in methods}
+    assert found["vsdenoise.bm3d"] == (True, 1)
+    assert found["std.Merge"] == (False, None)
+    assert found["vstools.depth"] == (False, None)
+    assert found["vstools.padder"] == (False, None)
+    assert found["good.brighten"] == (True, None)
+
+
+def test_shipped_glossary_loads(caplog: pytest.LogCaptureFixture) -> None:
+    shipped = sorted(catalog.SHIPPED_OVERLAYS.glob("*.toml"))
+    with caplog.at_level(logging.WARNING):
+        parsed = catalog.parse_overlays(shipped)
+        glossary = catalog.read_glossary(parsed)
+        tables = catalog.read_overlays(parsed)
+    assert not caplog.records
+    assert {"clip", "planes", "kwargs", "func"} <= glossary.keys()
+    assert not glossary.keys() & tables.keys()
+
+
 def test_toml_files_with_a_byte_order_mark(tmp_path: Path) -> None:
     """Notepad's "UTF-8 with BOM" and Windows PowerShell's Set-Content -Encoding UTF8
     start a file with a byte order mark, which tomllib refuses."""
@@ -941,6 +989,256 @@ def test_overlay_defaults(tmp_path: Path) -> None:
     methods = methods_of(SMALL, [overlay])
     assert methods["vstools.depth"].defaults == {"bitdepth": 16}
     assert methods["vsdenoise.bm3d"].defaults == {}
+
+
+def test_overlay_texts_and_their_sources(tmp_path: Path) -> None:
+    """A parameter's pop-up text: the overlay's docs (init_docs first for a
+    constructor parameter), else an override glossary entry's, else the cleaned
+    docstring, else another glossary entry's. A hidden entry leaves it out."""
+    glossary = tmp_path / "glossary.toml"
+    glossary.write_text(
+        '[param."planes"]\ndoc = "Which planes."\nannotation = "Planes"\n'
+        '[param."ref"]\ndoc = "A reference clip."\noverride = true\n'
+        '[param."tff"]\ndoc = "Field order."\nannotation = "FieldBased"\n'
+        '[param."sigma"]\ndoc = "Filler."\nlabel = "Strength"\n'
+        '[param."refine"]\nhidden = true\nannotation = "int"\n'
+        '[param."profile"]\nhidden = true\nannotation = "str"\n',
+        encoding="utf-8",
+    )
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vsdenoise.bm3d"]\n'
+        'docs = { sigma = "How strong." }\n'
+        '[method."vsaa.NNEDI3.deinterlace"]\n'
+        'docs = { pscrn = "Prescreener.", clip = "The clip." }\n'
+        'init_docs = { double_rate = "Doubles the frame rate." }\n',
+        encoding="utf-8",
+    )
+    # The glossary is one of the overlay files: its [param] tables are no methods.
+    methods = methods_of(SMALL, [glossary, overlay])
+    assert methods.keys() == methods_of(SMALL, []).keys()
+    assert methods["vsdenoise.bm3d"].docs == {
+        "sigma": "How strong.",
+        "ref": "A reference clip.",
+        "planes": "Which planes.",
+    }
+    nnedi3 = methods["vsaa.NNEDI3.deinterlace"].docs
+    # tff's annotation does not contain the glossary's "FieldBased".
+    assert nnedi3 == {
+        "pscrn": "Prescreener.",
+        "double_rate": "Doubles the frame rate.",
+        "clip": "The clip.",
+    }
+    # Texts alone do not list a method under Common.
+    assert not methods["vsdenoise.bm3d"].common
+    # A gap filler loses to the docstring; hidden applies where the annotation fits.
+    bm3d = methods_of(SMALL, [glossary])["vsdenoise.bm3d"]
+    assert bm3d.docs["sigma"] == "Strength of denoising."
+    names = [p.name for p in bm3d.params]
+    assert "refine" not in names and "profile" in names
+    # The glossary's label, under the overlay's.
+    assert bm3d.labels == {"sigma": "Strength"}
+    mine = tmp_path / "mine.toml"
+    mine.write_text(
+        '[method."vsdenoise.bm3d"]\nlabels = { sigma = "Mine" }\n', encoding="utf-8"
+    )
+    assert methods_of(SMALL, [glossary, mine])["vsdenoise.bm3d"].labels == {
+        "sigma": "Mine"
+    }
+    # Without overlays: the docstring's texts.
+    assert methods_of(SMALL, [])["vsdenoise.bm3d"].docs == {
+        "sigma": "Strength of denoising.",
+        "ref": "A clip to be used as the basic estimate.",
+    }
+
+
+def test_overlay_choice_texts_and_method_help(tmp_path: Path) -> None:
+    """`choices` gives a group's dropdown entries their pop-ups; group docs reach
+    every member. A plugin's docstring is only the plugin's name: no help."""
+    data = json.loads(SMALL.read_text(encoding="utf-8"))
+    data["functions"] += [
+        _bound(cls) for cls in ["Mitchell", "Catrom", "Hermite", "Lanczos", "Point"]
+    ]
+    data["functions"][0]["doc"] = "See [BM3D][vsdenoise.BM3D] and [other][]."
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vskernels.*.scale"]\n'
+        'choices = { Catrom = "Sharp.", Point = "Blocky." }\n'
+        'docs = { width = "New width." }\n'
+        '[method."vskernels.Point.scale"]\n'
+        'docs = { width = "Point width." }\n',
+        encoding="utf-8",
+    )
+    methods = methods_of(path, [overlay])
+    group = methods["vskernels.*.scale"]
+    assert group.choice_docs == {"Catrom": "Sharp.", "Point": "Blocky."}
+    assert not group.common
+    widths = {m.choice: m.docs.get("width") for m in group.members}
+    assert widths == {
+        "Catrom": "New width.",
+        "Hermite": "New width.",
+        "Lanczos": "New width.",
+        "Mitchell": "New width.",
+        "Point": "Point width.",
+    }
+    assert methods["vsdenoise.bm3d"].doc == "See BM3D and other."
+    assert methods["std.Merge"].doc == ""
+
+
+def test_a_required_method_argument_wins_over_the_constructors(
+    tmp_path: Path,
+) -> None:
+    """DFTTest(clip=None, sloc=None).extract_freq(clip, sloc): the method's required
+    arguments stay; the constructor's of the same names keep their defaults."""
+    data = json.loads(SMALL.read_text(encoding="utf-8"))
+    extract = {
+        **_bound("DFTTest", "extract_freq"),
+        "id": "vsdenoise.DFTTest.extract_freq",
+        "module": "vsdenoise",
+        "import": "from vsdenoise import DFTTest",
+        "init_params": [
+            {
+                "name": "clip",
+                "annotation": "VideoNode | None",
+                "default": "None",
+                "kind": "keyword",
+            },
+            {
+                "name": "sloc",
+                "annotation": "float | None",
+                "default": "None",
+                "kind": "keyword",
+            },
+            {
+                "name": "tr",
+                "annotation": "int | None",
+                "default": "None",
+                "kind": "keyword",
+            },
+        ],
+        "params": [
+            {
+                "name": "clip",
+                "annotation": "VideoNode",
+                "default": None,
+                "kind": "keyword",
+            },
+            {"name": "sloc", "annotation": "float", "default": None, "kind": "keyword"},
+            {
+                "name": "tr",
+                "annotation": "int | None",
+                "default": "None",
+                "kind": "keyword",
+            },
+        ],
+    }
+    data["functions"].append(extract)
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    method = methods_of(path, [])["vsdenoise.DFTTest.extract_freq"]
+    assert [p.name for p in method.init_params] == ["tr"]
+    assert [p.name for p in method.params] == ["clip", "sloc"]
+
+
+def test_hide_leaves_a_method_out(tmp_path: Path) -> None:
+    """hide = true leaves a method or a group out; family moves one to another node."""
+    data = json.loads(SMALL.read_text(encoding="utf-8"))
+    kernels = ["Mitchell", "Catrom", "Hermite", "Lanczos", "Point"]
+    data["functions"] += [_bound(cls) for cls in kernels]
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."std.Merge"]\nhide = true\n'
+        '[method."vskernels.*.scale"]\nhide = true\n'
+        '[method."vstools.depth"]\nhide = false\nfamily = "Colour"\n',
+        encoding="utf-8",
+    )
+    methods = methods_of(path, [overlay])
+    assert "std.Merge" not in methods and "vskernels.*.scale" not in methods
+    assert methods["vstools.depth"].family == "Colour"
+    assert methods.keys() == methods_of(path, []).keys() - {
+        "std.Merge",
+        "vskernels.*.scale",
+    }
+
+
+def test_later_overlays_extend_label_and_text_tables(tmp_path: Path) -> None:
+    """A later file's labels and docs add to an earlier file's, name by name; its
+    defaults replace them (an empty table clears them)."""
+    first = tmp_path / "a.toml"
+    first.write_text(
+        '[method."vsdenoise.bm3d"]\n'
+        'labels = { sigma = "Strength", tr = "Radius" }\n'
+        'docs = { sigma = "How strong." }\n'
+        "defaults = { refine = 2 }\n",
+        encoding="utf-8",
+    )
+    second = tmp_path / "b.toml"
+    second.write_text(
+        '[method."vsdenoise.bm3d"]\n'
+        'labels = { tr = "Temporal radius" }\n'
+        'docs = { tr = "Frames." }\n'
+        "defaults = {}\n",
+        encoding="utf-8",
+    )
+    bm3d = methods_of(SMALL, [first, second])["vsdenoise.bm3d"]
+    assert bm3d.labels == {"sigma": "Strength", "tr": "Temporal radius"}
+    assert (bm3d.docs["sigma"], bm3d.docs["tr"]) == ("How strong.", "Frames.")
+    assert bm3d.defaults == {}
+
+
+def test_overlay_texts_of_the_wrong_type_are_left_out(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vsdenoise.bm3d"]\n'
+        'docs = "Strength."\n'
+        "init_docs = { sigma = 5 }\n"
+        'choices = ["a"]\n'
+        '[param."sigma"]\n'
+        "doc = 3\n"
+        '[param."tr"]\n'
+        'doc = "Radius."\n'
+        "annotation = 1\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING):
+        bm3d = methods_of(SMALL, [overlay])["vsdenoise.bm3d"]
+    assert bm3d.docs == methods_of(SMALL, [])["vsdenoise.bm3d"].docs
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    for key in ("docs", "init_docs", "choices"):
+        assert f"Skipping {key} of vsdenoise.bm3d" in messages
+    assert "Skipping the glossary entry sigma" in messages
+    assert "Skipping the glossary entry tr" in messages
+
+
+@pytest.mark.parametrize(
+    ("text", "cleaned"),
+    [
+        ("See [EdgeLimits][vsdeband.noise.EdgeLimits].", "See EdgeLimits."),
+        ("Passed to [vsexprtools.norm_expr][].", "Passed to vsexprtools.norm_expr."),
+        (
+            "A :class:`Kernel` or :py:func:`~vstools.depth`.",
+            "A `Kernel` or `vstools.depth`.",
+        ),
+        (
+            "Mode.\n\n!!! note\n    Slow on big clips.\n\nMore.",
+            "Mode.\n\nSlow on big clips.\n\nMore.",
+        ),
+        (".. warning::\n   Needs a GPU.", "Needs a GPU."),
+        # Lists, backticks and links stay.
+        (
+            "One of:\n- `True`: mirrored.\n- [docs](https://x.org).",
+            "One of:\n- `True`: mirrored.\n- [docs](https://x.org).",
+        ),
+    ],
+)
+def test_clean_doc(text: str, cleaned: str) -> None:
+    assert catalog.clean_doc(text) == cleaned
 
 
 def test_user_files_go_on_the_script_path(tmp_path: Path) -> None:
@@ -1066,3 +1364,22 @@ def test_groups_collapse_classes_and_members(tmp_path: Path) -> None:
     # A preselected member the enum does not have is ignored.
     assert prefilter.default_choice == ""
     assert prefilter.family == "Denoise"
+
+
+def test_a_failed_scan_is_logged_with_its_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugins = tmp_path / "site" / "vapoursynth" / "plugins"
+    plugins.mkdir(parents=True)
+    monkeypatch.setattr(catalog, "vspipe", lambda: plugins.parent / "vspipe.exe")
+
+    def failed_scan(out: Path, user_dir: Path, modules_file: Path) -> None:
+        raise KeyError("functions")
+
+    logged: list[str] = []
+    monkeypatch.setattr(catalog, "run_scan", failed_scan)
+    monkeypatch.setattr(
+        catalog.logger, "exception", lambda message, *_: logged.append(message)
+    )
+    assert catalog.ensure_catalog(tmp_path / "vapoursynth") is None
+    assert logged

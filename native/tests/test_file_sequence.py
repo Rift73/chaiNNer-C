@@ -616,7 +616,7 @@ def test_load_images_declares_its_post_limit_snapshot(tree, use_limit):
     assert generator.expected_length == len(generator.source_paths)
 
 
-# SP3b iterator split: describe() advances the cursor under the reentry guard and
+# The iterator split: describe() advances the cursor under the reentry guard and
 # returns (path, index); materialize(token) loads that item with no guard and no
 # iterator state. __next__ is both phases under one guard.
 

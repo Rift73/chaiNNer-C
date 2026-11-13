@@ -51,7 +51,7 @@ def _fast_mix(a: np.ndarray, b: np.ndarray, blend: np.ndarray) -> np.ndarray:
     # a - a * blend + b * blend
     r = b * blend
     r += a
-    r -= a * blend  # type: ignore
+    r -= a * blend
     return r
 
 

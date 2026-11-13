@@ -2,14 +2,15 @@
 FFmpeg on PATH still gets it; "Auto" transcodes the audio to AAC when the container
 cannot hold a copy of it or it is PCM or FLAC going into an MP4; and audio the mux cannot carry fails the run instead of
 leaving a silent video (upstream chaiNNer #3331). An MP4 or MOV with audio gets its
-faststart on the mux, which writes the final file (instant-exec gate R5a), and Load
-Video's Range cuts the audio to the frames read (R7)."""
+faststart on the mux, which writes the final file, and Load
+Video's Range cuts the audio to the frames read."""
 
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -31,7 +32,7 @@ from nodes.impl.colour_info import (
     VideoMode,
 )
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
-from nodes.impl.video import VideoLoader, close_previews
+from nodes.impl.video import VideoLoader, close_preview, close_previews
 from packages.chaiNNer_standard.image.video_frames.load_video import (
     FramesMode,
     RgbPrecision,
@@ -226,6 +227,67 @@ def no_ffmpeg_on_path(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("PATH", os.pathsep.join(kept))
 
 
+def preview(src: Path, node_id: str) -> None:
+    """Load Video of `src` as node `node_id`: its Preview reader stays open."""
+    context = Context()
+    context.node_id = node_id
+    auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
+    load_video_node(
+        cast(NodeContext, context),
+        src,
+        0,
+        FramesMode.ALL,
+        0,
+        0,
+        VideoMode.RGB,
+        RgbPrecision.FLOAT,
+        *auto,
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="a file another program holds blocks a rename on Windows alone",
+)
+def test_clearing_a_load_video_node_lets_go_of_its_file(tmp_path: Path):
+    # The Preview's reader is kept for fast seeking; once its node is cleared or
+    # removed the file can be renamed at once, while another node's stays open.
+    first = source(tmp_path, "first.mp4", None)
+    second = source(tmp_path, "second.mp4", None)
+    try:
+        preview(first, "first")
+        preview(second, "second")
+        with pytest.raises(PermissionError):
+            first.rename(tmp_path / "moved.mp4")
+        close_preview("first")
+        first.rename(tmp_path / "moved.mp4")
+        with pytest.raises(PermissionError):
+            second.rename(tmp_path / "moved-too.mp4")
+        close_preview("unknown")  # a node without a reader: nothing happens
+    finally:
+        close_previews()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="a file another program holds blocks a rename on Windows alone",
+)
+def test_saving_over_the_video_the_chain_reads_says_so(tmp_path: Path):
+    # Load Video's Preview keeps its file open, so saving over it fails at once; the
+    # error says the file is the one the chain reads, not only "Permission denied".
+    src = source(tmp_path, "out.mp4", "aac")
+    try:
+        with pytest.raises(PermissionError) as raised:
+            save_frames(tmp_path, src, None, AudioSettings.AUTO)
+    finally:
+        close_previews()
+    assert repr(str(src)) in str(raised.value)  # the error as before
+    assert str(raised.value).endswith(
+        " It is the video this chain reads with Load Video: save under another name."
+    )
+    assert streams(src) == ["video:h264", "audio:aac"]
+
+
 @pytest.mark.parametrize("audio", [AudioSettings.AUTO, AudioSettings.COPY])
 @pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
 def test_copyable_audio_is_copied_unchanged(
@@ -286,14 +348,29 @@ def test_copy_keeps_pcm_in_mp4(tmp_path: Path):
     assert audio_packets(out) == audio_packets(src)
 
 
-def test_copy_the_container_cannot_hold_is_an_error(tmp_path: Path):
-    # Copy never transcodes; the run fails and, as every failed write, leaves no file:
-    # the video goes to its path only at a successful close. MP4 cannot hold 8-bit PCM.
+@pytest.mark.parametrize("taken", [0, 2])
+def test_copy_the_container_cannot_hold_keeps_the_video(tmp_path: Path, taken: int):
+    # Copy never transcodes, so the run fails, but the finished encode stays as a video
+    # without audio beside the path, never at it and never over another file. MP4
+    # cannot hold 8-bit PCM.
     src = source(tmp_path, "src.mov", "pcm_u8")
+    occupied = [tmp_path / "out.no-audio.mp4"]
+    occupied += [tmp_path / f"out-{n}.no-audio.mp4" for n in range(2, taken + 1)]
+    for path in occupied[:taken]:
+        path.write_bytes(b"another file")
+    kept = tmp_path / (
+        "out.no-audio.mp4" if not taken else f"out-{taken + 1}.no-audio.mp4"
+    )
     message = r"copy the pcm_u8 audio into the \.mp4 file\. Set Audio to Auto or"
-    with pytest.raises(RuntimeError, match=message):
+    with pytest.raises(RuntimeError, match=message) as raised:
         save(tmp_path, src, VideoFormat.MP4, AudioSettings.COPY)
+    assert str(raised.value).endswith(
+        f" The encoded video was kept without audio as {kept}."
+    )
     assert not saved(tmp_path, VideoFormat.MP4).exists()
+    assert streams(kept) == ["video:h264"]
+    assert all(path.read_bytes() == b"another file" for path in occupied[:taken])
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
@@ -330,7 +407,7 @@ def test_mono_into_webm_transcodes_to_opus(tmp_path: Path, audio: AudioSettings)
 @pytest.mark.parametrize("audio", list(AudioSettings))
 def test_source_without_audio_saves_the_video(tmp_path: Path, audio: AudioSettings):
     # Nothing is lost when Load Video's file has no audio stream: also not the faststart
-    # the encode pass left to the mux (R5a).
+    # the encode pass left to the mux.
     src = source(tmp_path, "src.mp4", None)
     save(tmp_path, src, VideoFormat.MP4, audio)
     out = saved(tmp_path, VideoFormat.MP4)
@@ -341,7 +418,7 @@ def test_source_without_audio_saves_the_video(tmp_path: Path, audio: AudioSettin
 
 @pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MOV])
 def test_audio_mux_writes_the_moov_first(tmp_path: Path, container: VideoFormat):
-    # R5a: the mux writes the final file with faststart (the moov box before the media
+    # The mux writes the final file with faststart (the moov box before the media
     # data), where the encode pass rewrote its own file for it and the mux then wrote
     # the final file without. Only the box order changes: the video packets are those
     # of the same frames saved without audio (the encode pass as before), the audio
@@ -364,7 +441,7 @@ def save_frames(
     audio: AudioSettings,
     container: VideoFormat = VideoFormat.MP4,
 ):
-    """Load Video's frames of `src` (the Range `frames` (In, Out), or All) saved by Save
+    """Load Video's frames of `src` (the Range `frames` (Start, End), or All) saved by Save
     Video as `container` with its audio, as `audio` says."""
     context = Context()
     auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
@@ -416,7 +493,7 @@ def save_frames(
 def test_a_range_cuts_the_audio_to_the_frames_read(
     tmp_path: Path, frames: tuple[int, int] | None
 ):
-    # R7: Load Video's Range of 60 frames (2 s of a 5 s source, from its start or from
+    # Load Video's Range of 60 frames (2 s of a 5 s source, from its start or from
     # 1 s) gives audio that ends within one AAC frame (1024 samples at 48 kHz) of the
     # video, and so does the Range of all 150 frames. Frames All copies the whole audio,
     # as before.
@@ -478,10 +555,10 @@ def noise_source(tmp_path: Path) -> Path:
 def test_a_range_s_audio_starts_with_its_first_frame(
     tmp_path: Path, container: VideoFormat, audio: AudioSettings
 ):
-    # A Range from In > 0 reads its audio from In / fps (the input's -ss). FFmpeg 5.1
-    # copies such audio from a packet before In: an MP4's edit list hides the extra
+    # A Range from Start > 0 reads its audio from Start / fps (the input's -ss). FFmpeg 5.1
+    # copies such audio from a packet before Start: an MP4's edit list hides the extra
     # audio, a Matroska file plays it (the audio started 1.26 s before the video). Auto
-    # transcodes it, as Transcode does, which FFmpeg cuts at In to the sample.
+    # transcodes it, as Transcode does, which FFmpeg cuts at Start to the sample.
     src = noise_source(tmp_path)
     save_frames(tmp_path, src, (37, 96), audio, container)
     out = saved(tmp_path, container)

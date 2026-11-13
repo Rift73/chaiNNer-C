@@ -142,6 +142,11 @@ test('an image read under another image type is pasted as a PNG', async () => {
     expect(await readClipboardImageAsPng(item, 'image/jpeg')).toEqual(reencodedPng);
 });
 
+test('an image that cannot be decoded is not pasted, instead of as an empty PNG', async () => {
+    const { item } = clipboardItem({ 'image/tiff': Buffer.from('a TIFF file') });
+    expect(await readClipboardImageAsPng(item, 'image/tiff')).toBeUndefined();
+});
+
 test('a screenshot goes on the clipboard as its PNG file', async () => {
     const screenshot = pngFile('a screenshot');
     await writePngDataUrlToClipboard(`data:image/png;base64,${screenshot.toString('base64')}`);

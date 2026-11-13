@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
-import importlib
 import json
 import os
 import subprocess
@@ -25,7 +24,7 @@ from typing import Any, cast
 import cv2
 import numpy as np
 import pytest
-from engine_differential import KINDS, Result, execute, load_registry_errors
+from engine_differential import KINDS, Result, execute
 from scratch_storage import NO_FFMPEG, STORAGE
 from test_engine_scenarios import Builder, items
 from verify_runtime import edge, make_node
@@ -36,7 +35,13 @@ from chain.chain import Chain
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from events import EventQueue
-from folder_videos import _colliding_files, _Listing, _plan_folder, run_executor
+from folder_videos import (
+    _colliding_files,
+    _Listing,
+    _plan_folder,
+    _video_items,
+    run_executor,
+)
 from native_executor import NativeExecutor, ending_runs
 from nodes.impl.ffmpeg import get_executable_path
 from process import Executor, NodeExecutionError
@@ -83,24 +88,6 @@ def clips(tmp_path_factory: pytest.TempPathFactory) -> Path:
         make_clip(folder / name, source, more)
     (folder / "notes.txt").write_text("not a video")
     return folder
-
-
-@pytest.fixture(scope="module")
-def schemas():
-    main = sys.modules["__main__"]
-    previous = getattr(main, "__file__", None)
-    main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
-    errors = load_registry_errors(BACKEND / "server.py")
-    assert not errors, [e.module for e in errors]
-    yield {
-        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
-        for schema, (data, _) in api.registry.nodes.items()
-    }
-    if previous is None:
-        del main.__file__
-    else:
-        main.__file__ = previous
 
 
 @pytest.fixture
@@ -930,7 +917,7 @@ def test_a_folder_input_alone_is_no_collision(schemas, tmp_path: Path):
     assert "native" in folder.per_file
     paths = [tmp_path / "a.mkv", tmp_path / "b.mkv"]
     listing = _Listing(folder, paths, [1, 1], tmp_path, False)
-    assert _colliding_files(chain, [listing], {}) is None
+    assert _colliding_files(chain, [_video_items(listing)], {}) is None
 
 
 @pytest.mark.usefixtures("test_package")
@@ -1794,3 +1781,69 @@ def test_through_the_server(clips: Path, tmp_path: Path, kind: str):
     assert not result["busy"]
     assert only_files(tmp_path) == sorted(CLIPS)
     assert [e["event"] for e in result["events"]].count("chain-start") == 1
+
+
+def images_to_png(schemas, folder: Path, output: Path, **more: Any) -> Chain:
+    """Load Images into Save Image as PNG in `output`, named by the image's Name; Subdirectory Path not connected."""
+    values: dict[int, object] = {0: str(folder)}
+    values.update({int(key[1:]): value for key, value in more.items()})
+    return real_chain(
+        make_node(schemas, "load", "chainner:image:load_images", values),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {0: edge("load"), 1: str(output), 2: None, 3: edge("load", 3), 4: "png"},
+        ),
+    )
+
+
+def write_image(path: Path, colour: tuple[int, int, int]) -> bytes:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    assert cv2.imwrite(str(path), np.full((8, 8, 3), colour, np.uint8))
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_two_images_saved_to_one_file_are_refused_before_anything_is_written(
+    schemas, tmp_path: Path, kind: str
+):
+    # a.jpg would write a.png over the user's a.png before a.png is read.
+    write_image(tmp_path / "a.jpg", (0, 0, 255))
+    original = write_image(tmp_path / "a.png", (255, 0, 0))
+    result = run_chain(kind, images_to_png(schemas, tmp_path, tmp_path))
+    assert isinstance(result.error, NodeExecutionError)
+    assert result.error.node_id == "save"
+    assert str(result.error).startswith(
+        f"Save Image would write {tmp_path / 'a.jpg'} and {tmp_path / 'a.png'} to one"
+        " file:"
+    )
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.jpg", "a.png"]
+    assert (tmp_path / "a.png").read_bytes() == original
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_one_name_in_two_subfolders_is_refused_under_recursive(
+    schemas, tmp_path: Path, kind: str
+):
+    source, output = tmp_path / "source", tmp_path / "out"
+    write_image(source / "x" / "a.png", (0, 0, 255))
+    write_image(source / "y" / "a.png", (255, 0, 0))
+    output.mkdir()
+    result = run_chain(kind, images_to_png(schemas, source, output, i2=True))
+    assert isinstance(result.error, NodeExecutionError)
+    assert "would write" in str(result.error)
+    assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_images_processed_in_place_still_run(schemas, tmp_path: Path, kind: str):
+    # Each item writes over its own source: allowed, as is a.png matching no other output.
+    originals = {
+        name: write_image(tmp_path / name, colour)
+        for name, colour in (("a.png", (0, 0, 255)), ("b.png", (255, 0, 0)))
+    }
+    result = run_chain(kind, images_to_png(schemas, tmp_path, tmp_path))
+    assert result.error is None
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.png", "b.png"]
+    assert all((tmp_path / name).exists() for name in originals)

@@ -1,4 +1,4 @@
-"""The shared scratch pool (SP4b D10): bounded reuse across morphology and resample.
+"""The shared scratch pool: bounded reuse across morphology and resample.
 
 cn_scratch_info reports (allocations, temporary leases, idle retained bytes, leased
 slots): every lease that allocated (a slot grown, or a temporary), the leases served by

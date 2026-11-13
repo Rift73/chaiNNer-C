@@ -45,9 +45,14 @@ bool write_atomic(const std::filesystem::path &final, std::span<const uint8_t> d
 
 /* Moves a finished file (`source`, which may lie on another drive, such as chaiNNer's temporary folder) to `final`
  * through a temporary file in final's folder: false when `final` already holds the same bytes (left untouched, and
- * `source` stays for its owner to delete), true once moved. Throws FileError; no temporary file is left after a
- * failure. */
+ * `source` stays for its owner to delete), true once moved. Throws FileError; after a failure the file is back at
+ * `source` and no temporary file is left (the temporary file stays only when the file cannot go back). */
 bool move_atomic(const std::filesystem::path &source, const std::filesystem::path &final);
+
+/* `path` as the writes here reach it: on Windows its \\?\ form once its full path reaches MAX_PATH, whatever the
+ * long-path setting; as given otherwise. A check of what a write will meet (Save Image's Skip existing files) goes
+ * through it, or it misses a file past MAX_PATH that the write then replaces. */
+std::filesystem::path write_path(const std::filesystem::path &path);
 
 /* The temporary file of a writer that streams, or hands a path to a library: temp() names a file in final's folder
  * that no other file has; the writer creates and fills it, then commit() renames it onto final (false: final already
@@ -69,16 +74,21 @@ public:
      * without delete sharing), before a long write starts; nothing when final does not exist. */
     void check() const;
     bool commit();
+    /* commit(), but a failed rename leaves the temporary file at temp(), kept: abandon() and the destructor no longer
+     * delete it. */
+    bool commit_or_keep();
     void abandon() noexcept;
 
 private:
-    enum class State { open, committed, abandoned };
+    enum class State { open, committed, abandoned, kept };
     friend bool write_atomic(const std::filesystem::path &, std::span<const uint8_t>);
     friend bool move_atomic(const std::filesystem::path &, const std::filesystem::path &);
-    void rename();
+    void rename(const std::filesystem::path *source = nullptr);
+    void undo(const std::filesystem::path *source) noexcept;
 
     std::filesystem::path final_, temp_;
     State state_ = State::open;
+    bool keep_failed_ = false;
 };
 
 } // namespace cn::files

@@ -258,6 +258,12 @@ class FakeTarget:
         self.env.record("commit", self.temp)
         return True
 
+    def commit_or_keep(self):
+        """The one declared difference from the references' close: after FFmpeg exited 0
+        the native close commits this way, which keeps the file when the rename fails
+        (test_save_video_atomic.py); with these fakes the rename never fails."""
+        return self.commit()
+
     def abandon(self):
         self.env.record("abandon", self.temp)
 
@@ -1178,7 +1184,7 @@ def label(item: ast.expr) -> object:
 
 # Sanctioned changes of an installed registration, by node: its keywords, inputs and
 # outputs (by label) and parameters. Load Video's frame range (native/local/video-seek):
-# Frames, In and Out replace Use limit and Limit (old chains migrate,
+# Frames, Start and End replace Use limit and Limit (old chains migrate,
 # src/common/migrations.ts loadVideoFrames), Index is the frame's number in the video,
 # and the description tells of the seek bar, the Range and one-frame runs.
 REPLACED = {
@@ -1483,7 +1489,7 @@ def test_reader_abandon_close_is_owned_idempotent():
 
 
 def test_frame_is_a_read_only_view_with_todays_flags():
-    # D8 (SP4c 4.7): a frame is read into a fresh NumPy buffer, which the NumPy pool
+    # A frame is read into a fresh NumPy buffer, which the NumPy pool
     # can serve, and returned as a read-only view of it with today's frombuffer flags.
     data = bytes(range(12))
     env = FakeFFmpeg(chunks=[data])
@@ -1501,7 +1507,7 @@ def test_frame_is_a_read_only_view_with_todays_flags():
         with pytest.raises(ValueError, match="cannot set WRITEABLE flag to True"):
             array.setflags(write=True)
     # Today's base is frombuffer's array over the bytes, which owns no data (NumPy
-    # stops collapsing a view chain at the bytes); D8's is the buffer that owns it.
+    # stops collapsing a view chain at the bytes); the reader's is the buffer that owns it.
     assert type(frame.base) is np.ndarray
     assert (frame.base.dtype, frame.base.shape) == (np.uint8, (12,))
     assert frame.base.flags.owndata
@@ -1732,7 +1738,7 @@ class CountingRaw(io.FileIO):
 
 
 def test_frames_from_a_pipe_written_in_parts_arrive_whole():
-    # D8 reads a frame with one readinto on Popen's stdout, an io.BufferedReader over
+    # The reader reads a frame with one readinto on Popen's stdout, an io.BufferedReader over
     # a pipe. Like read(n), it must return the whole frame although the pipe delivers
     # it in parts. The first raw read gets a part only; a frame (9216 bytes) is larger
     # than the reader's 8192-byte buffer, so readinto reads both into the frame and
@@ -2411,8 +2417,8 @@ def test_writer_context_abort_no_mux_and_reaps_after_pipe_error(tmp_path):
     env.processes[0].stdin.close()
 
 
-# A limit reads as the Range 0..limit - 1 (call_load_video), Out an upper bound as the
-# limit was. Limits below 1 (which the UI never allowed) make In after Out, an error now:
+# A limit reads as the Range 0..limit - 1 (call_load_video), End an upper bound as the
+# limit was. Limits below 1 (which the UI never allowed) make Start after End, an error now:
 # test_a_range_s_frames_and_errors.
 @pytest.mark.parametrize(
     "use_limit,limit", [(False, 2), (True, 1), (True, 2), (True, 3), (True, 10)]
@@ -2466,16 +2472,16 @@ def past_the_end(n, count):
 @pytest.mark.parametrize(
     "first,last,length,expected",
     [
-        # Index counts from In, the item's number in the video.
+        # Index counts from Start, the item's number in the video.
         (1, 2, 2, ("ok", ((1, 1), (2, 2)))),
         (1, 1, 1, ("ok", ((1, 1),))),
         # Checked at the first item, so the node still reports its Frame Count.
-        (2, 1, 0, ("error", ("ValueError", "In (frame 2) is after Out (frame 1)."))),
-        # Out is an upper bound, as the limit was: past the probe's count, or past the
+        (2, 1, 0, ("error", ("ValueError", "Start (frame 2) is after End (frame 1)."))),
+        # End is an upper bound, as the limit was: past the probe's count, or past the
         # pipe's end, the video is read to its end; requested length is an upper bound.
         (0, 9, 10, ("ok", ((0, 0), (1, 1), (2, 2)))),
         (1, 3, 3, ("ok", ((1, 1), (2, 2)))),
-        # In past the end fails, naming the frames there are.
+        # Start past the end fails, naming the frames there are.
         (3, 5, 3, past_the_end(3, 3)),
         (5, 6, 2, past_the_end(5, 3)),
     ],
@@ -3130,7 +3136,7 @@ def test_simple_node_overrides_and_gif_audio_suppression(tmp_path, simple):
 
 
 def test_writer_nonzero_exit_code_is_an_error():
-    # Owner-approved 2026-10-09: a non-zero exit at a normal close fails the run with
+    # A non-zero exit at a normal close fails the run with
     # FFmpeg's exit code before the audio mux, where upstream leaves it unchecked and
     # muxes; (m) the temporary file FFmpeg wrote is abandoned, the path left untouched.
     results = []
@@ -3652,7 +3658,7 @@ def test_stalled_pipe_cancellation_covers_io_start_after_first_cancel(monkeypatc
 
 
 def test_prepared_frames_write_todays_payload():
-    # A prepared frame (SP3-P9) is only the payload: start-up on the first frame and
+    # A prepared frame is only the payload: start-up on the first frame and
     # every pipe write are today's, for a first and a later frame.
     from nodes.impl.item_window import Prepared
 

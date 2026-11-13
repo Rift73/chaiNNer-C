@@ -26,8 +26,8 @@
  *   position past the end of the text on a literal-scan path, or a PosTranslator slice
  *   inside a character). *panic then holds Rust's panic message, byte for byte.
  *
- * regex_probe.exe (native/src/regex/probe.c): the fixed I/O format, shared with X4's
- * harness. Do not change it.
+ * regex_probe.exe (native/src/regex/probe.c): the fixed I/O format, shared with the
+ * conformance tool. Do not change it.
  *   CLI: regex_probe.exe --mode default|nfa|backtrack|dfa --prefilter on|off < in.jsonl > out.jsonl
  *        (--mode sets chn_regex_options.engine, --prefilter its prefilter flag; both
  *        default to default and on.)
@@ -44,9 +44,9 @@
  *   PosTranslator. "groups" covers index 0..groups.
  *   When compile fails, the other ops are skipped and their results are null.
  *   An op on which 0.3.10 raises pyo3's PanicException yields {"panic":"<message>"} as its
- *   result. The message must be byte-identical to Rust's panic text (spec section 2's
- *   identical-message rule); native/tests/chainner_ext/regex_expected.jsonl holds the real
- *   module's. The forms seen there, from searches at positions past the text end:
+ *   result. The message must be byte-identical to Rust's panic text;
+ *   native/tests/chainner_ext/regex_expected.jsonl holds the real module's.
+ *   The forms seen there, from searches at positions past the text end:
  *   - "index out of bounds: the len is N but the index is M" (an engine indexing the text);
  *   - "range start index N out of range for slice of length M" (a path slicing the text,
  *     e.g. search("abc", pos=10) on a literal scan).
@@ -55,8 +55,7 @@
  *   (bytes A..B) of `T`" (T shortened as Rust does).
  *   Output: one line per input line, {"id": same, "results": [one per op, in order]}.
  *   "groupindex" and "names" list names in group-index order.
- *   Exit status: 0; 3 when a scaffold stub was hit (CHN_REGEX_UNIMPLEMENTED: compile yields
- *   {"ok":false,"error":"unimplemented: ..."}); 2 on malformed input (bad JSON, a lone
+ *   Exit status: 0; 2 on malformed input (bad JSON, a lone
  *   surrogate escape, a negative or non-integer pos, an unknown op or option), which
  *   stops the probe with a message on stderr. */
 #ifndef CHAINNER_REGEX_H
@@ -81,8 +80,7 @@ typedef enum chn_regex_status {
     CHN_REGEX_NO_MATCH = 1,      /* None: no match, or the iterator is exhausted */
     CHN_REGEX_ERROR_INVALID = 2, /* regex_py::RegexError: *error holds its message */
     CHN_REGEX_ERROR_NOMEM = 3,   /* allocation failure (Rust: abort); outputs are empty */
-    CHN_REGEX_PANIC = 4,         /* 0.3.10 panics here: *panic holds the panic message */
-    CHN_REGEX_UNIMPLEMENTED = 5  /* X0 scaffold stub; never returned once X2 lands */
+    CHN_REGEX_PANIC = 4          /* 0.3.10 panics here: *panic holds the panic message */
 } chn_regex_status;
 
 /* String: UTF-8, len bytes, with one trailing NUL that len does not count; may contain
@@ -96,13 +94,12 @@ typedef struct chn_regex_string {
 void chn_regex_string_drop(chn_regex_string *s);
 
 /* The harness-only engine switch. Production always uses DEFAULT with the prefilter on;
- * every setting must give identical results (spec section 4). */
+ * every setting must give identical results. */
 typedef enum chn_regex_engine {
     CHN_REGEX_ENGINE_DEFAULT = 0,   /* ExecReadOnly::choose_match_type(None) */
     CHN_REGEX_ENGINE_NFA = 1,       /* ExecBuilder::nfa(): MatchType::Nfa(MatchNfaType::PikeVM) */
     CHN_REGEX_ENGINE_BACKTRACK = 2, /* ExecBuilder::bounded_backtracking(): MatchType::Nfa(MatchNfaType::Backtrack) */
-    CHN_REGEX_ENGINE_DFA = 3        /* the lazy DFA wherever dfa::can_exec, with exec.rs's Quit fallbacks
-                                     * (dfa.c gives it meaning; until then it behaves as DEFAULT) */
+    CHN_REGEX_ENGINE_DFA = 3        /* the lazy DFA wherever dfa::can_exec, with exec.rs's Quit fallbacks */
 } chn_regex_engine;
 
 typedef struct chn_regex_options {
@@ -120,7 +117,7 @@ typedef struct chn_regex chn_regex;
  *   Syntax(s) displays s (regex_syntax's caret-formatted text, or compile.rs's own
  *   messages), CompiledTooBig(limit) displays "Compiled regex exceeds size limit of
  *   {limit} bytes."; *out is NULL.
- * - CHN_REGEX_ERROR_NOMEM, CHN_REGEX_UNIMPLEMENTED: *out is NULL; *error may describe it. */
+ * - CHN_REGEX_ERROR_NOMEM: *out is NULL; *error may describe it. */
 chn_regex_status chn_regex_compile(const char *pattern, size_t pattern_len,
     const chn_regex_options *options, chn_regex **out, chn_regex_string *error);
 

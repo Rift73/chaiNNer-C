@@ -922,7 +922,8 @@ def test_planes_to_rgb_is_untouched_and_agrees_with_float_rgb(tmp_path: Path):
         np.testing.assert_array_equal(
             float_to_code(plane, 8, False, k > 0), planes[k].astype(np.uint8)
         )
-    image, _, _ = planes_to_rgb_node(*items[0][2:], colour, *AUTO, next(iter(Kernel)))
+    y, u, v = items[0][2:]
+    image, _, _ = planes_to_rgb_node(y, u, v, colour, *AUTO, next(iter(Kernel)))
     inside = (exact >= 0) & (exact <= 1)
     assert np.abs(image.astype(np.float64) - exact)[inside].max() <= 1e-5
     rgb, _ = load(path, VideoMode.RGB)

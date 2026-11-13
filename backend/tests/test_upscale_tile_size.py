@@ -5,6 +5,7 @@ the TensorRT node's retry are in test_tensorrt_session.py."""
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -22,6 +23,7 @@ from nodes.impl.onnx.model import SizeReq
 from nodes.impl.upscale.auto_split_tiles import MAX_TILE_SIZE, NO_TILING, TileSize
 from nodes.impl.upscale.basic_upscale import PaddingType
 from nodes.impl.upscale.tile_report import TileReport
+from nodes.utils.utils import Region
 from packages.chaiNNer_ncnn.ncnn.processing import upscale_image as ncnn_node
 from packages.chaiNNer_onnx.onnx.processing import upscale_image as onnx_node
 from packages.chaiNNer_pytorch.pytorch.processing import upscale_image as torch_node
@@ -195,7 +197,7 @@ def run_ncnn(
     monkeypatch: pytest.MonkeyPatch,
     img: np.ndarray,
     tile_size: TileSize,
-    failing: set[int] = frozenset(),
+    failing: Collection[int] = frozenset(),
 ) -> tuple[np.ndarray, str]:
     model = SimpleNamespace(
         in_nc=3,
@@ -298,24 +300,27 @@ def test_onnx_out_of_memory_keeps_its_message(monkeypatch: pytest.MonkeyPatch):
 def test_a_tile_the_size_of_its_image_is_the_whole_image():
     report = TileReport()
     img = image(16, 16)
-    report.recording(img, lambda tile, _region: tile)(img[:, :], None)
+    report.recording(img, lambda tile, _region: tile)(img[:, :], Region(0, 0, 16, 16))
     assert report.text == "Whole image"
 
 
 def measured(arch: str, width: int) -> Any:
+    name = torch_node.WHOLE_IMAGE_WIDTH.get(arch, "embed_dim")
     return SimpleNamespace(
-        architecture=SimpleNamespace(name=arch), model=SimpleNamespace(embed_dim=width)
+        architecture=SimpleNamespace(name=arch),
+        model=SimpleNamespace(embed_dim=width, hyperparameters={name: width}),
     )
 
 
 def test_auto_runs_a_measured_architecture_whole_when_it_fits():
-    # A 4x HAT-L's 1200x864 image takes 10.9 GiB, upstream's estimate split it in two.
+    # A 4x HAT-L's 1200x864 image is 6.7 GiB at 6.8 KiB a pixel; upstream's estimate
+    # split it in two of a 19.1 GiB budget.
     image = np.zeros((864, 1200, 3), np.float32)
-    budget = int(19.1 * 1024**3)
+    budget = 10 * 1024**3
     tiler = torch_node.whole_image_tiler(measured("HAT", 180), image, budget, True)
     assert tiler.starting_tile_size(1200, 864, 3) == (1200, 1200)
     # In FP32 it does not fit: the largest square that does.
-    side = math.isqrt(int(budget / (1024 * 11.0 * 2)))
+    side = math.isqrt(int(budget / (1024 * 6.8 * 2)))
     tiler = torch_node.whole_image_tiler(measured("HAT", 180), image, budget, False)
     assert tiler.starting_tile_size(1200, 864, 3) == (side, side)
 
@@ -331,3 +336,46 @@ def test_a_narrower_model_takes_its_memory_in_proportion():
         tiler = torch_node.whole_image_tiler(measured(arch, width), image, budget, True)
         size = tiler.starting_tile_size(1920, 1080, 3)
         assert (size == (1920, 1920)) is whole, (arch, width)
+
+
+GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    ("arch", "width", "kib"),
+    [
+        ("ESRGAN", 64, 1.4),
+        ("FIGSR", 48, 1.8),
+        ("HEART", 180, 5.6),
+        ("GaterV3", 32, 1.4),
+    ],
+)
+@pytest.mark.parametrize("card", [8, 12, 16])
+def test_esrgan_figsr_and_heart_run_what_fits_whole_and_split_the_rest(
+    arch: str, width: int, kib: float, card: int
+):
+    # Auto's budget: 80 % of 75 % of the card
+    budget = int(int(card * GIB * 0.75) * 0.8)
+    model = measured(arch, width)
+    # the largest 16:9 image of this budget runs whole
+    h = math.isqrt(int(budget / (1024 * kib) * 9 / 16))
+    w = h * 16 // 9
+    image = np.zeros((h, w, 3), np.float32)
+    tiler = torch_node.whole_image_tiler(model, image, budget, True)
+    assert tiler.starting_tile_size(w, h, 3) == (w, w)
+    big = np.zeros((4320, 7680, 3), np.float32)
+    side = math.isqrt(int(budget / (1024 * kib)))
+    tiler = torch_node.whole_image_tiler(model, big, budget, True)
+    assert tiler.starting_tile_size(7680, 4320, 3) == (side, side)
+
+
+def test_the_width_comes_from_each_architectures_own_hyperparameter():
+    assert torch_node.whole_image_bytes_per_pixel(measured("ESRGAN", 32), True) == (
+        1024 * 1.4 / 2
+    )
+    assert torch_node.whole_image_bytes_per_pixel(measured("FIGSR", 96), False) == (
+        1024 * 1.8 * 2 * 2
+    )
+    assert torch_node.whole_image_bytes_per_pixel(measured("HAT", 90), True) == (
+        1024 * 6.8 / 2
+    )

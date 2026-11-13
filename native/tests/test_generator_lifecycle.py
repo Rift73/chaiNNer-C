@@ -107,7 +107,7 @@ class CountedIterator:
 
 class SplitIterator(CountedIterator):
     """A CountedIterator that also names its next item (describe) and gives it
-    (materialize), as Load Images' native iterator does (SP3b); describe() is counted
+    (materialize), as Load Images' native iterator does; describe() is counted
     as next() and raises StopIteration at the end."""
 
     def describe(self):
@@ -624,7 +624,7 @@ def test_abort_and_cancel_do_not_recreate_or_drain_sequence(
     scenario = Scenario(
         monkeypatch, tmp_path, [items], fail_fast=not all_errors, source_paths=()
     )
-    # K = 3 stops between items, after the window opened (spec 5.2); all_errors stops
+    # K = 3 stops between items, after the window opened; all_errors stops
     # inside item 0, before slot 1, at either K.
     stop_at = 1 if window == "1" or all_errors else 2
     if window == "3" and not all_errors:
@@ -702,7 +702,7 @@ def test_pause_resume_uses_same_supplier_without_extra_construction(
     monkeypatch, tmp_path, caplog, window
 ):
     set_window(monkeypatch, window)
-    # K = 3 pauses between items, after the window opened (spec 5.2)
+    # K = 3 pauses between items, after the window opened
     pause_at, items = (0, [0, 1, 2]) if window == "1" else (1, list(range(6)))
     scenario = Scenario(monkeypatch, tmp_path, [items], source_paths=())
 
@@ -942,7 +942,7 @@ def test_each_group_opens_and_closes_its_own_window(monkeypatch, tmp_path, caplo
     assert observed[0] == observed[1]
 
 
-# SP3b: a group's single generator is described serially and materialized as engine
+# A group's single generator is described serially and materialized as engine
 # jobs; without describe(), its describe is the read and its materialize the enforce.
 
 
@@ -1019,7 +1019,7 @@ def test_no_split_generator_yielding_none_fails_at_its_slot_as_today(
     assert summary["materialized"] == (2 if fail_fast else 4)
 
 
-# SP3b Task 7: the commit path's timers, with CHAINNER_C_PROFILE on.
+# The commit path's timers, with CHAINNER_C_PROFILE on.
 COMMIT_PATH_TIMERS = ("window.take_advance", "lazy.resolve", "loop.thread_cpu")
 
 

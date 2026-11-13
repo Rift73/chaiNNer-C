@@ -292,7 +292,7 @@ const createMatcher = (
         );
         const flatGroups: readonly GroupItem[] = groups.flatMap((group) => group.items);
 
-        const bestSchema = getBestMatch(searchQuery, matchingNodes, categories, (schema) => {
+        const bestSchema = getBestMatch(searchQuery, matchingNodes, (schema) => {
             const isFeatureEnabled = schema.features.every((f) => {
                 return featureStates.get(f)?.enabled ?? false;
             });

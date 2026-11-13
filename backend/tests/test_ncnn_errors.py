@@ -428,3 +428,101 @@ def test_an_unexpected_error_is_logged_and_kept_as_the_cause(
     assert isinstance(raised.value.__cause__, AssertionError)
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert [r.exc_info[0] for r in errors if r.exc_info] == [AssertionError]
+
+
+# Sorted apart, "m.fp16.param" comes before "m.param" but "m.fp16.bin" after "m.bin":
+# each .param goes with the .bin of its own name.
+def test_load_models_pairs_each_param_with_its_own_bin(tmp_path: Path):
+    from packages.chaiNNer_ncnn.ncnn.batch_processing.load_models import (
+        load_models_node,
+    )
+
+    for name in ("m", "m.fp16"):
+        (tmp_path / f"{name}.param").write_text(PARAM, encoding="utf-8")
+        (tmp_path / f"{name}.bin").write_bytes(BIN)
+    generator, _ = load_models_node(tmp_path, False)
+    items = list(generator.supplier())
+    assert all(isinstance(item, tuple) for item in items), items
+    assert sorted(item[2] for item in items if isinstance(item, tuple)) == [
+        "m",
+        "m.fp16",
+    ]
+
+
+def saved_pair(directory: Path) -> tuple[bytes, bytes]:
+    return (directory / "m.param").read_bytes(), (directory / "m.bin").read_bytes()
+
+
+def old_pair(directory: Path) -> tuple[bytes, bytes]:
+    (directory / "m.param").write_bytes(b"OLD GRAPH")
+    (directory / "m.bin").write_bytes(b"OLD WEIGHTS")
+    return saved_pair(directory)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="an open file blocks its rename")
+def test_save_model_leaves_the_old_pair_when_the_param_cannot_be_replaced(
+    tmp_path: Path,
+):
+    # Save Model wrote the .bin, then failed on the .param: a new .bin beside the old .param.
+    from packages.chaiNNer_ncnn.ncnn.io.save_model import save_model_node
+
+    (tmp_path / "source").mkdir()
+    model = tiny_model(tmp_path / "source")
+    old = old_pair(tmp_path)
+    with open(tmp_path / "m.param", "rb"), pytest.raises(OSError):
+        save_model_node(model, tmp_path, "m")
+    assert saved_pair(tmp_path) == old
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m.bin", "m.param", "source"]
+
+
+def test_save_model_puts_the_param_back_when_the_bin_cannot_be_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from nodes.impl.native_graph import graph
+    from packages.chaiNNer_ncnn.ncnn.io import save_model
+
+    (tmp_path / "source").mkdir()
+    model = tiny_model(tmp_path / "source")
+    old = old_pair(tmp_path)
+    native = graph()
+
+    class Target:
+        """The real target, whose rename onto the .bin fails as a held file's does."""
+
+        def __init__(self, path: Path) -> None:
+            self.target = native.AtomicTarget(path)
+            self.fails = Path(path).suffix == ".bin"
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.target, name)
+
+        def __enter__(self) -> Target:
+            return self
+
+        def __exit__(self, *error: object) -> None:
+            self.target.__exit__(*error)
+
+        def commit(self) -> bool:
+            if self.fails:
+                raise PermissionError("the .bin is held open")
+            return self.target.commit()
+
+    fake = SimpleNamespace(AtomicTarget=Target, atomic_write=native.atomic_write)
+    monkeypatch.setattr(save_model, "graph", lambda: fake)
+    with pytest.raises(PermissionError):
+        save_model.save_model_node(model, tmp_path, "m")
+    assert saved_pair(tmp_path) == old
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m.bin", "m.param", "source"]
+
+
+def test_save_model_writes_the_pair_open_would_write(tmp_path: Path):
+    from packages.chaiNNer_ncnn.ncnn.io.save_model import save_model_node
+
+    (tmp_path / "source").mkdir()
+    model = tiny_model(tmp_path / "source")
+    old_pair(tmp_path)
+    save_model_node(model, tmp_path, "m")
+    model.model.write_param(tmp_path / "source" / "m.param")
+    model.model.write_bin(tmp_path / "source" / "m.bin")
+    assert saved_pair(tmp_path) == saved_pair(tmp_path / "source")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m.bin", "m.param", "source"]

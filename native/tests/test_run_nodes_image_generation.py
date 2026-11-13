@@ -65,7 +65,7 @@ def test_create_gradient_matches(style, pair, reverse, size):
 
 @pytest.mark.parametrize(("inner", "outer"), [(0, 100), (25, 50), (0, 50)])
 def test_create_gradient_radial_stays_between_its_colours(inner, outer):
-    # Upstream extrapolated past both colours: 0.3 -> 0.6 gave 0.72 in the corners (2026-10-23).
+    # Upstream extrapolated past both colours: 0.3 -> 0.6 gave 0.72 in the corners.
     inputs = [64, 48, Color.gray(0.3), Color.gray(0.6), False, "Radial", 45, 100, inner, outer, 0]
     outputs = assert_native_matches("chainner:image:create_gradient", inputs)[1]
     assert isinstance(outputs, list)

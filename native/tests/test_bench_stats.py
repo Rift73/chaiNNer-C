@@ -131,8 +131,6 @@ def test_noise_floor_cancels_a_pure_position_effect():
     ratios = [1.05, 0.95] * 3
     summary = bench_stats.summarize(trials_from(ratios), LABELS)
     assert bench_stats.noise_floors(summary)["g"] < 0.002
-    # The rule this replaces would have called the same launch ~5% noisy.
-    assert max(abs(math.log(r)) for r in ratios) == pytest.approx(0.051, abs=1e-3)
 
 
 def test_noise_floor_pairs_neighbours_in_launch_order():

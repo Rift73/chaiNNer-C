@@ -83,7 +83,7 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
     int events = 0;
     if (cn_pixels_convert_checked(image.data, pixels.data(), count, type_float32, output_uint8, 1, &events) != CN_OK ||
         events)
-        return false; // NumPy would report the event (warn, raise, print or call): today's path does
+        return false; // NumPy would report the event (warn, raise, print or call): the Python path does
     if (image.channels > 3 || lossless) {
         const ptrdiff_t c = ptrdiff_t(image.channels);
         cn::codecs::Output png;
@@ -92,7 +92,7 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
             url = "data:image/png;base64," + base64({png.value.data, png.value.size});
             return true;
         case cn::image_encode::Png::declined:
-            return false; // today's path runs
+            return false; // the Python path runs
         case cn::image_encode::Png::out_of_memory:
             throw std::bad_alloc();
         default:

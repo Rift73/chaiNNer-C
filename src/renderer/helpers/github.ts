@@ -2,14 +2,11 @@ import { Version } from '../../common/common-types';
 import { BuildInfo, isDevelopmentBuild, parse, versionGt } from '../../common/version';
 import type { RestEndpointMethodTypes } from '@octokit/rest';
 
-// DO NOT use @octokit/rest directly. @octokit/rest is unfortunately a node-only package.
-// It uses node modules and other node-only dependencies like node-fetch under the hood,
-// which mean that we cannot use in the browser. Instead, we use the fetch API directly.
+// Only the types of @octokit/rest: the package needs Node (node-fetch), so requests use fetch.
 
 const repository = 'Rift73/chaiNNer-C';
 
 const fetchApi = async <T>(url: string, signal: AbortSignal): Promise<T> => {
-    // fetch data from GitHub REST API
     const response = await fetch(`https://api.github.com${url}`, { signal });
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);

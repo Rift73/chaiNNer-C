@@ -1,4 +1,4 @@
-"""The frozen upstream transfers under chaiNNer-C's contract (ruling of 2026-10-23): one
+"""The frozen upstream transfers under chaiNNer-C's contract: one
 valid pixel has zero covariance, a solid image's, where np.cov's zero degrees of freedom
 give NaN and eig rejects it ("Array must not contain infs or NaNs")."""
 

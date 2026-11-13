@@ -7,7 +7,6 @@ from typing import Literal, Union
 import navi
 from api import BaseInput
 
-# pylint: disable=relative-beyond-top-level
 from ...impl.image_formats import get_available_image_formats
 from .generic_inputs import TextInput
 from .label import LabelStyle

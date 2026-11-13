@@ -145,6 +145,15 @@ class Route(types.ModuleType):
     def load_ops(self) -> None:
         self.loads += 1
 
+    # DUAL's: the TensorRT-only keys its exporter writes (none unless a test sets them)
+    tensorrt_only: ClassVar[list[str]] = []
+
+    def exported_tensorrt_only_keys(self) -> list[str]:
+        return self.tensorrt_only
+
+    def refusal(self, keys: list[str]) -> str:
+        return f"{' and '.join(keys)}: no program"
+
 
 def routes(monkeypatch: pytest.MonkeyPatch) -> tuple[Route, Route]:
     """Stand-in DUAL and DRFT routes in place of nodes/impl/migraphx/dual.py and drft.py."""

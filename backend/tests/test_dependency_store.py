@@ -8,9 +8,10 @@ import shutil
 import subprocess
 import sys
 import time
+from logging import Logger
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -1006,3 +1007,69 @@ def test_an_uninstall_keeps_a_dependency_that_shares_files_with_one_that_stays(
     # RECORD stays too: what pip would delete with it is unknown.
     unneeded = store.unneeded_dependencies(leaving, set())
     assert [dep.package_name for dep in unneeded] == ["niquests", "wassima"]
+
+
+def test_an_unreadable_progress_line_is_logged_and_a_failing_callback_is_not_hidden(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    output = [
+        "Collecting ncnn==1.0.20240410",
+        "Progress: {not json",
+        'Progress: {"current": 10, "total": 100}',
+    ]
+    run_like_pip(monkeypatch, tmp_path, output, exit_code=0)
+    fake_environment(monkeypatch, {})
+    logged: list[tuple[str, str]] = []
+    logger = SimpleNamespace(
+        info=lambda message: logged.append(("info", message)),
+        warning=lambda message, *args: logged.append(("warning", message % args)),
+        error=lambda message: logged.append(("error", message)),
+    )
+
+    async def fail_on_a_download(
+        _message: str, _progress: float, status: float | None = None
+    ):
+        if status is not None:
+            raise RuntimeError("the progress event failed")
+
+    with pytest.raises(RuntimeError, match="the progress event failed"):
+        asyncio.run(
+            store.install_dependencies([NCNN], fail_on_a_download, cast(Logger, logger))
+        )
+    assert [
+        (level, message) for level, message in logged if "{not json" in message
+    ] == [
+        (
+            "warning",
+            (
+                "Unreadable pip progress line 'Progress: {not json': Expecting"
+                " property name enclosed in double quotes: line 1 column 2 (char 1)"
+            ),
+        )
+    ]
+
+
+@pytest.mark.parametrize("change", ["install", "uninstall"])
+def test_pip_is_read_to_its_end_after_a_progress_event_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+):
+    # More output than a pipe holds after the failure: pip would block on a full pipe
+    # with nobody reading it, and a half-done change is worse than a finished one.
+    first = (
+        "Collecting ncnn==1.0.20240410"
+        if change == "install"
+        else "Uninstalling ncnn-1.0.20240410:"
+    )
+    rest = [f"line {n} {'x' * 100}" for n in range(2000)]
+    run_like_pip(monkeypatch, tmp_path, [first, *rest, "the end"], exit_code=0)
+    fake_environment(monkeypatch, {})
+    logged: list[str] = []
+    logger = SimpleNamespace(info=logged.append, warning=logged.append)
+
+    async def fail(*_args: object) -> None:
+        raise RuntimeError("the progress event failed")
+
+    run = getattr(store, f"{change}_dependencies")
+    with pytest.raises(RuntimeError, match="the progress event failed"):
+        asyncio.run(run([NCNN], fail, cast(Logger, logger)))
+    assert logged[-1] == "the end"

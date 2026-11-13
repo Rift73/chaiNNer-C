@@ -1,5 +1,5 @@
 /* Resample's two-pass context and its scalar vertical output, moved from
- * resample_filters.c (SP4b Task 7). Shared by that baseline unit and the /arch:AVX2
+ * resample_filters.c. Shared by that baseline unit and the /arch:AVX2
  * unit resample_avx2.c: the coefficient line, the context, and vertical_one, a static
  * helper compiled into each including unit, never inline, so the linker cannot fold a
  * VEX copy into baseline callers. Both includers use it (C4505): resample_filters.c

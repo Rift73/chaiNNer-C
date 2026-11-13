@@ -1,5 +1,4 @@
-/* SP4c: a NumPy data-memory handler that keeps freed blocks of 512 KiB or more warm
- * (docs/superpowers/specs/2026-10-05-sp4c-output-allocation-design.md, D1-D9, 4.1-4.5).
+/* A NumPy data-memory handler that keeps freed blocks of 512 KiB or more warm.
  *
  * Switch. numpy_pool_install reads CHAINNER_C_NUMPY_POOL and CHAINNER_C_PROFILE once per
  * process, at its first call. Unset or empty = installed with the default cap,
@@ -105,7 +104,7 @@ namespace {
 constexpr const char *capsule_name = "mem_handler";
 constexpr unsigned handler_api = NPY_1_22_API_VERSION;  // PyDataMem_SetHandler and its kin
 constexpr size_t threshold = size_t{1} << 19;
-constexpr size_t default_cap_limit = size_t{2} << 30;  // instant-exec gate R10
+constexpr size_t default_cap_limit = size_t{2} << 30;
 constexpr size_t class_minimum = size_t{64} << 10;  // counted and sampled from here
 constexpr int sample_pages = 8;
 constexpr int max_threads = 64;
@@ -389,7 +388,7 @@ void release(Block *chain)
 
 /* The live pool block at ptr, under the lock; null for a pointer the pool does not own.
  * An idle block's address cannot come back from NumPy: no allocator hands it out while
- * the pool holds it, so it is a double free, and it stops the process (D9). */
+ * the pool holds it, so it is a double free, and it stops the process. */
 Block *live_find(void *ptr)
 {
     Block *block = table_find(ptr);

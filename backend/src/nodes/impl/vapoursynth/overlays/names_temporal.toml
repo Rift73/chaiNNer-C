@@ -1,0 +1,262 @@
+# Names, order and start values: Deinterlace and Denoise nodes.
+
+# ---------------------------------------------------------------- Deinterlace
+
+[method."bwdif.Bwdif"]
+rank = 1
+label = "Deinterlace, fast (Bwdif)"
+simple = ["field"]
+labels = { field = "Rate and first field (0-3)", opt = "CPU instructions", edeint = "Interpolation clip" }
+defaults = { field = 3 }
+
+[method."chainner_vs.detelecine"]
+rank = 2
+label = "Detelecine: film back to 24 fps (detelecine)"
+labels = { tff = "Field order: top field first", postprocess = "Clean leftover combing", cycle = "Drop 1 frame in every" }
+
+[method."vsaa.NNEDI3.deinterlace"]
+rank = 3
+label = "Deinterlace, smooth edges (NNEDI3)"
+labels = { pscrn = "Prescreener", tff = "Field order: top field first", double_rate = "Double rate", nsize = "Area size", nns = "Network size", qual = "Quality (1 or 2)", etype = "Weights", gpu = "Vulkan GPU version", transpose_first = "Transpose first (unused)", scaler = "Scaler (unused)", noshift = "No shift (unused)" }
+
+[method."vsdeinterlace.QTempGaussMC.deinterlace"]
+rank = 4
+label = "Deinterlace, best and slow (QTempGaussMC)"
+labels = { tff = "Field order", kwargs = "Stage settings" }
+
+[method."vsdeinterlace.QTempGaussMC.bob"]
+rank = 5
+label = "Bob to double rate, slow (QTempGaussMC bob)"
+labels = { tff = "Field order", kwargs = "Stage settings" }
+
+[method."vsdeinterlace.vfm"]
+rank = 6
+label = "Detelecine step 1: field match (VFM)"
+labels = { tff = "Field order", postprocess = "Post-process", clip2 = "Match from clip", field = "Field to match from", mchroma = "Match on colour", cthresh = "Combing threshold", mi = "Combed pixels per block", chroma = "Colour in combing check", block = "Combing block size", y = "Ignore rows (from, to)", scthresh = "Scene change %", micmatch = "Use combing in matching", micout = "Write combing values" }
+defaults = { tff = "vstools.FieldBased.TFF" }
+
+[method."vsdeinterlace.vdecimate"]
+rank = 7
+label = "Detelecine step 2: drop repeats (VDecimate)"
+labels = { cycle = "Drop 1 frame in every", chroma = "Compare colour", dupthresh = "Duplicate threshold %", scthresh = "Scene change %", block = "Block size", clip2 = "Take frames from clip", ovr = "Overrides file", dryrun = "Mark only, drop nothing" }
+
+[method."vsdeinterlace.vinverse"]
+rank = 8
+label = "Remove leftover combing (vinverse)"
+labels = { contra_str = "Sharpen-back strength", amnt = "Largest change (8-bit)", scl = "Opposite-sign scale", comb_blur = "Comb blur filter", contra_blur = "Measuring blur filter" }
+defaults = { amnt = "255" }
+
+[method."vsdeinterlace.QTempGaussMC.repair"]
+label = "Fix bad deinterlacing (QTempGaussMC repair)"
+labels = { tff = "Field order", kwargs = "Stage settings" }
+
+[method."vsdeinterlace.QTempGaussMC.deshimmer"]
+label = "Calm shimmer (QTempGaussMC deshimmer)"
+labels = { kwargs = "Stage settings" }
+
+[method."vsdeinterlace.sivtc"]
+label = "Detelecine by a fixed pattern (sivtc)"
+labels = { pattern = "Pulldown phase (0-4)", tff = "Field order", ivtc_cycle = "Pulldown scheme" }
+
+[method."vsdeinterlace.jivtc"]
+label = "Detelecine with blended chroma (jivtc)"
+labels = { pattern = "Pulldown phase (0-4)", tff = "Field order", chroma_only = "Repair colour only", postprocess = "Repair filter", postdecimate = "Decimation after repair", ivtc_cycle = "Pulldown scheme", final_ivtc_cycle = "Final pulldown scheme" }
+
+[method."std.SeparateFields"]
+label = "Split into fields (SeparateFields)"
+labels = { tff = "Field order (1 top, 0 bottom)", modify_duration = "Double the rate (1 or 0)" }
+
+[method."std.DoubleWeave"]
+label = "Weave each field pair (DoubleWeave)"
+labels = { tff = "Field order (1 top, 0 bottom)" }
+
+[method."vsdeinterlace.weave"]
+label = "Weave fields into frames (weave)"
+labels = { tff = "Field order" }
+
+[method."vsdeinterlace.reweave"]
+label = "Weave two field clips (reweave)"
+labels = { clipb = "Second field clip", tff = "Field order" }
+
+[method."vsdeinterlace.reinterlace"]
+label = "Make interlaced again (reinterlace)"
+labels = { tff = "Field order" }
+defaults = { tff = "vstools.FieldBased.TFF" }
+
+[method."vsdeinterlace.deblend"]
+label = "Repair blended frames (deblend)"
+labels = { fieldmatched = "Field-matched clip", decomber = "Decombing filter" }
+
+[method."vsdeinterlace.deblend_bob"]
+label = "Repair blends from a bob (deblend_bob)"
+labels = { fieldmatched = "Field-matched clip" }
+
+[method."vsdeinterlace.deblend_fix_kf"]
+label = "Fix deblend at scene cuts (deblend_fix_kf)"
+labels = { fieldmatched = "Field-matched clip" }
+
+[method."vsdeinterlace.dmetrics"]
+label = "Field metrics for Wobbly (dmetrics)"
+labels = { tff = "Field order", nt = "Noise tolerance", y = "Ignore rows (from, to)", chroma = "Count colour combing", clip2 = "Copy metrics to clip" }
+
+[method."vsdeinterlace.get_field_difference"]
+label = "Field difference (get_field_difference)"
+labels = { tff = "Field order" }
+
+[method."vsdeinterlace.FixInterlacedFades"]
+label = "Fix combed fades (FixInterlacedFades)"
+labels = { class = "Method", color = "Fade colour" }
+
+[method."vsdeinterlace.InterpolateOverlay"]
+label = "Smooth credits over film (InterpolateOverlay)"
+labels = { class = "Overlay type", pattern = "Pulldown phase", blksize = "Block size", overlap = "Overlap divisor", refine = "Refinement passes", thsad_recalc = "Refine threshold", export_globals = "Return motion data" }
+
+# ---------------------------------------------------------------- Denoise
+
+[method."vsdenoise.nl_means"]
+rank = 1
+label = "Denoise, gentle (NL-Means)"
+labels = { h = "Strength", tr = "Temporal radius", ref = "Reference clip", a = "Search radius", s = "Patch radius", wmode = "Weighting" }
+
+[method."vsdenoise.mc_degrain"]
+rank = 3
+label = "Denoise moving grain (mc_degrain)"
+labels = { prefilter = "Prefilter", tr = "Temporal radius", thsad = "Strength (SAD threshold)", mfilter = "Fallback filter", delta = "Frame distances", blksize = "Block size", overlap_div = "Overlap divisor", refine = "Refinement passes", thsad2 = "Far-frame threshold", thsad_recalc = "Refine threshold", limit = "Largest change (8-bit)", thscd = "Scene change", export_globals = "Return motion data" }
+
+[method."vsdenoise.DFTTest.denoise"]
+rank = 4
+label = "Denoise by frequency (DFTTest)"
+labels = { sloc = "Strength (sloc)", tr = "Temporal radius", ftype = "Filter type", swin = "Block window", twin = "Frame window" }
+
+[method."vsdenoise.Prefilter"]
+rank = 5
+label = "Quick prefilter for motion search (Prefilter)"
+labels = { class = "Prefilter", full_range = "Boost darks (full range)" }
+
+[method."vsdenoise.ccd"]
+rank = 6
+label = "Chroma denoise (ccd)"
+labels = { thr = "Strength", tr = "Temporal radius", ref_points = "Reference points", scale = "Grid scale", ref = "Reference clip", pscale = "Ringing correction", chroma_upscaler = "Colour upscaler", chroma_downscaler = "Colour downscaler" }
+
+[method."vsdenoise.deblock_qed"]
+rank = 7
+label = "Deblock (deblock_qed)"
+labels = { quant = "Strength (edges, insides)", alpha = "Alpha (edges, insides)", beta = "Detection (edges, insides)", chroma_mode = "Colour mode (0-2)", interlaced = "Separated fields" }
+
+[method."vsdenoise.bm3d"]
+rank = 2
+label = "Denoise, strong (BM3D)"
+labels = { sigma = "Strength (sigma)", tr = "Temporal radius", ref = "Reference clip", refine = "Final passes", pre = "Search clip", basic_args = "First pass settings", final_args = "Final pass settings" }
+
+[method."vsdenoise.wnnm"]
+label = "Denoise, very slow, float (WNNM)"
+labels = { sigma = "Strength (sigma)", tr = "Temporal radius", block_size = "Block size", ref = "Reference clip", block_step = "Block step", group_size = "Group size", bm_range = "Search radius", ps_num = "Matches carried over", ps_range = "Search radius, other frames", residual = "Centre blocks", adaptive_aggregation = "Adaptive combining", refine = "Extra passes", merge_factor = "Merge factor" }
+
+[method."vsdenoise.dpir"]
+label = "AI denoise or deblock (dpir)"
+labels = { class = "Model" }
+
+[method."vsdenoise.mpeg2stinx"]
+label = "MPEG-2 comb artefact fix (mpeg2stinx)"
+labels = { bobber = "Deinterlacer", tff = "Field order", mask = "Motion mask", radius = "Repair radius", limit = "Temporal limit" }
+
+[method."vsdenoise.frequency_merge"]
+label = "Merge clips by frequency (frequency_merge)"
+labels = { lowpass = "Splitting blur", mode_high = "Detail mix", mode_low = "Base mix" }
+
+[method."vsdenoise.decrease_size"]
+label = "Blur grain in bright areas (decrease_size)"
+labels = { sigmaS = "Blur size (sigmaS)", sigmaR = "Blur range (sigmaR)", min_in = "Start brightness (0-255)", max_in = "Full brightness (0-255)", show_mask = "Show mask" }
+
+[method."vsdenoise.prefilter_to_full_range"]
+label = "Dark boost (prefilter_to_full_range)"
+labels = { slope = "Dark boost", smooth = "Transition width" }
+
+[method."vsdenoise.DFTTest.extract_freq"]
+defaults = { sloc = 8 }
+label = "Only what DFTTest removes (extract_freq)"
+
+[method."vsdenoise.DFTTest.insert_freq"]
+defaults = { sloc = 8 }
+label = "Add fine detail back (DFTTest insert_freq)"
+labels = { high = "Detail clip" }
+
+[method."vsdenoise.DFTTest.merge_freq"]
+defaults = { sloc = 8 }
+label = "Denoise base, keep detail (merge_freq)"
+labels = { high = "Detail clip" }
+
+# ---------------------------------------------------------------- Hidden (cannot work from a node, or script building blocks)
+
+[method."vsdenoise.MotionVectors.get_vector"]
+hide = true
+
+[method."vsdenoise.MotionVectors.show_vector"]
+hide = true
+
+[method."vsdenoise.MVTools.super"]
+hide = true
+
+[method."vsdeinterlace.telecine_patterns"]
+hide = true
+
+[method."vsdeinterlace.deblending_helper"]
+hide = true
+
+[method."dfttest2_cpu.DFTTest"]
+hide = true
+
+[method."dfttest2_cuda.DFTTest"]
+hide = true
+
+[method."dfttest2_nvrtc.DFTTest"]
+hide = true
+
+# ---------------------------------------------------------------- Moved from Any Function
+
+[method."vszip.MosquitoNR"]
+family = "Denoise"
+label = "Remove mosquito noise (MosquitoNR)"
+labels = { strength = "Strength (0-32)", restore = "Restore coarse content", radius = "Blur radius (1 or 2)" }
+
+[method."vszip.Checkmate"]
+family = "Denoise"
+label = "Reduce dot crawl (Checkmate)"
+labels = { thr = "Spatial threshold", tmax = "Largest change", tthr2 = "Temporal threshold" }
+
+# ---------------------------------------------------------------- Arrivals from Resize and Anti-alias (no rank)
+
+[method."vskernels.*.bob"]
+label = "Deinterlace to double rate, by scaler (bob)"
+labels = { tff = "Field order", class = "Kernel" }
+
+[method."vskernels.*.deinterlace"]
+label = "Deinterlace, by scaler (deinterlace)"
+labels = { tff = "Field order", double_rate = "Double rate", class = "Kernel" }
+
+[method."vsaa.NNEDI3.bob"]
+label = "Deinterlace to double rate (NNEDI3 bob)"
+labels = { tff = "Field order: top field first" }
+
+[method."vsaa.EEDI3.deinterlace"]
+label = "Deinterlace, sharp lines, slow (EEDI3)"
+labels = { tff = "Field order: top field first" }
+
+[method."vsaa.EEDI3.bob"]
+label = "Deinterlace to double rate, sharp (EEDI3 bob)"
+labels = { tff = "Field order: top field first" }
+
+[method."vsaa.SangNom.deinterlace"]
+label = "Deinterlace, fast edges (SangNom)"
+labels = { tff = "Field order: top field first" }
+
+[method."vsaa.SangNom.bob"]
+label = "Deinterlace to double rate (SangNom bob)"
+labels = { tff = "Field order: top field first" }
+
+[method."vsaa.BWDIF.deinterlace"]
+label = "Deinterlace, fast, reads field order (BWDIF)"
+labels = { tff = "Field order: top field first" }
+
+[method."vsaa.BWDIF.bob"]
+hide = true

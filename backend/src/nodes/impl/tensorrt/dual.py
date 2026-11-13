@@ -211,6 +211,16 @@ def export_manifest(model: bytes | onnx.ModelProto) -> dict[str, Any] | None:
 Size = tuple[int, int]
 
 
+# The manifest's keys of the attention operators an export lowers, each absent from
+# exports made before it: context, local and retrieval neighborhood attention.
+NA_KEYS = ("context", "local", "retrieval")
+
+
+def missing_na_keys(manifest: dict[str, Any]) -> list[str]:
+    """The NA_KEYS a DUAL manifest lacks: those sites keep their earlier windows."""
+    return [key for key in NA_KEYS if key not in manifest]
+
+
 def check_profile(manifest: dict[str, Any], low: Size, opt: Size, high: Size) -> None:
     """Refuse a dynamic DUAL engine's (height, width) profile that the ONNX is not
     exact for, or that is not ordered. One size three times is a fixed engine (Shape
@@ -265,11 +275,13 @@ def build_engine(
     spec = manifest["specialization"]
     if spec.get("dynamic", False) != (profile is not None):
         raise ValueError("Only a dynamic DUAL ONNX takes a size profile.")
-    if "context" not in manifest:
+    missing = missing_na_keys(manifest)
+    if missing:
         # Exported before neighborhood attention: it still builds, as the file holds it.
         logger.warning(
-            "This DUAL ONNX was exported with the old context windows; its engine keeps"
-            " them. Convert the model to ONNX again for neighborhood attention."
+            "This DUAL ONNX was exported without neighborhood attention at its"
+            f" {', '.join(missing)} sites; its engine keeps their earlier windows."
+            " Convert the model to ONNX again for neighborhood attention."
         )
     settings = [
         str(workspace_gib),
@@ -307,6 +319,7 @@ def build_engine(
 
 __all__ = [
     "ALIGNMENT",
+    "NA_KEYS",
     "aligned_input_name",
     "build_engine",
     "check_profile",
@@ -314,4 +327,5 @@ __all__ = [
     "export_onnx",
     "factory_of",
     "input_alignment",
+    "missing_na_keys",
 ]

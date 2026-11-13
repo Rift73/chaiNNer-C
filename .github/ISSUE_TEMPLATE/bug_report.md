@@ -8,7 +8,7 @@ assignees: ''
 ---
 
 <!--
-Before you make open an issue, please search for your problem using the search bar here: https://github.com/chaiNNer-org/chaiNNer/issues
+Before you make open an issue, please search for your problem using the search bar here: https://github.com/Rift73/chaiNNer-C/issues
 
 Many problems are reported to us multiple times, so please try to find your problem before opening a new issue.
 -->

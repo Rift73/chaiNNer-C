@@ -13,12 +13,12 @@ from __future__ import annotations
 import ast
 import ctypes as ct
 import json
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import pytest
+from node_bodies import load_body
 from test_isa_dispatch import isa_get, isa_set
 
 from nodes.impl import native_neighborhood as native
@@ -29,30 +29,10 @@ SOURCE = ROOT / "backend/src/packages/chaiNNer_standard/image_filter/quantize"
 REFERENCE = Path(__file__).with_name("reference_neighborhood") / "quantize"
 
 
-def load_node(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
-
-
-UNIFORM = (load_node(SOURCE / "dither.py"), load_node(REFERENCE / "dither.py"))
+UNIFORM = (load_body(SOURCE / "dither.py"), load_body(REFERENCE / "dither.py"))
 PALETTE = (
-    load_node(SOURCE / "dither_palette.py"),
-    load_node(REFERENCE / "dither_palette.py"),
+    load_body(SOURCE / "dither_palette.py"),
+    load_body(REFERENCE / "dither_palette.py"),
 )
 
 
@@ -247,7 +227,7 @@ def test_nonfinite_image_existing_semantics(channels, mode, value):
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
 @pytest.mark.parametrize("location", ["image", "palette"])
 def test_nonfinite_large_palette_takes_the_linear_rule(channels, mode, value, location):
-    # Consult 8 D-5: with 300+ unique colors a pixel with a nonfinite channel, or
+    # With 300+ unique colors a pixel with a nonfinite channel, or
     # every pixel when the palette holds a nonfinite color, takes the linear rule of
     # smaller palettes. Upstream's R-tree traversal decides those queries; its bulk
     # load panics on a NaN color of 3 or 4 channels, and chaiNNer-C's chainner_ext
@@ -299,7 +279,7 @@ def with_color(colors, index, channel, value):
 def test_an_infinite_color_never_changes_finite_pixels(
     isa_level, channels, mode, count, value, path
 ):
-    # Consult 8 D-5's property, true upstream too: an infinite distance never wins,
+    # A property true upstream too: an infinite distance never wins,
     # so a finite image dithered with a +-inf color added to its palette equals the
     # result without it, across the 300-color threshold (with the color, 300 and 304
     # colors take the brute-force search at avx2).
@@ -349,7 +329,7 @@ def test_nonfinite_duplicate_palette_keeps_small_palette_semantics(channels, mod
 @pytest.mark.parametrize("flag", [True, False], ids=["compatible", "no-compatible"])
 def test_nonfinite_large_palette_c_entries_dither_every_pixel(mode, flag):
     # The compatible slot stays for B3's goldens and the frozen helper: written 1
-    # when given (Consult 8 D-5), optional.
+    # when given, optional.
     source = image(3)
     source[0, 0, 0] = np.nan
     colors = image(3, 1, 307)
@@ -426,8 +406,8 @@ def nearest_reference(source, colors):
 
 
 def linear_reference(source, colors):
-    """The linear scan's rule (palettes below 300 colors, and nonfinite queries since
-    Consult 8 D-5) over canonical_palette's order: the first color at the least
+    """The linear scan's rule (palettes below 300 colors, and nonfinite queries)
+    over canonical_palette's order: the first color at the least
     distance; a NaN distance never wins, and the first color stays when its own
     distance is NaN."""
     ordered = canonical_palette(colors)

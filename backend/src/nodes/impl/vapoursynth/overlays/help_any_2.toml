@@ -1,0 +1,593 @@
+# Help texts: Any Function node, plugins vszip, vszipcu, bm3d, dfttest2_*, nlm_ispc, znedi3, sangnom.
+# Settings in this node are typed as `name = value` rows with Python values.
+
+# ---------------------------------------------------------------- bm3d (reference BM3D, CPU)
+
+[method."bm3d.Basic"]
+help = "First (basic) pass of the reference BM3D denoiser, spatial only, on the CPU; slow. For normal use pick the Denoise node, method Denoise, strong (BM3D) (Backend Old runs this plugin). Raw use: RGB2OPP first, Basic, then Final with this as ref, then OPP2RGB. No chroma subsampling; YUV must be 4:4:4."
+
+[method."bm3d.Basic".docs]
+input = "The clip to denoise: Gray, RGB or YUV 4:4:4, 8 to 16-bit or 32-bit float."
+ref = "Clip used only to find similar blocks; empty uses the input. Example: ref = prefiltered"
+profile = "Preset of block and search sizes: \"fast\" (default), \"lc\" (low complexity), \"np\" (normal), \"high\", \"vn\" (very noisy). Example: profile = \"np\""
+sigma = "Noise strength on an 8-bit scale, up to three values for Y, U, V; missing values repeat the last. Default 10; 0 skips a plane but leaves garbage in it. Example: sigma = [5, 3, 3]"
+block_size = "Block size in pixels, 1 to 64; the profile sets 8. Example: block_size = 8"
+block_step = "Pixels between processed blocks, 1 to block size. Smaller is slower and smoother. Example: block_step = 4"
+group_size = "Most similar blocks stacked together, 1 to 256; 1 turns block matching off. Example: group_size = 16"
+bm_range = "Search radius for similar blocks; the window is (2 x range + 1) squared. Larger is slower. Example: bm_range = 9"
+bm_step = "Search step, 1 to bm_range; 1 searches every position. Example: bm_step = 1"
+th_mse = "Largest block difference still counted as similar; empty derives it from sigma (sigma x 80 + 400 for most profiles). Example: th_mse = 1200"
+hard_thr = "Hard threshold of the basic pass, 8-bit scale; default 2.7 (2.8 for \"vn\"). Higher removes more. Example: hard_thr = 2.7"
+matrix = "Colour matrix of YUV input: 2 picks by size (default), 1 BT.709, 6 SMPTE 170M, 9 BT.2020; 100 means the input came from RGB2OPP. Example: matrix = 100"
+
+[method."bm3d.Final"]
+help = "Final pass of the reference BM3D denoiser: refines a first estimate (usually Basic's output, or any good denoiser's) by Wiener filtering. CPU, slow. The Denoise node, method Denoise, strong (BM3D), chains this for you."
+
+[method."bm3d.Final".docs]
+input = "The original noisy clip: Gray, RGB or YUV 4:4:4."
+ref = "The first estimate, usually Basic's output; required. Example: ref = basic"
+profile = "Preset: \"fast\" (default), \"lc\", \"np\", \"high\", \"vn\". Use the same as in Basic. Example: profile = \"np\""
+sigma = "Noise strength on an 8-bit scale, up to three values for Y, U, V. Default 10. Use the same as in Basic. Example: sigma = [5, 3, 3]"
+block_size = "Block size in pixels, 1 to 64. Example: block_size = 8"
+block_step = "Pixels between processed blocks, 1 to block size; smaller is slower and smoother. Example: block_step = 3"
+group_size = "Most similar blocks stacked together, 1 to 256. Example: group_size = 32"
+bm_range = "Search radius for similar blocks. Example: bm_range = 16"
+bm_step = "Search step; 1 searches every position. Example: bm_step = 1"
+th_mse = "Largest block difference still counted as similar; empty derives it from sigma. Example: th_mse = 800"
+matrix = "Colour matrix of YUV input: 2 by size (default), 1 BT.709, 6 SMPTE 170M; 100 for RGB2OPP output. Example: matrix = 100"
+
+[method."bm3d.VBasic"]
+help = "Basic pass of V-BM3D, which also searches neighbouring frames. Its output is an intermediate, not a picture: follow it with VAggregate (same radius). Chain: VBasic, VAggregate, VFinal, VAggregate. CPU, slow; the Denoise node's Denoise, strong (BM3D) with Temporal radius does this for you."
+
+[method."bm3d.VBasic".docs]
+input = "The clip to denoise: Gray, RGB or YUV 4:4:4."
+ref = "Clip used only to find similar blocks; empty uses the input."
+profile = "Preset: \"fast\" (default), \"lc\", \"np\", \"high\", \"vn\"; it also sets the radius (1 to 4). Example: profile = \"np\""
+sigma = "Noise strength on an 8-bit scale, up to three values for Y, U, V. Default 10. Example: sigma = [5, 3, 3]"
+radius = "Frames searched on each side, 1 to 16 (2 x radius + 1 frames). Pass the same value to VAggregate. Example: radius = 1"
+block_size = "Block size in pixels, 1 to 64. Example: block_size = 8"
+block_step = "Pixels between processed blocks; smaller is slower and smoother. Example: block_step = 4"
+group_size = "Most similar blocks stacked together, 1 to 256. Example: group_size = 8"
+bm_range = "Search radius for similar blocks in the current frame. Example: bm_range = 9"
+bm_step = "Search step; 1 searches every position. Example: bm_step = 1"
+ps_num = "Best matches carried to the neighbouring frames as search starts, 1 to group size. Example: ps_num = 2"
+ps_range = "Search radius around those starts in neighbouring frames. Example: ps_range = 5"
+ps_step = "Search step there; 1 searches every position. Example: ps_step = 1"
+th_mse = "Largest block difference still counted as similar; empty derives it from sigma. Example: th_mse = 1200"
+hard_thr = "Hard threshold, 8-bit scale; default 2.7. Example: hard_thr = 2.7"
+matrix = "Colour matrix of YUV input: 2 by size (default), 1 BT.709; 100 for RGB2OPP output. Example: matrix = 100"
+
+[method."bm3d.VFinal"]
+help = "Final pass of V-BM3D across neighbouring frames, refining a first estimate (VBasic then VAggregate output). Its output is an intermediate: follow it with VAggregate (same radius). CPU, slow."
+
+[method."bm3d.VFinal".docs]
+input = "The original noisy clip: Gray, RGB or YUV 4:4:4."
+ref = "The first estimate: VBasic's result after VAggregate; required. Example: ref = basic"
+profile = "Preset: \"fast\" (default), \"lc\", \"np\", \"high\", \"vn\". Example: profile = \"np\""
+sigma = "Noise strength on an 8-bit scale, up to three values. Default 10. Example: sigma = [5, 3, 3]"
+radius = "Frames searched on each side, 1 to 16. Pass the same value to VAggregate. Example: radius = 1"
+block_size = "Block size in pixels, 1 to 64. Example: block_size = 8"
+block_step = "Pixels between processed blocks. Example: block_step = 3"
+group_size = "Most similar blocks stacked together. Example: group_size = 8"
+bm_range = "Search radius in the current frame. Example: bm_range = 9"
+bm_step = "Search step. Example: bm_step = 1"
+ps_num = "Best matches carried to neighbouring frames. Example: ps_num = 2"
+ps_range = "Search radius in neighbouring frames. Example: ps_range = 6"
+ps_step = "Search step there. Example: ps_step = 1"
+th_mse = "Largest block difference still counted as similar; empty derives it from sigma. Example: th_mse = 800"
+matrix = "Colour matrix of YUV input: 2 by size (default); 100 for RGB2OPP output. Example: matrix = 100"
+
+[method."bm3d.VAggregate"]
+help = "Turns the intermediate output of VBasic or VFinal into the denoised picture. Always call it right after each of them, with the same radius."
+
+[method."bm3d.VAggregate".docs]
+input = "The output of VBasic or VFinal."
+radius = "The radius used in VBasic or VFinal; empty reads it from the frames. Example: radius = 1"
+sample = "Output sample type: 0 for 16-bit integer (default), 1 for 32-bit float. Example: sample = 1"
+
+[method."bm3d.RGB2OPP"]
+help = "Converts RGB to the opponent colour space (OPP) BM3D works best in. Run before Basic or VBasic with matrix = 100, and undo with OPP2RGB."
+
+[method."bm3d.RGB2OPP".docs]
+input = "An RGB clip."
+sample = "Output sample type: 0 for 16-bit integer (default), 1 for 32-bit float. Example: sample = 1"
+
+[method."bm3d.OPP2RGB"]
+help = "Converts BM3D's opponent colour space (OPP) back to RGB, after denoising a clip that went through RGB2OPP."
+
+[method."bm3d.OPP2RGB".docs]
+input = "A clip produced by RGB2OPP (and denoised); other clips fail because they lack its marker."
+sample = "Output sample type: 0 for 16-bit integer (default), 1 for 32-bit float. Example: sample = 1"
+
+# ---------------------------------------------------------------- dfttest2 (raw plugin calls)
+
+[method."nlm_ispc.NLMeans"]
+help = "NL-Means denoiser on the CPU (a drop-in for KNLMeansCL). The Denoise node, method Denoise, gentle (NL-Means) with Backend ISPC, runs this with plain settings and handles YUV planes for you. Pick this raw call for one specific channel setup."
+
+[method."nlm_ispc.NLMeans".docs]
+d = "Temporal radius: frames before and after used too; 0 is spatial only, 1 uses three frames. Example: d = 1"
+a = "Search radius: patches are compared within (2a+1) x (2a+1) pixels. Larger is better and much slower. Example: a = 2"
+s = "Patch radius: patches of (2s+1) x (2s+1) pixels are compared. Example: s = 4"
+h = "Strength; larger removes more noise and texture. Default 1.2. Example: h = 0.8"
+channels = "Which planes: \"AUTO\" (default), \"Y\", \"UV\", \"YUV\" (4:4:4 only) or \"RGB\". Example: channels = \"Y\""
+wmode = "Weighting of dissimilar patches: 0 Welsch (default), 1 to 3 bisquare variants that drop them sooner and keep more detail. Example: wmode = 0"
+wref = "Weight of the original pixel relative to the most similar patch; higher keeps more of the original. Example: wref = 1.0"
+rclip = "Clip used to judge similarity (often lightly denoised), while values come from the main clip. Example: rclip = prefiltered"
+
+[method."znedi3.nnedi3"]
+help = "NNEDI3 neural-network line interpolation on the CPU: deinterlaces (one field in, a full frame out) or doubles height. For deinterlacing pick the Deinterlace node, method Deinterlace, smooth edges (NNEDI3); for upscaling or anti-aliasing the Anti-alias node's NNEDI3 methods. Field 2 or 3 doubles the frame rate."
+
+[method."znedi3.nnedi3".docs]
+field = "0 same rate keeping the bottom field, 1 same rate keeping the top field, 2 double rate starting bottom, 3 double rate starting top. A field flag on the frames takes precedence. Example: field = 3"
+dh = "True doubles the height, keeping all input lines (for upscaling); needs field 0 or 1. Example: dh = True"
+planes = "Planes to process; planes left out contain garbage, not the original. Example: planes = [0, 1, 2]"
+nsize = "Area the network looks at: 0 8x6, 1 16x6, 2 32x6, 3 48x6, 4 8x4, 5 16x4, 6 32x4 (default). Use 0 or 4 for upscaling. Example: nsize = 0"
+nns = "Network size: 0 to 4 for 16 to 256 neurons; default 1. Higher is slower and slightly better. Example: nns = 3"
+qual = "1 (default) or 2 networks averaged; 2 is recommended for upscaling. Example: qual = 2"
+etype = "Weights trained for 0 absolute error (default) or 1 squared error. Example: etype = 0"
+pscrn = "Prescreener: 0 off (all pixels through the network, slow), 1 old, 2 to 4 new levels (higher is slower). Default 2, or 1 for float input, which cannot use the new ones. Example: pscrn = 2"
+opt = "True (default) uses the CPU's fastest instructions; False plain code. Example: opt = True"
+int16_prescreener = "True (default) uses 16-bit integer maths in the prescreener, faster; ignored for float input. Example: int16_prescreener = True"
+int16_predictor = "True (default) uses 16-bit integer maths in the network; ignored above 15 bits. Example: int16_predictor = False"
+exp = "Accuracy of the exponential in the network: 0 fastest (default) to 2 most accurate. Example: exp = 2"
+show_mask = "True paints the pixels the network would handle white, to inspect the prescreener. Example: show_mask = True"
+
+[method."sangnom.SangNom"]
+help = "SangNom edge-directed single-field interpolation: a fast deinterlacer or anti-aliaser. For anti-aliasing pick the Anti-alias node's Anti-alias, fast (SangNom); for deinterlacing the Deinterlace node's Deinterlace, fast edges (SangNom). Order 0 doubles the frame rate but needs the clip prepared with SeparateFields and DoubleWeave first."
+
+[method."sangnom.SangNom".docs]
+order = "1 (default) same rate keeping the top field, 2 same rate keeping the bottom field, 0 double rate (feed a SeparateFields then DoubleWeave clip). Example: order = 1"
+dh = "True doubles the height, keeping every input line and interpolating between; all planes are then processed. Example: dh = True"
+aa = "Anti-aliasing strength on an 8-bit scale, 0 to 128, per plane; default 48. Example: aa = [48, 0, 0]"
+
+# ---------------------------------------------------------------- vszip (CPU)
+
+[method."vszip.AdaptiveBinarize"]
+help = "Black-and-white mask by local thresholding (like OpenCV's adaptive threshold): a pixel turns white where it is darker than its blurred surroundings minus c. For line or text masks. 8-bit YUV or Gray only. Simpler global thresholds: the Masks node, Black or white by a threshold (Binarize)."
+
+[method."vszip.AdaptiveBinarize".docs]
+clip2 = "A blurred copy of the clip (same format), which sets each pixel's local threshold. A gaussian blur gives a cleaner mask, a box blur keeps more detail. Example: clip2 = blurred"
+c = "Offset subtracted from the local threshold; higher marks fewer pixels. Default 3. Example: c = 3"
+
+[method."vszip.AdaptiveGrainMask"]
+help = "Mask for adding grain where it shows: high in dark areas, falling off in bright ones, from the brightness plane. Output is a single grey plane. Use it to weight added grain (Deband and Grain node) with a masked merge; the Masks node's Dark-area grain mask (adg_mask) does the same job."
+
+[method."vszip.AdaptiveGrainMask".docs]
+luma_scaling = "How fast the mask falls off with brightness. Higher gives less grain overall; negative values reverse it, so bright areas get more. Default 10. Example: luma_scaling = 8.0"
+
+[method."vszip.Bilateral"]
+help = "Fast bilateral filter: smooths noise while keeping edges, by averaging only nearby pixels of similar value. The Sharpen and Blur node's Blur that keeps edges (bilateral) is friendlier. CPU."
+
+[method."vszip.Bilateral".docs]
+ref = "Clip used to judge which pixels are similar (joint bilateral), while values come from the main clip. Example: ref = guide"
+sigmaS = "Spatial size of the smoothing in pixels; larger smooths wider. Default 3, per plane. Example: sigmaS = 2.0"
+sigmaR = "How different values may be and still be averaged, on a 0 to 1 scale; smaller keeps edges better and smooths less. Default 0.02. Example: sigmaR = 0.03"
+planes = "Planes to process. Example: planes = [0]"
+algorithm = "0 chooses automatically (default), 1 fast approximate method, 2 windowed method whose cost grows with sigmaS. Example: algorithm = 0"
+PBFICnum = "Precision of algorithm 1, 2 to 256; more is slower and more exact. Default 4 to 32 from sigmaR. Example: PBFICnum = 8"
+
+[method."vszip.BilateralDither"]
+help = "Port of AviSynth's Dither_bilateral16: edge-keeping smoothing, mostly used to remove banding (as a debanding blur) at high bit depth. For ready-made debanding pick the Deband and Grain node."
+
+[method."vszip.BilateralDither".docs]
+ref = "Clip used to weight neighbours, while values come from the main clip."
+radius = "Half window size per plane, at least 2; default 16. Chroma is not reduced automatically for subsampled clips. Example: radius = [16, 8, 8]"
+thr = "Range threshold on an 8-bit scale: neighbours closer than this are averaged. Higher smooths more. Default 2.5. Example: thr = 2.0"
+flat = "Weight shape from 0 (peaks at the centre) to 1 (equal weights). Default 0.4. Example: flat = 0.4"
+wmin = "Minimum total weight; higher flattens low-contrast areas less. Default 0. Example: wmin = 1.0"
+subspl = "Sampling: 0 automatic (default), 4 or more sparser and faster, below 4 the full window (slowest, best). Example: subspl = 0"
+planes = "Planes to process; others are copied. Example: planes = [0]"
+
+[method."vszip.BoxBlur"]
+help = "Fast box blur (equal-weight average), same settings as BoxBlur (std). The Sharpen and Blur node's Blur, box (box_blur) is friendlier."
+
+[method."vszip.BoxBlur".docs]
+planes = "Planes to blur. Example: planes = [0]"
+hradius = "Horizontal radius in pixels; 0 skips horizontal blurring. Default 1. Example: hradius = 2"
+hpasses = "Horizontal passes; repeating approaches a gaussian blur. Default 1. Example: hpasses = 2"
+vradius = "Vertical radius in pixels; 0 skips vertical blurring. Default 1. Example: vradius = 2"
+vpasses = "Vertical passes. Default 1. Example: vpasses = 2"
+
+[method."vszip.Checkmate"]
+help = "Reduces dot crawl (crawling dots along colour edges from composite video) spatially and over time. 8-bit only."
+
+[method."vszip.Checkmate".docs]
+thr = "Spatial threshold; higher blends more and may add artefacts, very low can blur lines in still scenes. Default 12. Example: `12`"
+tmax = "Largest change allowed per pixel, 0 to 255; higher is stronger. Default 12. Example: `12`"
+tthr2 = "Temporal blending threshold; 0 (default) turns it off. Raising it can help in fast motion. Example: `8`"
+
+[method."vszip.ColorMap"]
+help = "Paints a grey clip with a false-colour palette (OpenCV colour maps), for viewing masks, depth or difference clips. Input Gray8 only; output RGB."
+
+[method."vszip.ColorMap".docs]
+color = "Palette number, OpenCV order 0 to 21: 0 Autumn, 2 Jet, 4 Rainbow, 11 Hot, 13 Magma, 16 Viridis, 20 Turbo (default). Example: color = 16"
+
+[method."vszip.CombMask"]
+help = "Mask of combed (interlaced-looking) pixels, as TFM computes it; for finding leftover combing after detelecine. 8-bit YUV or Gray."
+
+[method."vszip.CombMask".docs]
+cthresh = "Spatial combing threshold; lower finds fainter combing. Default 6. Example: cthresh = 6"
+mthresh = "Motion threshold: only pixels that changed more than this from the previous frame count. Default 9. Example: mthresh = 9"
+expand = "True (default) also marks the left and right neighbours of combed pixels. Example: expand = False"
+metric = "0 TFM's older metric (default), 1 the decomb metric. Example: metric = 1"
+
+[method."vszip.CombMaskMT"]
+help = "Combing mask, port of AviSynth's MTCombMask. 8-bit YUV or Gray."
+
+[method."vszip.CombMaskMT".docs]
+thY1 = "Combing values below this become 0 (black), 0 to 255, at most thY2. Default 30. Example: thY1 = 20"
+thY2 = "Combing values above this become 255 (white); between thY1 and thY2 a grey ramp. Equal values give a pure black-and-white mask. Default 30. Example: thY2 = 40"
+
+[method."vszip.Compress"]
+help = "Adds MPEG-2 or JPEG compression artefacts (blocking, ringing) on purpose, e.g. for training data or tests. 8-bit Gray or YUV only."
+
+[method."vszip.Compress".docs]
+codec = "0 MPEG-2 (default), 1 JPEG. Example: codec = 1"
+qscale = "MPEG-2 quantiser, 1 to 31; higher gives stronger artefacts. Default 8. Example: qscale = 16"
+quality = "JPEG quality, 1 to 100; lower gives stronger artefacts. Default 50. Example: quality = 30"
+dc_prec = "MPEG-2 DC precision, 0 to 3; higher has less banding. Default 0. Example: dc_prec = 2"
+chroma = "False leaves the colour planes untouched, so only brightness gets artefacts. Example: chroma = False"
+
+[method."vszip.Deband"]
+help = "Fast flash3kyuu-style debanding (smooths banded gradients, optionally adds grain). The Deband and Grain node's Deband (f3k_deband) is friendlier. CPU."
+
+[method."vszip.Deband".docs]
+range = "Distance in pixels to the reference pixels compared, 0 to 255. Larger fixes wider bands. Default 15. Example: range = 15"
+thr = "Detection threshold per plane, 0 to 255: differences below it count as banding and are smoothed. Default 0.99; 0 turns a plane off. Example: thr = [2, 1.5, 1.5]"
+grain = "Grain added afterwards, brightness and colour, 0 to 255; 0 (default) adds none. Example: grain = [16, 0]"
+sample_mode = "Reference pattern: 1 vertical pair, 2 four-point square (default), 3 horizontal pair, 4 average of 1 and 3, 5 to 7 detail-preserving modes using thr1 and thr2. Example: sample_mode = 2"
+seed = "Random seed for reference positions and grain. Example: seed = 1"
+blur_first = "True (default) compares against the averaged references; False needs every reference to be close. Example: blur_first = False"
+dynamic_grain = "True changes the grain pattern every frame. Example: dynamic_grain = True"
+keep_tv_range = "True clamps integer YUV output to limited range. Example: keep_tv_range = True"
+random_algo_ref = "Random generator for reference positions: 0 old, 1 uniform (default), 2 gaussian. Example: random_algo_ref = 1"
+random_algo_grain = "Random generator for grain: 0 old, 1 uniform (default), 2 gaussian. Example: random_algo_grain = 2"
+random_param_ref = "Spread of the gaussian generator for references; only with random_algo_ref = 2. Example: random_param_ref = 1.0"
+random_param_grain = "Spread of the gaussian generator for grain; only with random_algo_grain = 2. Example: random_param_grain = 1.0"
+thr1 = "Detail protection for sample_mode 5 to 7; higher keeps more detail. Defaults to thr. Example: thr1 = [1, 1, 1]"
+thr2 = "Texture protection for sample_mode 5 to 7; higher keeps more texture. Defaults to thr. Example: thr2 = [1, 1, 1]"
+angle_boost = "In sample_mode 7, multiplies the strength on consistent gradients. Default 1.5. Example: angle_boost = 1.5"
+max_angle = "In sample_mode 7, gradient angle threshold, 0 to 1. Default 0.15. Example: max_angle = 0.15"
+
+[method."vszip.Dither"]
+help = "Changes bit depth with a choice of dithering patterns (noise that hides banding). The Convert Format node's Bit depth (depth) is friendlier; pick this for a specific dither type."
+
+[method."vszip.Dither".docs]
+bitdepth = "Target bits: 8 to 16 for integer, 16 or 32 for float; required. Example: bitdepth = 8"
+dither_type = "0 none (round), 1 ordered, 2 blue noise (default), 3 Floyd-Steinberg; 4 to 11 fmtconv's ordered, FilterLite, Stucki, Atkinson, Floyd-Steinberg, Ostromoukhov, void-and-cluster, quasirandom. Example: dither_type = 3"
+sample_type = "0 integer, 1 float; float needs bitdepth 16 or 32. Default float only for 32. Example: sample_type = 0"
+fulls = "True treats the input as full range. Default True for RGB, else False; left out, the clip's range flag passes through. Example: fulls = False"
+fulld = "True makes the output full range; defaults to fulls. Example: fulld = True"
+
+[method."vszip.EEDI3"]
+help = "EEDI3 edge-directed line interpolation, about twice as fast as eedi3m: deinterlaces one field or doubles height, following edges at shallow angles. Slow-ish but sharp on lines. For deinterlacing pick the Deinterlace node's Deinterlace, sharp lines, slow (EEDI3); for anti-aliasing the Anti-alias node's EEDI3 methods. Field 2 or 3 doubles the frame rate."
+
+[method."vszip.EEDI3".docs]
+field = "0 same rate keeping the bottom field, 1 same rate keeping the top field, 2 double rate starting bottom, 3 double rate starting top. Example: field = 1"
+dh = "True doubles the height, keeping all lines; needs field 0 or 1. Example: dh = True"
+alpha = "Weight of neighbourhood similarity, 0 to 1; alpha + beta at most 1. Higher follows edges harder. Default 0.2. Example: alpha = 0.25"
+beta = "Weight against vertical difference, 0 to 1; 1 turns edge following off. Default 0.25. Example: beta = 0.5"
+gamma = "Penalty on changes of direction; higher gives smoother, safer results. Default 20. Example: gamma = 40"
+nrad = "Radius of the similarity check, 0 to 3. Default 2. Example: nrad = 2"
+mdis = "Longest edge connection searched, 1 to 40; higher catches flatter lines and is slower. Default 20. Example: mdis = 20"
+hp = "True also searches half-pixel directions: finer angles, slower. Example: hp = True"
+vcheck = "Reliability check against artefacts: 0 off, 1 weak, 2 medium (default), 3 strong. Example: vcheck = 3"
+vthresh0 = "Threshold of the reliability check; must be above 0 when vcheck is on. Default 32. Example: vthresh0 = 32"
+vthresh1 = "Second threshold of the reliability check. Default 64. Example: vthresh1 = 64"
+vthresh2 = "Third threshold of the reliability check. Default 4. Example: vthresh2 = 4"
+sclip = "Clip giving the fallback value where the check rejects a direction, same format and size as the output; often NNEDI3 output. Example: sclip = nnedi"
+mclip = "Grey mask: interpolate with edge search only where it is non-zero, plain cubic elsewhere (faster). Example: mclip = edges"
+
+[method."vszip.EEDI3H"]
+help = "EEDI3 interpolating columns instead of rows: doubles or fills the width. Used for horizontal anti-aliasing and width upscaling; the Anti-alias node's EEDI3 methods call it for you."
+
+[method."vszip.EEDI3H".docs]
+field = "Which columns are kept: 0 and 1 keep one set at the same rate (like EEDI3's bottom and top field), 2 and 3 alternate at double rate. Example: field = 1"
+dh = "True doubles the width, keeping all columns; needs field 0 or 1. Example: dh = True"
+alpha = "Weight of neighbourhood similarity, 0 to 1; alpha + beta at most 1. Default 0.2. Example: alpha = 0.25"
+beta = "Weight against horizontal difference, 0 to 1. Default 0.25. Example: beta = 0.5"
+gamma = "Penalty on changes of direction; higher is smoother. Default 20. Example: gamma = 40"
+nrad = "Radius of the similarity check, 0 to 3. Example: nrad = 2"
+mdis = "Longest edge connection searched, 1 to 40. Example: mdis = 20"
+hp = "True also searches half-pixel directions. Example: hp = True"
+vcheck = "Reliability check: 0 off to 3 strong, default 2. Example: vcheck = 2"
+vthresh0 = "Threshold of the reliability check. Default 32. Example: vthresh0 = 32"
+vthresh1 = "Second threshold of the reliability check. Default 64. Example: vthresh1 = 64"
+vthresh2 = "Third threshold of the reliability check. Default 4. Example: vthresh2 = 4"
+sclip = "Clip giving the fallback value where the check rejects a direction, same format and size as the output."
+mclip = "Grey mask: edge search only where it is non-zero, cubic elsewhere."
+
+[method."vszip.ImageRead"]
+help = "Loads image files (local paths or http/https addresses) as a clip, one frame per image. The Load Clip node is the usual way to open video; this suits stills."
+
+[method."vszip.ImageRead".docs]
+path = "Image file path, URL, or a list of them; relative paths start at the working folder. Example: path = [\"C:/pics/a.png\", \"C:/pics/b.png\"]"
+validate = "True checks that all listed images match before loading. Example: validate = True"
+
+[method."vszip.Limiter"]
+help = "Clamps pixel values to a range, faster than Limiter (std). The Convert Format node's Clip values to a range (limiter) is friendlier."
+
+[method."vszip.Limiter".docs]
+min = "Lowest allowed value per plane, in the clip's own scale; default the format's minimum. Example: min = [16, 16, 16]"
+max = "Highest allowed value per plane; default the format's maximum. Example: max = [235, 240, 240]"
+tv_range = "True uses limited (TV) range as min and max, faster than typing them. Example: tv_range = True"
+mask = "True treats float colour planes as 0 to 1 instead of -0.5 to 0.5, for mask clips. Example: mask = True"
+planes = "Planes to clamp; others are copied. Example: planes = [0]"
+
+[method."vszip.LimitFilter"]
+help = "Soft-limits how far a filtered clip may move from the source: small changes pass, large ones fade out. Use it to keep a denoise or deband from destroying detail."
+
+[method."vszip.LimitFilter".docs]
+flt = "The filtered clip."
+src = "The source clip before filtering. Example: src = source"
+ref = "Clip used to measure the difference instead of src. Example: ref = source"
+dark_thr = "Largest full-strength change towards darker, 8-bit scale; default 1. Example: dark_thr = 1.5"
+bright_thr = "Largest full-strength change towards brighter, 8-bit scale; default 1. Example: bright_thr = 1.5"
+elast = "Softness: changes up to threshold x elast fade out gradually. Default 2. Example: elast = 2.0"
+planes = "Planes to process; empty means all. Example: planes = [0]"
+
+[method."vszip.MosquitoNR"]
+help = "Removes mosquito noise (the shimmering specks around edges in compressed video). Luma only by default. YUV or Gray."
+
+[method."vszip.MosquitoNR".docs]
+strength = "Blur strength, 0 to 32; 0 passes the clip unchanged. Default 16. Example: `16`"
+restore = "How much of the original coarse content is restored, 0 to 128; 128 (default) replaces it fully, 0 skips restoration. Example: `128`"
+radius = "Blur radius, 1 (faster) or 2 (default, stronger). Example: `1`"
+planes = "Planes to process; Default = brightness (Y) only. Example: Y, U and V"
+
+[method."vszip.PackRGB"]
+help = "Packs 8-bit or 10-bit RGB (RGB24, RGB30) into one 32-bit grey plane per pixel, a layout some players and tools read. Not a picture to view."
+
+[method."vszip.PlaneAverage"]
+help = "Writes the plane's average to the frame property psmAvg (0 to 1), ignoring the listed pixel values; with clipb, also psmDiff, the average difference. For scripts that decide per frame. The picture is unchanged. Compare PlaneStats (std) in Clip Properties."
+
+[method."vszip.PlaneAverage".docs]
+exclude = "Pixel values left out of the average, in the clip's own scale; required. Example: exclude = [0]"
+clipb = "Clip compared against for psmDiff. Example: clipb = other"
+planes = "Planes measured; default [0]. Example: planes = [0]"
+prop = "Prefix of the property names; default \"psm\" gives psmAvg. Example: prop = \"luma\""
+
+[method."vszip.PlaneMinMax"]
+help = "Writes the plane's minimum and maximum to the frame properties psmMin and psmMax, optionally ignoring a share of extreme pixels; with clipb, also psmDiff. The picture is unchanged. Compare PlaneStats (std) in Clip Properties."
+
+[method."vszip.PlaneMinMax".docs]
+minthr = "Share of the darkest pixels ignored, 0 to 1, so stray specks do not set the minimum. Example: minthr = 0.01"
+maxthr = "Share of the brightest pixels ignored, 0 to 1. Example: maxthr = 0.01"
+clipb = "Clip compared against for psmDiff. Example: clipb = other"
+planes = "Planes measured; default [0]. Example: planes = [0]"
+prop = "Prefix of the property names; default \"psm\". Example: prop = \"luma\""
+
+[method."vszip.RFS"]
+help = "Replaces listed frames of one clip with the same frames of another. The Cut and Splice node's Replace frames (replace_ranges) is friendlier."
+
+[method."vszip.RFS".docs]
+clipb = "The clip the replacement frames come from. Example: clipb = fixed"
+frames = "Frame numbers to replace; required. Example: frames = [10, 11, 12]"
+mismatch = "True allows clips of different format. Example: mismatch = True"
+planes = "Planes replaced; others stay from the main clip. Example: planes = [0]"
+
+[method."vszip.SSIMULACRA2"]
+help = "Quality score of a distorted clip against a reference, written per frame as the property SSIMULACRA2: 100 identical, about 90 visually lossless, 70 high, 50 medium, 30 low quality. For comparing encodes or filters."
+
+[method."vszip.SSIMULACRA2".docs]
+reference = "The original clip."
+distorted = "The processed or encoded clip, same size. Example: distorted = encoded"
+
+[method."vszip.XPSNR"]
+help = "XPSNR quality score (PSNR weighted by how visible errors are), written per frame as XPSNR_Y, XPSNR_U, XPSNR_V in dB; higher is better, infinite when identical. For comparing encodes."
+
+[method."vszip.XPSNR".docs]
+reference = "The original clip."
+distorted = "The processed or encoded clip, same size and format. Example: distorted = encoded"
+verbose = "True (default) also prints the average over the frames rendered to the log. Example: verbose = False"
+
+[method."vszip.WNNM"]
+help = "WNNM block-matching denoiser, fewer artefacts than BM3D, very slow. The Denoise node's Denoise, very slow, float (WNNM) wraps it. 32-bit float input only."
+
+[method."vszip.WNNM".docs]
+sigma = "Strength per plane; missing values repeat the last, 0 skips a plane. Default 3. Example: sigma = [3, 1.5]"
+block_size = "Block size in pixels; default 8. Example: block_size = 8"
+block_step = "Pixels between blocks, at most block size; smaller is slower with fewer artefacts. Default 8. Example: block_step = 4"
+group_size = "Similar blocks grouped, at most 256; default 8. Example: group_size = 16"
+bm_range = "Search radius for similar blocks; default 7. Example: bm_range = 7"
+radius = "Temporal radius, 0 (default) to 15. Example: radius = 1"
+ps_num = "Matches carried to neighbouring frames; default 2. Example: ps_num = 2"
+ps_range = "Search radius in neighbouring frames; default 4. Example: ps_range = 4"
+residual = "True subtracts each group's mean before filtering. Example: residual = True"
+adaptive_aggregation = "True (default) weights blocks by their quality when combining. Example: adaptive_aggregation = False"
+rclip = "Clip used for block matching only, same format. Example: rclip = prefiltered"
+
+# ---------------------------------------------------------------- vszipcu (NVIDIA GPU)
+
+[method."vszipcu.Bilateral"]
+help = "Bilateral filter on an NVIDIA GPU: edge-keeping smoothing. Needs an NVIDIA card. The Sharpen and Blur node's Blur that keeps edges (bilateral) is friendlier."
+
+[method."vszipcu.Bilateral".docs]
+sigma_spatial = "Spatial size of the smoothing in pixels, per plane; default 3. Example: sigma_spatial = 2.0"
+sigma_color = "How different values may be and still be averaged, 0 to 1 scale; smaller keeps edges. Default 0.02. Example: sigma_color = 0.03"
+radius = "Window radius per plane; default three times sigma_spatial. Example: radius = 6"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once; more is faster and uses more video memory. Default 4. Example: num_streams = 2"
+use_shared_memory = "1 (default) uses a faster kernel when the tile fits. Example: use_shared_memory = 0"
+block_x = "GPU thread block width; default 32. Example: block_x = 32"
+block_y = "GPU thread block height; default 8. Example: block_y = 8"
+ref = "Clip used to judge similarity, values from the main clip. Example: ref = guide"
+
+[method."vszipcu.BM3Dv2"]
+help = "BM3D denoiser on an NVIDIA GPU, fast; 32-bit float input only. The Denoise node's Denoise, strong (BM3D) (Backend CUDA ZIP) wraps it with presets. For a two-pass result call it twice: first without ref, then with the first result as ref."
+
+[method."vszipcu.BM3Dv2".docs]
+ref = "First estimate (a previous pass): used for block matching and the second, Wiener pass. Example: ref = basic"
+sigma = "Strength per plane; default 3; 0 skips a plane. Example: sigma = [2, 1]"
+block_step = "Pixels between blocks, 1 to 8; smaller is slower and smoother. Default 8. Example: block_step = 4"
+bm_range = "Search radius for similar blocks; default 9. Example: bm_range = 9"
+radius = "Temporal radius; 0 (default) is spatial only. Example: radius = 1"
+ps_num = "Matches carried to neighbouring frames; default 2. Example: ps_num = 2"
+ps_range = "Search radius in neighbouring frames; default 4. Example: ps_range = 4"
+chroma = "True uses colour-aware CBM3D; needs YUV444PS. Example: chroma = True"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once; more is faster and uses more video memory. Default 4. Example: num_streams = 2"
+extractor_exp = "3 or more makes results repeatable; 0 (default) is faster but not exactly repeatable. Example: extractor_exp = 3"
+bm_error_s = "Block difference measure: \"ssd\" (default), \"sad\", \"zssd\", \"zsad\", \"ssd/norm\". Example: bm_error_s = \"sad\""
+transform_2d_s = "Spatial transform: \"dct\" (default), \"haar\", \"wht\", \"bior1.5\". Example: transform_2d_s = \"dct\""
+transform_1d_s = "Transform across the block stack; default \"dct\". Example: transform_1d_s = \"dct\""
+fast_fused = "With radius above 0: True is much faster but uses several times the video memory, and fails if it does not fit. Example: fast_fused = True"
+
+[method."vszipcu.BM3D"]
+help = "BM3D on an NVIDIA GPU that returns an intermediate stacked clip for VAggregate (vszipcu) to finish; for temporal radius above 0. Most users want BM3Dv2 or the Denoise node's Denoise, strong (BM3D). 32-bit float only."
+
+[method."vszipcu.BM3D".docs]
+ref = "First estimate (a previous pass) for block matching and the Wiener pass. Example: ref = basic"
+sigma = "Strength per plane; default 3. Example: sigma = [2, 1]"
+block_step = "Pixels between blocks, 1 to 8. Example: block_step = 4"
+bm_range = "Search radius for similar blocks; default 9. Example: bm_range = 9"
+radius = "Temporal radius; pass the matching clip to VAggregate. Example: radius = 1"
+ps_num = "Matches carried to neighbouring frames. Example: ps_num = 2"
+ps_range = "Search radius in neighbouring frames. Example: ps_range = 4"
+chroma = "True uses CBM3D; needs YUV444PS. Example: chroma = True"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once; more uses more video memory. Example: num_streams = 2"
+extractor_exp = "3 or more makes results repeatable. Example: extractor_exp = 3"
+bm_error_s = "Block difference measure: \"ssd\" (default), \"sad\", \"zssd\", \"zsad\", \"ssd/norm\". Example: bm_error_s = \"ssd\""
+transform_2d_s = "Spatial transform: \"dct\", \"haar\", \"wht\", \"bior1.5\". Example: transform_2d_s = \"dct\""
+transform_1d_s = "Transform across the block stack; default \"dct\". Example: transform_1d_s = \"dct\""
+zero_init = "True (default) zeroes unprocessed planes in the stacked output. Example: zero_init = True"
+fast_fused = "True is faster with several times the video memory; fails if it does not fit. Example: fast_fused = True"
+
+[method."vszipcu.VAggregate"]
+help = "Finishes BM3D (vszipcu) with radius above 0: combines its stacked output into the denoised picture. 32-bit float only."
+
+[method."vszipcu.VAggregate".docs]
+src = "The original clip given to BM3D. Example: src = source"
+planes = "Planes to combine; required. Example: planes = [0, 1, 2]"
+
+[method."vszipcu.Deband"]
+help = "Debanding on an NVIDIA GPU: smooths banded gradients over several passes and adds grain. Needs an NVIDIA card; the Deband and Grain node has CPU debanders."
+
+[method."vszipcu.Deband".docs]
+iterations = "Passes, 0 to 32; 0 adds grain only. Default 1. Example: iterations = 2"
+threshold = "Cut-off; higher debands harder and erodes detail. Default 3. Example: threshold = 2.5"
+radius = "Starting sampling radius in pixels, growing each pass. Default 16. Example: radius = 12"
+grain = "Grain added to hide leftover steps; 0 none. Default 4. Example: grain = 2"
+planes = "Planes to process; default all. Example: planes = [0]"
+dither = "True (default) dithers 8-bit output (first processed plane only). Example: dither = False"
+dither_algo = "0 blue noise (default), 1 Bayer, 2 fixed ordered, 3 white noise. Example: dither_algo = 1"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once; more uses more video memory. Example: num_streams = 2"
+
+[method."vszipcu.DFTTest"]
+help = "DFTTest frequency-domain denoiser on an NVIDIA GPU, with the classic dfttest settings typed directly. The Denoise node's Denoise by frequency (DFTTest) is friendlier."
+
+[method."vszipcu.DFTTest".docs]
+ftype = "0 Wiener (default), 1 hard threshold, 2 multiply by sigma, 3 sigma inside pmin to pmax else sigma2, 4 power-based. Example: ftype = 0"
+sigma = "Strength; default 8. About 4 is light, 16 strong. Ignored when slocation is set. Example: sigma = 4.0"
+sigma2 = "Strength outside pmin to pmax, for ftype 3. Example: sigma2 = 8.0"
+pmin = "Lower power bound for ftype 3 and 4; default 0. Example: pmin = 0.0"
+pmax = "Upper power bound for ftype 3 and 4; default 500. Example: pmax = 500.0"
+sbsize = "Spatial block size; must be 16 here. Example: sbsize = 16"
+sosize = "Block overlap, 0 to 15; more is smoother and slower. Default 12. Example: sosize = 12"
+tbsize = "Frames per block, odd, 1 to 7; 1 is spatial only. Default 3. Example: tbsize = 1"
+swin = "Spatial window: 0 Hanning (default) to 11; 4 is Kaiser. Example: swin = 0"
+twin = "Temporal window, same numbers; default 7 (rectangular). Example: twin = 7"
+sbeta = "Kaiser beta for swin = 4; default 2.5. Example: sbeta = 2.5"
+tbeta = "Kaiser beta for twin = 4; default 2.5. Example: tbeta = 2.5"
+zmean = "True (default) subtracts the block mean before filtering. Example: zmean = True"
+f0beta = "Exponent of the Wiener filter: 1 plain (default), 0.5 square root. Example: f0beta = 1.0"
+slocation = "Strength by frequency as [frequency, sigma, ...] pairs, 0 coarse to 1 finest. Example: slocation = [0.0, 4, 0.5, 8, 1.0, 16]"
+ssx = "Like slocation, horizontal frequencies only. Example: ssx = [0.0, 4, 1.0, 16]"
+ssy = "Like slocation, vertical frequencies only. Example: ssy = [0.0, 4, 1.0, 16]"
+sst = "Like slocation, across frames only. Example: sst = [0.0, 4, 1.0, 8]"
+ssystem = "How slocation values combine: 0 (default) or 1 as in dfttest. Example: ssystem = 0"
+planes = "Planes to process; default all. Example: planes = [0]"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once; more uses more video memory. Example: num_streams = 2"
+
+[method."vszipcu.EEDI3"]
+help = "EEDI3 edge-directed line interpolation on an NVIDIA GPU: deinterlace or double height. Field 2 or 3 doubles the frame rate. The Deinterlace node's Deinterlace, sharp lines, slow (EEDI3) is friendlier."
+
+[method."vszipcu.EEDI3".docs]
+field = "0 or 1 keeps the bottom or top field at the same rate; 2 or 3 double rate starting bottom or top. Example: field = 1"
+dh = "True doubles the height, keeping all lines; needs field 0 or 1. Example: dh = True"
+mdis = "Longest edge connection searched, 1 to 40. Default 20. Example: mdis = 20"
+nrad = "Radius of the similarity check, 0 to 3. Example: nrad = 2"
+alpha = "Weight of neighbourhood similarity, 0 to 1; alpha + beta at most 1. Example: alpha = 0.2"
+beta = "Weight against vertical difference, 0 to 1; 1 turns edge following off. Example: beta = 0.25"
+gamma = "Penalty on direction changes; higher is smoother. Default 20. Example: gamma = 20"
+hp = "True also searches half-pixel directions. Example: hp = True"
+vcheck = "Reliability check: 0 off to 3 strong, default 2. Example: vcheck = 2"
+vthresh0 = "Threshold of the reliability check, above 0. Example: vthresh0 = 32"
+vthresh1 = "Second threshold. Example: vthresh1 = 64"
+vthresh2 = "Third threshold. Example: vthresh2 = 4"
+sclip = "Fallback clip for the reliability check, same size as the output."
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once. Example: num_streams = 2"
+
+[method."vszipcu.EEDI3H"]
+help = "EEDI3 on an NVIDIA GPU interpolating columns: doubles or fills the width, for horizontal anti-aliasing or upscaling."
+
+[method."vszipcu.EEDI3H".docs]
+field = "0 or 1 same rate, 2 or 3 double rate, as in EEDI3 but for columns. Example: field = 1"
+dh = "True doubles the width; needs field 0 or 1. Example: dh = True"
+mdis = "Longest edge connection searched, 1 to 40. Example: mdis = 20"
+nrad = "Radius of the similarity check, 0 to 3. Example: nrad = 2"
+alpha = "Weight of neighbourhood similarity, 0 to 1. Example: alpha = 0.2"
+beta = "Weight against horizontal difference, 0 to 1. Example: beta = 0.25"
+gamma = "Penalty on direction changes. Example: gamma = 20"
+hp = "True also searches half-pixel directions. Example: hp = True"
+vcheck = "Reliability check: 0 off to 3 strong. Example: vcheck = 2"
+vthresh0 = "Threshold of the reliability check. Example: vthresh0 = 32"
+vthresh1 = "Second threshold. Example: vthresh1 = 64"
+vthresh2 = "Third threshold. Example: vthresh2 = 4"
+sclip = "Fallback clip for the reliability check."
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once. Example: num_streams = 2"
+
+[method."vszipcu.FGrain"]
+help = "Realistic film grain on an NVIDIA GPU, simulated from grain particles (a Monte-Carlo model); slow at high quality. 32-bit float only. For simpler grain pick the Deband and Grain node's Add grain (Grainer)."
+
+[method."vszipcu.FGrain".docs]
+num_iterations = "Random samples per pixel; more is cleaner and slower. Default 800. Example: num_iterations = 400"
+grain_radius_mean = "Average grain size in pixels; default 0.1. Example: grain_radius_mean = 0.15"
+grain_radius_std = "Spread of grain sizes; 0 (default) makes all grains equal. Example: grain_radius_std = 0.05"
+sigma = "Blur of the grain model; default 0.8. Example: sigma = 0.8"
+seed = "Random seed; a frame property FGRAIN_SEED_OFFSET is added to it for varying grain. Example: seed = 1"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once. Example: num_streams = 2"
+
+[method."vszipcu.GaussBlur"]
+help = "Gaussian blur on an NVIDIA GPU. The Sharpen and Blur node's Blur, Gaussian (gauss_blur) is friendlier and runs anywhere."
+
+[method."vszipcu.GaussBlur".docs]
+sigma = "Blur size per plane; default 0.5, colour planes scaled for subsampling; 0 copies a plane. Example: sigma = [1.5, 1.0]"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once. Example: num_streams = 2"
+
+[method."vszipcu.NLMeans"]
+help = "NL-Means denoiser on an NVIDIA GPU, fast. The Denoise node's Denoise, gentle (NL-Means) (Backend CUDA) wraps it and handles YUV planes."
+
+[method."vszipcu.NLMeans".docs]
+d = "Temporal radius; 0 is spatial only. Default 1. Example: d = 1"
+a = "Search radius, 1 to 64; larger is better and slower. Default 2. Example: a = 2"
+s = "Patch radius, 0 to 8. Default 4. Example: s = 4"
+h = "Strength, above 0; larger removes more. Default 1.2. Example: h = 0.8"
+channels = "\"auto\" (default), \"Y\", \"UV\", \"YUV\" (4:4:4 only) or \"RGB\". Example: channels = \"Y\""
+wmode = "Weighting of dissimilar patches, 0 Welsch (default) to 3. Example: wmode = 0"
+wref = "Weight of the centre pixel, at least 0. Default 1. Example: wref = 1.0"
+rclip = "Clip used to compute weights, values from the main clip. Example: rclip = prefiltered"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once. Example: num_streams = 2"
+
+[method."vszipcu.NNEDI3"]
+help = "NNEDI3 neural line interpolation on an NVIDIA GPU (weights built in): deinterlace or double height. Field 2 or 3 doubles the frame rate. The Deinterlace node's Deinterlace, smooth edges (NNEDI3) is friendlier (CPU)."
+
+[method."vszipcu.NNEDI3".docs]
+field = "0 or 1 keeps the bottom or top field at the same rate; 2 or 3 double rate starting bottom or top. Example: field = 3"
+dh = "True doubles the height keeping all lines; needs field 0 or 1. Example: dh = True"
+planes = "Planes to process; default all. Example: planes = [0]"
+nsize = "Area the network looks at, 0 to 6 (8x6 to 32x4); default 6. Example: nsize = 0"
+nns = "Network size, 0 to 4 for 16 to 256 neurons; default 1. Example: nns = 3"
+qual = "1 (default) or 2 network passes averaged. Example: qual = 2"
+etype = "Weights for 0 absolute or 1 squared error. Example: etype = 0"
+pscrn = "Prescreener, 0 off to 4; default 2. Example: pscrn = 2"
+device_id = "Which NVIDIA GPU, from 0. Example: device_id = 0"
+num_streams = "Frames processed at once. Example: num_streams = 2"

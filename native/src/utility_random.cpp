@@ -14,15 +14,12 @@ namespace {
 namespace py = pybind11;
 using O = py::object;
 using graphpy::compare;
+using graphpy::steal;
 
-O owned(PyObject *value) {
-    if (!value) throw py::error_already_set();
-    return py::reinterpret_steal<O>(value);
-}
-O add(const O &a, const O &b) { return owned(PyNumber_Add(a.ptr(), b.ptr())); }
-O sub(const O &a, const O &b) { return owned(PyNumber_Subtract(a.ptr(), b.ptr())); }
+O add(const O &a, const O &b) { return steal(PyNumber_Add(a.ptr(), b.ptr())); }
+O sub(const O &a, const O &b) { return steal(PyNumber_Subtract(a.ptr(), b.ptr())); }
 O as_int(const O &value) {
-    return owned(PyObject_CallOneArg(reinterpret_cast<PyObject *>(&PyLong_Type), value.ptr()));
+    return steal(PyObject_CallOneArg(reinterpret_cast<PyObject *>(&PyLong_Type), value.ptr()));
 }
 bool instance(const O &value, const O &type) {
     const int result = PyObject_IsInstance(value.ptr(), type.ptr());
@@ -41,13 +38,13 @@ O source_bytes(O source, const O &seed_type) {
         // Preserve an explicit str subclass's encode protocol as in the source.
         if (!PyUnicode_CheckExact(source.ptr()))
             return source.attr("encode")(py::arg("errors") = "backslashreplace");
-        return owned(PyUnicode_AsEncodedString(source.ptr(), "utf-8", "backslashreplace"));
+        return steal(PyUnicode_AsEncodedString(source.ptr(), "utf-8", "backslashreplace"));
     }
     if (instance(source, seed_type)) source = source.attr("value");
     const O integer = as_int(source);
     if (instance(source, type_object(PyLong_Type)) || compare(source, integer, Py_EQ)) {
         const O bits = integer.attr("bit_length")();
-        const O bytes = add(owned(PyNumber_FloorDivide(bits.ptr(), py::int_(8).ptr())), py::int_(1));
+        const O bytes = add(steal(PyNumber_FloorDivide(bits.ptr(), py::int_(8).ptr())), py::int_(1));
         // Python's public bigint primitive packs unbounded signed two's-complement
         // integers without narrowing to an implementation-sized C integer.
         return integer.attr("to_bytes")(bytes, py::arg("byteorder") = "big", py::arg("signed") = true);
@@ -110,8 +107,8 @@ O below(const O &generator, const O &width) {
 O inclusive(const O &generator, const O &minimum, const O &maximum) {
     // randint: a and b through operator.index (a float raises TypeError and nothing
     // warns), then the empty-range check on those ints, then a + _randbelow(b - a + 1).
-    const O first = owned(PyNumber_Index(minimum.ptr()));
-    const O last = owned(PyNumber_Index(maximum.ptr()));
+    const O first = steal(PyNumber_Index(minimum.ptr()));
+    const O last = steal(PyNumber_Index(maximum.ptr()));
     if (compare(last, first, Py_LT))
         graphpy::raise(PyExc_ValueError, py::str("empty range in randint({}, {})").attr("format")(first, last));
     return add(first, below(generator, add(sub(last, first), py::int_(1))));

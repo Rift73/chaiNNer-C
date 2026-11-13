@@ -106,35 +106,42 @@ def image_diff_node(
 ) -> tuple[np.ndarray, float, float, int]:
     assert a.shape == b.shape, "Images must have same dimensions and color depth"
 
+    # Each pass writes into an array of its own that nothing reads again, where it can:
+    # a fresh full-size array costs about as much as the arithmetic on it.
     signed = a - b
-    difference = np.abs(signed)
+    if mode is DiffMode.SIGNED:
+        difference = np.abs(signed)
+    else:
+        difference = np.abs(signed, out=signed)
     largest = difference
     if difference.ndim == 3:
         # Plane by plane: a reduce over the last axis runs NumPy's loop once per pixel.
-        largest = difference[:, :, 0]
-        for channel in range(1, difference.shape[2]):
-            largest = np.maximum(largest, difference[:, :, channel])
+        largest = np.maximum(difference[:, :, 0], difference[:, :, 1])
+        for channel in range(2, difference.shape[2]):
+            np.maximum(largest, difference[:, :, channel], out=largest)
 
     # A difference of n levels between 8-bit images is n within float32's rounding, so
     # it is compared after the rounding that the Max Difference output gets too.
     if tolerance == 0:
         different = largest > 0
     else:
-        different = np.round(largest * 255, 4) > tolerance
+        levels = largest * 255
+        different = np.round(levels, 4, out=levels) > tolerance
+
+    max_difference = round(float(np.max(largest)) * 255, 4)
+    mean_difference = round(float(np.mean(difference, dtype=np.float64)) * 255, 4)
 
     c = get_h_w_c(a)[2]
     if mode is DiffMode.MASK:
         image = different.astype(np.float32)
     elif mode is DiffMode.SIGNED:
-        image = 0.5 + (signed[:, :, :3] if c == 4 else signed) * amplify / 2
+        image = (signed[:, :, :3] if c == 4 else signed) * amplify
+        image /= 2
+        image += 0.5
     elif c == 4:
-        image = np.maximum(difference[:, :, :3], difference[:, :, 3:4]) * amplify
+        image = np.maximum(difference[:, :, :3], difference[:, :, 3:4])
+        image *= amplify
     else:
-        image = difference * amplify
+        image = np.multiply(difference, amplify, out=difference)
 
-    return (
-        image,
-        round(float(np.max(largest)) * 255, 4),
-        round(float(np.mean(difference, dtype=np.float64)) * 255, 4),
-        int(np.count_nonzero(different)),
-    )
+    return image, max_difference, mean_difference, int(np.count_nonzero(different))

@@ -13,6 +13,7 @@ from api import NodeContext
 from nodes.impl.native_analysis import mean as native_mean
 from nodes.impl.native_graph import graph
 from nodes.impl.native_tensors import cast_numpy, interpolate_numpy
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.onnx.utils import safely_optimize_onnx_model
@@ -102,6 +103,10 @@ def interpolate_models_node(
     b: OnnxModel,
     amount: int,
 ) -> tuple[OnnxModel, int, int]:
+    # 0 and 100 return a model as it is, a bundle too.
+    if 0 < amount < 100:
+        for model in (a, b):
+            rdual_bundle.refuse(model, "Interpolate Models")
     # The mix puts the interpolated weights into B's graph; when the two precisions
     # differ, ONNX Runtime refused the result with a bare type error.
     if 0 < amount < 100 and a.info.dtype != b.info.dtype:

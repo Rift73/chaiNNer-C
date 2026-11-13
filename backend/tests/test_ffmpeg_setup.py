@@ -602,6 +602,32 @@ def test_a_build_the_user_replaced_is_kept_and_logged_once(
     ]
 
 
+def test_an_ffmpeg_whose_files_cannot_be_hashed_stays_in_use(
+    tmp_path: Path,
+    download: Download,
+    serve: Serve,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    # an older build this program installed, which a scanner holds open
+    put(
+        tmp_path,
+        "0",
+        {"version": "0", "platform": PLATFORM, "sha256": sha256_of("0")},
+    )
+
+    def locked(file: io.BufferedReader, digest: str) -> hashlib._Hash:
+        raise PermissionError(errno.EACCES, "locked", file.name)
+
+    monkeypatch.setattr(hashlib, "file_digest", locked)
+    with caplog.at_level(logging.WARNING):
+        env = FFMpegEnv.get_integrated(tmp_path)
+
+    assert download.count == 0
+    assert Path(env.ffmpeg).read_bytes() == executable(FFMPEG_NAME, "0")
+    assert [r for r in caplog.records if "Keeping" in r.message]
+
+
 def test_an_ffmpeg_without_marker_the_user_put_there_is_kept(
     tmp_path: Path, download: Download, serve: Serve, hashed: list[str]
 ):

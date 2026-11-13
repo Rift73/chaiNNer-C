@@ -1,4 +1,4 @@
-"""The native run engine's whole-chain differential (native/local/instant-exec/DESIGN.md section 2, amendment A6).
+"""The native run engine's whole-chain differential.
 
 A chain runs in this process through process.Executor (the oracle) and through the native engine
 (native_executor.NativeExecutor) on the same inputs, each executor as server.py's /run drives it (an error becomes
@@ -13,10 +13,10 @@ the execution-error event, after the run's own events). The two runs must agree:
   exact; times, ETAs and traces left out). The oracle runs with every broadcast sent (its LatestBroadcasts would
   drop a node's pending preview under load, timing-dependently), so the engine's coalesced broadcasts are judged
   against all of them;
-and the engine's events must keep the order invariants of amendment A6 (order_violations): chain-start first, the
-execution error last, each node's start before its finish, a node fed only through lazy inputs running between the
-start and finish of one of its reader's executions (at most once in each), each item's side-effect nodes finishing before the item's node-progress, and a writer's
-file complete before its finish (checked when the event is queued).
+and the engine's events must keep the order invariants (order_violations): chain-start first, the execution error
+last, each node's start before its finish, a node fed only through lazy inputs running between the start and finish
+of one of its reader's executions (at most once in each), each item's side-effect nodes finishing before the item's
+node-progress, and a writer's file complete before its finish (checked when the event is queued).
 """
 
 from __future__ import annotations
@@ -56,12 +56,11 @@ from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
 
 KINDS = ("python", "native")
 
-# The owner's stand-in's ruling P7 (final review 1, H1): the native engine's compact (C-contiguous) images are the
-# reference; a reduction depends on the pixel values and shape only. Downstream of a NumPy view (a crop, a split
-# channel) the Python executor's reductions may differ in the last digit or a zero's sign. Per layout chain of
-# native/tests/test_engine_differential.py, the mismatches the oracle's run is recorded to give; any other fails.
-# Lens Blur into Image Statistics agrees: the statistics take one channel, and the review's difference was a
-# multi-channel call no chain makes.
+# The native engine's compact (C-contiguous) images are the reference; a reduction depends on the pixel values and
+# shape only. Downstream of a NumPy view (a crop, a split channel) the Python executor's reductions may differ in the
+# last digit or a zero's sign. Per layout chain of native/tests/test_engine_differential.py, the mismatches the
+# oracle's run is recorded to give; any other fails. Lens Blur into Image Statistics agrees: the statistics take one
+# channel, and only a multi-channel call (which no chain makes) differed.
 LAYOUT_DIFFERENCES: dict[str, list[str]] = {
     "crop-statistics": [
         "files differ: ['stats_0_255_118.6884.png', 'stats_0_255_118.6885.png']",
@@ -374,7 +373,7 @@ def _occurrences(events: list[dict[str, Any]]) -> dict[str, list[list[int | None
 
 
 def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
-    """The A6 order invariants the events break (none: an empty list)."""
+    """The order invariants the events break (none: an empty list)."""
     violations: list[str] = []
     if not events or events[0]["event"] != "chain-start":
         violations.append("chain-start is not the first event")
@@ -390,12 +389,7 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
                 )
             elif finish is not None and finish < start:
                 violations.append(f"{node_id}: node-finish before node-start")
-    failed = bool(errors) or any(
-        "Errors occurred during iteration" in str(e["data"].get("exception", ""))
-        for e in events
-        if e["event"] == "execution-error"
-    )
-    if failed:
+    if errors:
         return violations
     # A regular node fed only through lazy inputs of one reader runs inside one of that reader's executions, at most
     # once in each: a reader that does not read it (Save Image skipping an existing file, a Conditional's untaken

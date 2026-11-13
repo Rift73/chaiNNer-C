@@ -1,5 +1,5 @@
 These two Python node modules are unmodified snapshots from the original chaiNNer
-checkout. Differential tests invoke the pinned OpenCV 4.8 runtime independently
+checkout. Differential tests invoke the tested stack's OpenCV 5.0 independently
 of the new kernels and require identical byte images.
 
 The inpainting reference is well-defined for tested images with both dimensions

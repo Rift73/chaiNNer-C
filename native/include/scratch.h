@@ -1,4 +1,4 @@
-/* The shared scratch pool (SP4b D10, spec 4.5), built from resample_filters.c's
+/* The shared scratch pool, built from resample_filters.c's
  * workspace lease: CN_SCRATCH_SLOTS slots, each leased exclusively by one call and
  * retaining at most CN_SCRATCH_RETAIN_BYTES when idle. A lease takes, under a short
  * lock, the smallest idle slot that holds the request, else the smallest idle slot,

@@ -7,9 +7,7 @@ The original node bodies explicitly bind pre-port resize/gradient helpers.
 
 from __future__ import annotations
 
-import ast
 import importlib.util
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from runpy import run_path
@@ -17,6 +15,7 @@ from runpy import run_path
 import numpy as np
 import pytest
 import reference_gradients
+from node_bodies import load_body
 
 from nodes.impl import gradients, native_geometry
 from nodes.impl.color.color import Color
@@ -24,26 +23,6 @@ from nodes.impl.color.color import Color
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = Path(__file__).parent
 BASE = ROOT / "backend/src/packages/chaiNNer_standard"
-
-
-def load_node(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        item
-        for item in tree.body
-        if not isinstance(item, ast.ImportFrom)
-        or (
-            item.level == 0
-            and item.module not in {"api", "nodes.groups"}
-            and not (item.module or "").startswith("nodes.properties")
-        )
-    ]
-    for item in tree.body:
-        if isinstance(item, ast.FunctionDef):
-            item.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
 
 
 def load_helper(name, path):
@@ -69,19 +48,19 @@ PATHS = {
     "create_checkerboard": "image/create_images/create_checkerboard.py",
     "create_color": "image/create_images/create_color.py",
 }
-ACTUAL = {name: load_node(BASE / path) for name, path in PATHS.items()}
+ACTUAL = {name: load_body(BASE / path) for name, path in PATHS.items()}
 ORIGINAL = {
-    name: load_node(TESTS / "reference_color_ops" / (name + ".py"))
+    name: load_body(TESTS / "reference_color_ops" / (name + ".py"))
     for name in ("metal_to_specular", "specular_to_metal")
 }
-ORIGINAL["premultiplied_alpha"] = load_node(
+ORIGINAL["premultiplied_alpha"] = load_body(
     TESTS / "reference_adjustments/premultiplied_alpha.py"
 )
-ORIGINAL["quantize_to_reference"] = load_node(
+ORIGINAL["quantize_to_reference"] = load_body(
     TESTS / "reference_filters/quantize/quantize_to_reference.py"
 )
-ORIGINAL["create_gradient"] = load_node(TESTS / "reference_generation/gradient_node.py")
-ORIGINAL["create_checkerboard"] = load_node(
+ORIGINAL["create_gradient"] = load_body(TESTS / "reference_generation/gradient_node.py")
+ORIGINAL["create_checkerboard"] = load_body(
     TESTS / "reference_generation/checkerboard.py"
 )
 for _name in ("metal_to_specular", "specular_to_metal"):

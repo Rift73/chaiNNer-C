@@ -1,4 +1,4 @@
-/* cn_normal_output's job and per-pixel sequence, moved from color_ops.c (SP4b Task 8).
+/* cn_normal_output's job and per-pixel sequence, moved from color_ops.c.
  * Shared by that unit and the 8-lane unit color_avx2.c: normal_pixels and the NaN
  * outputs' rule, static helpers compiled into each including unit. Both includers use
  * them: color_ops.c for every pixel below the AVX2 level, color_avx2.c for a chunk's

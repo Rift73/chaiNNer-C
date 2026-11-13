@@ -1,4 +1,4 @@
-"""Item window (SP3): when a generator group may read items ahead of its commit, and
+"""Item window: when a generator group may read items ahead of its commit, and
 the engine that computes later items' pure CPU nodes ahead into per-item stores."""
 
 from __future__ import annotations
@@ -19,20 +19,20 @@ from api import NodeId
 from nodes.impl.execution_cleanup import await_owned_node
 from progress_controller import ProgressToken
 
-# Developer-only override of K (spec 4.2): 1 = sequential; unset or invalid = auto.
+# Developer-only override of K: 1 = sequential; unset or invalid = auto.
 ITEM_WINDOW_VARIABLE = "CHAINNER_C_ITEM_WINDOW"
-# Developer-only (SP3b spec 4.6): 1 = every group keeps the serial producer.
+# Developer-only: 1 = every group keeps the serial producer.
 SERIAL_PRODUCER_VARIABLE = "CHAINNER_C_SERIAL_PRODUCER"
 
 
 def serial_producer() -> bool:
     """Whether every group keeps the serial producer: only the value "1" asks for it,
-    and any other value is ignored (SP3b spec 4.6)."""
+    and any other value is ignored."""
     return os.environ.get(SERIAL_PRODUCER_VARIABLE) == "1"
 
 
 def engine_jobs(pool_size: int) -> int:
-    """P: concurrent engine pool jobs, the producer's advance included (spec 4.2).
+    """P: concurrent engine pool jobs, the producer's advance included.
 
     Two pool threads always stay free for the commit path; the advance it waits for
     may take one of them.
@@ -41,7 +41,7 @@ def engine_jobs(pool_size: int) -> int:
 
 
 def memory_budget() -> int:
-    """B: 25 % of the memory available now (spec 4.2)."""
+    """B: 25 % of the memory available now."""
     return psutil.virtual_memory().available // 4
 
 
@@ -57,8 +57,8 @@ def output_nbytes(values: Iterable[object]) -> int:
 def window_size(cpus: int) -> tuple[int, str]:
     """The window size K and its reason: a valid override, else clamp(cpus // 4, 6, 8).
 
-    The bounds are the K-sweep's K* (the smallest K within 2 % of the best geometric
-    mean) at 8 CPUs (6) and at 32 CPUs (8) (spec 5.4).
+    The bounds are the smallest K within 2 % of the best geometric mean of a sweep
+    over K, at 8 CPUs (6) and at 32 CPUs (8).
     """
     value = os.environ.get(ITEM_WINDOW_VARIABLE, "")
     if value.isascii() and value.isdigit() and int(value) >= 1:
@@ -90,7 +90,7 @@ class Stored:
 class Candidate:
     """A node that may run ahead, and its iterated, non-generator inputs.
 
-    prepare: the candidate is the node's prepare phase (SP3-P9), not the node itself;
+    prepare: the candidate is the node's prepare phase, not the node itself;
     the commit path takes its result with take_prepared.
     serial: the node runs ahead only for a look-ahead that waits for it, one slot at a
     time in slot order (never while it runs or may still run in an earlier slot), so
@@ -105,7 +105,7 @@ class Candidate:
 
 @dataclass(frozen=True)
 class Phases:
-    """A side-effect node's two phases (SP3-P9).
+    """A side-effect node's two phases.
 
     prepare receives the inputs the node would, enforced, a lazy input as the value it
     produces: prepare(inputs) for a regular node, prepare(collector, inputs) for a
@@ -131,7 +131,7 @@ def register_phases(
     commit: Callable[..., object],
 ) -> None:
     """Declare a side-effect node's prepare and commit phases; its module calls this
-    once at import (SP3-P9)."""
+    once at import."""
     _PHASES[schema_id] = Phases(prepare, commit)
 
 
@@ -142,7 +142,7 @@ def node_phases(schema_id: str) -> Phases | None:
 
 @dataclass
 class Prepared:
-    """A prepare's value, taken for its node's commit (SP3-P9)."""
+    """A prepare's value, taken for its node's commit."""
 
     value: object
     waited: bool = False  # the commit path awaited the prepare in flight
@@ -155,10 +155,10 @@ class Prepared:
 
 
 class ItemPlanner(Protocol):
-    """Which nodes run ahead for a later slot, and their jobs (spec 4.4).
+    """Which nodes run ahead for a later slot, and their jobs.
 
     candidates: the nodes that may run ahead, in topological order, then the prepare
-    phases of side-effect nodes (spec 4.7).
+    phases of side-effect nodes.
     eligible: whether a node may run ahead for the slot whose generator values and
     store these are.
     job: the pool job computing that node (or its prepare) for that slot (the slot
@@ -189,18 +189,18 @@ class ItemPlanner(Protocol):
 
 @dataclass(frozen=True)
 class SlotGenerator:
-    """One generator of the group, as the producer advances it (spec 4.3).
+    """One generator of the group, as the producer advances it.
 
     advance is the loop's own advance: it returns the item's output, returns None
     when the generator is exhausted, and raises the item's error. An inline
     generator (Range) is advanced on the loop thread, as the loop does.
 
-    describe and materialize split advance in two phases (SP3b spec 4.2): describe
+    describe and materialize split advance in two phases: describe
     returns the item's token, returns None when the generator is exhausted, or raises
     the item's error; materialize(token) returns the item's output or raises its
     error. A window over this generator alone, not inline, with both, describes
     serially and materializes as engine jobs. split: describe only names the item and
-    materialize decodes it (Load Images), holding transient buffers too (spec 4.4).
+    materialize decodes it (Load Images), holding transient buffers too.
     """
 
     node_id: NodeId
@@ -279,7 +279,7 @@ class _Item:
     advance_bytes: int = 0
     store_bytes: int = 0
     peak: int = 0  # the most advance plus store bytes held, taken results included
-    # The two-phase producer (SP3b): the slot's token from its describe until its
+    # The two-phase producer: the slot's token from its describe until its
     # materialize starts, that materialize's pool future, and whether the slot's
     # outcomes are resolved (by its describe or its materialize).
     token: object = None
@@ -288,30 +288,30 @@ class _Item:
 
 
 class ItemWindow:
-    """Per-item stores of a generator group's later items (spec 4.1).
+    """Per-item stores of a generator group's later items.
 
     From the first slot it begins, one serialized producer advances the group's
     generators up to size - 1 slots ahead of the committing slot, in the loop's
-    per-slot pattern (spec 4.3, SP3-P2); the commit path takes each advance from
+    per-slot pattern; the commit path takes each advance from
     it. A group of one generator that is not inline and carries describe and
-    materialize is produced in two phases instead (SP3b spec 4.2): the producer
+    materialize is produced in two phases instead: the producer
     describes slots serially, and each described slot's materialize is an engine
     job, the slot's first; the slot's outcome is its materialize's, or its
     describe's error or exhaustion. For the slots after the committing one, the
-    engine computes the planner's eligible nodes into per-slot stores (spec 4.4).
+    engine computes the planner's eligible nodes into per-slot stores.
     At most `jobs` (P) engine pool jobs run at once, the producer's advance (or
     describe) and materializations included, plus the advance (or describe, then
     materialize) the commit path waits for; the oldest slot's jobs go first. A slot
     beyond the one the commit path waits for is produced only while the in-flight
-    bytes plus the per-item estimate stay within the budget (spec 4.2, SP3-P5);
+    bytes plus the per-item estimate stay within the budget;
     with a split generator, a slot counts twice the estimate until its outcome is
-    resolved, and so does the admission (SP3b spec 4.4). The commit path takes a
+    resolved, and so does the admission. The commit path takes a
     node's result from the store of the slot it commits, or awaits its job in
     flight, instead of running its pool job. For a side-effect node with a prepare
-    phase, it takes the prepared value to commit with (spec 4.7).
+    phase, it takes the prepared value to commit with.
 
     While the run is paused or stopped, nothing starts but the slot the commit path
-    waits for; work in flight finishes (spec 4.5).
+    waits for; work in flight finishes.
 
     A node on the commit path may look ahead (peek): the window then produces a later
     slot, and computes there the node feeding the look-ahead, as it produces the slot
@@ -347,7 +347,7 @@ class ItemWindow:
         self._end = end
         self._context_nodes = context_nodes
         self._generators = tuple(generators)
-        # The two-phase producer's generator (SP3b P3), or None: the serial producer.
+        # The two-phase producer's generator, or None: the serial producer.
         only = self._generators[0] if len(self._generators) == 1 else None
         self._phased = (
             only
@@ -398,40 +398,40 @@ class ItemWindow:
 
     @property
     def items(self) -> int:
-        """Slots the commit path began with the window open (SP3-P11)."""
+        """Slots the commit path began with the window open."""
         return self._items
 
     @property
     def advanced_ahead(self) -> int:
-        """Slots whose production started beyond the committing slot (SP3-P11)."""
+        """Slots whose production started beyond the committing slot."""
         return self._advanced_ahead
 
     @property
     def jobs_started(self) -> int:
-        """Engine node jobs submitted (SP3-P11)."""
+        """Engine node jobs submitted."""
         return self._jobs_started
 
     @property
     def materialized(self) -> int:
-        """Materialize jobs started (SP3b P7)."""
+        """Materialize jobs started."""
         return self._materialized
 
     @property
     def replayed(self) -> int:
         """take_node calls served by a completed result, and prepared values their
-        commit used that were complete when taken (SP3-P11)."""
+        commit used that were complete when taken."""
         return self._replayed
 
     @property
     def awaited(self) -> int:
         """take_node calls that waited for a job in flight, and prepared values their
-        commit used that it waited for (SP3-P11)."""
+        commit used that it waited for."""
         return self._awaited
 
     @property
     def discarded(self) -> int:
         """Results never taken: dropped by release or close, or late; and prepared
-        values never used: None, or left by their commit (SP3-P11)."""
+        values never used: None, or left by their commit."""
         return self._discarded
 
     def begin(self, slot: int) -> None:
@@ -515,7 +515,7 @@ class ItemWindow:
         if not outcomes.done():
             self._wanted = slot
             self._pump()
-            # In flight (P10): the slot's serial advance, its describe, or its
+            # In flight: the slot's serial advance, its describe, or its
             # materialize, which the pump started unless closing. Every in-flight
             # producer resolves its slot, closing or not (a describe that returns
             # once closing began, with this RuntimeError), so the take waits for it.
@@ -549,8 +549,8 @@ class ItemWindow:
     async def take_node(self, node_id: NodeId) -> tuple[object, float]:
         """This slot's result for the node, as its pool job would return or raise it.
 
-        A stored result is replayed and a stored error raised, so the node runs once
-        (spec 4.5). A job in flight, or done before its callback stored it, is taken
+        A stored result is replayed and a stored error raised, so the node runs once.
+        A job in flight, or done before its callback stored it, is taken
         from its slot and its own future gives the result or raises the error (the
         object a store would hold), so nothing is read from a store the callback has
         not filled yet.
@@ -589,7 +589,7 @@ class ItemWindow:
         return output, seconds
 
     async def take_prepared(self, node_id: NodeId) -> Prepared | None:
-        """This slot's prepared value for the node, to commit with (spec 4.7).
+        """This slot's prepared value for the node, to commit with.
 
         None runs the node whole: no prepare phase, nothing prepared for this slot (not
         eligible, or not started before the commit path came), a prepare that returned
@@ -649,8 +649,8 @@ class ItemWindow:
 
     async def close(self) -> None:
         """Stop producing, wait for the producer, every started materialization and
-        every started job, released slots' jobs included, then free every store (spec
-        4.5); a queued materialization never starts. Idempotent.
+        every started job, released slots' jobs included, then free every store; a
+        queued materialization never starts. Idempotent.
 
         A job's error belongs to its slot, where the commit path meets it, so the
         drain only waits, and it holds no result: later items' outputs are freed
@@ -693,7 +693,7 @@ class ItemWindow:
         return outcomes
 
     def _pump(self) -> None:
-        """Admission (spec 4.2): start the advance the commit path waits for (or its
+        """Admission: start the advance the commit path waits for (or its
         describe, then its materialize), then advances (describes), materializations
         and jobs while fewer than P run.
 
@@ -880,7 +880,7 @@ class ItemWindow:
 
     def _in_flight(self) -> int:
         """Bytes of the produced, unreleased slots, each counted at least at E; with a
-        split generator, at 2E until its outcome is resolved (SP3b spec 4.4)."""
+        split generator, at 2E until its outcome is resolved."""
         return sum(
             2 * self._estimate
             if self._split and not item.resolved
@@ -935,7 +935,7 @@ class ItemWindow:
         self._track(self._advancing)
 
     def _start_materialize(self, slot: int) -> None:
-        """Materialize a described slot as an engine job (SP3b spec 4.2)."""
+        """Materialize a described slot as an engine job."""
         assert self._phased is not None and self._phased.materialize is not None
         item = self._slots[slot]
         token, item.token = item.token, None  # the call holds it from here
@@ -974,7 +974,7 @@ class ItemWindow:
         flight: _Flight,
         future: asyncio.Future[None],
     ) -> None:
-        """Store a finished job's result, or what it raised (spec 4.5: only the failing
+        """Store a finished job's result, or what it raised (only the failing
         node stores its error), in its slot, unless the commit path took the job. A
         result for a released slot is dropped."""
         self._running -= 1
@@ -1063,7 +1063,7 @@ class ItemWindow:
         self._pump()
 
     async def _describe(self, slot: int) -> None:
-        """Describe one slot (SP3b spec 4.2): its token queues the slot's materialize;
+        """Describe one slot: its token queues the slot's materialize;
         exhaustion or an error is the slot's outcome, and the slot has none. A token
         that arrives once closing began, or for a released slot, is never materialized:
         the slot's outcome is then take_advance's RuntimeError. So a describe always
@@ -1090,7 +1090,7 @@ class ItemWindow:
 
     def _resolve(self, slot: int, outcome: _Outcome) -> None:
         """Record the two-phase generator's outcome in the slot, as _produce records
-        an advance's (spec 4.3). _ended stops describes only: a described slot is
+        an advance's. _ended stops describes only: a described slot is
         still materialized unless Stop or close."""
         source = self._phased
         assert source is not None
@@ -1146,7 +1146,7 @@ def read_ahead_blocker(
     sources: Sequence[tuple[NodeId, Sequence[Path] | None]],
     directories: Sequence[tuple[NodeId, Path | None]],
 ) -> str | None:
-    """The first reason the group must not read ahead, or None when it may (spec 4.3).
+    """The first reason the group must not read ahead, or None when it may.
 
     sources: each generator with the files it reads per item (None = unknown).
     directories: each file-writing node with its base directory (None = unresolved).

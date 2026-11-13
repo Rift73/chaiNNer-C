@@ -1,4 +1,4 @@
-"""Run U3-3's real-use CPU pass against a package (Consult 6 P3).
+"""Run the real-use CPU pass against a package.
 
 Launch. The package's chaiNNer.exe starts as a child this tool owns: created
 suspended in a kill-on-close job, so every process it starts is in the job, and
@@ -171,9 +171,9 @@ CLOSE_METHOD = (
     "Process.CloseMainWindow() does"
 )
 # The tool's own settings, recorded, and the ones the launch sets. The app
-# inherits CUDA_VISIBLE_DEVICES and VK_LOADER_DRIVERS_DISABLE (U3-3's launch is a
-# CPU launch by design; U4's runs without them) but not PYTHONDONTWRITEBYTECODE:
-# a user's launch writes bytecode, and the pass is a user's launch (Consult 8 R-i).
+# inherits CUDA_VISIBLE_DEVICES and VK_LOADER_DRIVERS_DISABLE (the pass is a
+# CPU launch by design) but not PYTHONDONTWRITEBYTECODE:
+# a user's launch writes bytecode, and the pass is a user's launch.
 TOOL_ENVIRONMENT = (
     "PYTHONDONTWRITEBYTECODE",
     "CUDA_VISIBLE_DEVICES",
@@ -184,8 +184,8 @@ LAUNCH_ENVIRONMENT = ("TEMP", "TMP", "PIP_REQUIRE_VIRTUALENV", *TOOL_ENVIRONMENT
 # What a launch may change at the package ROOT, as tree_state keys (a directory
 # ends in "/" and covers what is below it). Frozen: an addition is a consult with
 # its evidence. The same names below the root are not admitted.
-# - logs/, backend-storage/ and settings.json: Consult 6 P2 and P3.
-# - Chromium's profile (Consult 8 R-i): in portable mode the packaged main.js sets
+# - logs/, backend-storage/ and settings.json.
+# - Chromium's profile: in portable mode the packaged main.js sets
 #   userData to the package directory (resources/app/.vite/build/main.js:
 #   app.setPath("userData",zs())), and out\chaiNNer-C-py311's root held exactly
 #   these 11 entries after its launches (read 2026-10-06).
@@ -205,9 +205,9 @@ CHROMIUM_PROFILE = (
 )
 ROOT_ENTRIES = frozenset(entry.casefold() for entry in RULED_ROOT + CHROMIUM_PROFILE)
 # Under the backend the only admissible change is bytecode: a __pycache__
-# directory or a .pyc file in one (Consult 8 R-i); the backend is not precompiled,
+# directory or a .pyc file in one; the backend is not precompiled,
 # so a launch writes its timestamp .pyc. The runtime's Lib, stdlib and
-# site-packages, ships compiled (package_port.BYTECODE, Consult 10 D-9), so any
+# site-packages, ships compiled (package_port.BYTECODE), so any
 # bytecode write there is a module the build missed, and it fails, named
 # (bytecode_module). An install writes .dist-info, .py, .pyd or .dll anyway.
 CACHE = "__pycache__"
@@ -1299,6 +1299,11 @@ def host_pass(
             chains[name] = {
                 key: value for key, value in record.items() if key != "content"
             }
+            if record["status"] == "skipped":
+                print(
+                    f"skipped {name}: missing {json.dumps(record['missing'])}",
+                    flush=True,
+                )
         port_runs = host_side(port, prepared, directory / "runs/port")
         for name, run in port_runs.items():
             chains[name]["port"] = brief(run)
@@ -1362,6 +1367,15 @@ def host_pass(
 
 
 # Summary.
+
+
+def chain_verdict(summary: Json) -> str:
+    """The final verdict's chains line: how many were compared, and every skipped one."""
+    chains = summary.get("chains") or {}
+    ran = [name for name, c in chains.items() if c.get("status") == "compared"]
+    skipped = [name for name, c in chains.items() if c.get("status") == "skipped"]
+    line = f"chains: {len(ran)} compared, {len(skipped)} skipped"
+    return line + (": " + ", ".join(skipped) if skipped else "")
 
 
 def gates(summary: Json) -> dict[str, bool]:
@@ -1486,6 +1500,7 @@ def main() -> int:
             ),
             flush=True,
         )
+        print(chain_verdict(summary), flush=True)
     return 0 if summary["success"] else 1
 
 

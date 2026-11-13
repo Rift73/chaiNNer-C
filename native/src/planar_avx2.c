@@ -2,7 +2,7 @@
 #error "planar_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
 /* Planar to interleaved float32 and interleaved float32 to planar bfloat16, AVX2
- * unit (/arch:AVX2, spec 4.3): no export, reached only through planar_range's and
+ * unit (/arch:AVX2): no export, reached only through planar_range's and
  * bfloat_range's dispatch on the call's ISA level. A lane's value is half_bits_to_f32's
  * (integer rebiasing, the payload-keeping Inf/NaN form, and the exact mantissa * 2^-24
  * for subnormals), a bfloat16's top half or the float32 sample's bits; permutes and

@@ -1,4 +1,4 @@
-"""The worker keeps numba's cache in its storage directory (U4-light item 5, D-24).
+"""The worker keeps numba's cache in its storage directory.
 
 PyMatting's kernels are numba functions with cache=True. Without NUMBA_CACHE_DIR,
 numba writes their .nbi/.nbc files into the runtime's site-packages (the package's

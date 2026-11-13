@@ -16,6 +16,9 @@ from nodes.impl.native_versions import CV_CN_MAX
 ORIGINAL_DILATE = cv2.dilate
 ORIGINAL_ERODE = cv2.erode
 ORIGINAL_KERNEL = cv2.getStructuringElement
+# Only morphology_ops.c calls this export; the tests probe it directly.
+lib().cn_morphology_ellipse_spans.argtypes = [ct.c_size_t, ct.POINTER(ct.c_size_t)]
+lib().cn_morphology_ellipse_spans.restype = ct.c_int
 
 
 def exact(actual, expected):

@@ -1,10 +1,9 @@
-"""SP4c: the NumPy pool's growth and release checks, on a started worker.
+"""The NumPy pool's growth and release checks, on a started worker.
 
-The controller runs this tool at the gate (SP4c plan, Task 4 and P9). Each check starts
-the repository's backend/src through the bench's own Backend (bench_backend.py: a
-kill-on-close job, private directories, the packaged interpreter, a private FFmpeg copy,
-the tree and interpreter identity checks) with CHAINNER_C_PROFILE=1: the counters the
-checks read (requests, held_peak, evictions, threads, releases, released_bytes) are
+Each check starts the repository's backend/src through the bench's own Backend
+(bench_backend.py: a kill-on-close job, private directories, the packaged interpreter,
+a private FFmpeg copy, the tree and interpreter identity checks) with
+CHAINNER_C_PROFILE=1: the counters the checks read (requests, held_peak, evictions, threads, releases, released_bytes) are
 kept under the profile switch only. They are the "numpy_pool" entry of the worker's
 "native profile:" line, one line per /run; the entry is there only while the handler
 is installed.
@@ -19,12 +18,11 @@ is installed.
                limit raised to --images (default 768) images of different sizes from
                --images-dir (default F:\\Download\\New folder\\DiverSeg-IP\\HR\\0),
                which is only read
-  release      the release points (spec 4.3) on one worker with
+  release      the release points on one worker with
                CHAINNER_C_NUMPY_POOL=256 and the native engine's memo cache off
                (CHAINNER_C_MEMO_BUDGET_MIB=0): the memo keeps a deterministic node's
-               outputs live across requests by design (instant-exec DESIGN.md amendment
-               A3), so with it on Create Color's blocks below stay in it, never idle at
-               a release point, in order:
+               outputs live across requests by design, so with it on Create Color's
+               blocks below stay in it, never idle at a release point, in order:
                (0) a /run of Create Color 256x256 (below the threshold) -> Save Image,
                    the warm-up; then the baseline: the private bytes at rest
                (a) a /run of a 64 MiB Create Color -> Save Image: the baseline again,

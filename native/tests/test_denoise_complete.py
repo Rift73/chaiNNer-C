@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from nodes.impl import native_denoise
-from test_isa_dispatch import isa_get, isa_set
+from test_isa_dispatch import isa_set
 
 TESTS = Path(__file__).parent
 ROOT = TESTS.parents[1]
@@ -161,16 +161,6 @@ def test_every_registered_window_radius(patch, channels):
         searchWindowSize=search * 2 + 1,
     )
     exact(native_denoise.nlm(source, 17.3, patch, search), expected)
-
-
-@pytest.fixture
-def levels():
-    """Every level this CPU has, scalar first; the original level afterwards."""
-    effective, _, cpu = isa_get()
-    try:
-        yield range(cpu + 1)
-    finally:
-        assert isa_set(effective) == effective
 
 
 @pytest.mark.parametrize("channels", [1, 2, 3, 4])

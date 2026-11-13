@@ -42,7 +42,7 @@ const categories = CategoryMap.EMPTY;
 test('matches keyword "bm3d" to Denoise', () => {
     const matching = getMatchingNodes('bm3d', schemata, categories);
     expect(matching).toStrictEqual([denoise]);
-    expect(getBestMatch('bm3d', matching, categories)).toBe(denoise);
+    expect(getBestMatch('bm3d', matching)).toBe(denoise);
 
     // the same acronym-style matching as names: "nlm" finds the keyword "NL-Means"
     expect(getMatchingNodes('nlm', schemata, categories)).toStrictEqual([denoise]);
@@ -57,11 +57,20 @@ test('best match prefers an exact keyword over a partial name', () => {
     const matching = getMatchingNodes('cas', schemata, categories);
     expect(matching).toContain(sharpen);
     expect(matching).toContain(cascade);
-    expect(getBestMatch('cas', matching, categories)).toBe(sharpen);
+    expect(getBestMatch('cas', matching)).toBe(sharpen);
 });
 
 test('best match prefers a name over an equally good keyword', () => {
     const matching = getMatchingNodes('blur', schemata, categories);
     expect(matching).toStrictEqual([sharpen, blur]);
-    expect(getBestMatch('blur', matching, categories)).toBe(blur);
+    expect(getBestMatch('blur', matching)).toBe(blur);
+});
+
+test('spaces around a query change nothing', () => {
+    for (const query of ['blur', 'resize', 'cas']) {
+        const matching = getMatchingNodes(query, schemata, categories);
+        expect(getMatchingNodes(`${query} `, schemata, categories)).toStrictEqual(matching);
+        expect(getMatchingNodes(` ${query}`, schemata, categories)).toStrictEqual(matching);
+    }
+    expect(getMatchingNodes(' ', schemata, categories)).toBe(schemata);
 });

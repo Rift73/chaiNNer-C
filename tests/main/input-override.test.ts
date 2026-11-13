@@ -17,3 +17,17 @@ test('readOverrideFile reads a file with a UTF-8 byte order mark', async () => {
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test.each(['null', '[]', '1'])('an override file holding %s is refused', async (content) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'input-override-test-'));
+    try {
+        const file = path.join(dir, 'override.json');
+        writeFileSync(file, content, 'utf-8');
+
+        await expect(readOverrideFile(file)).rejects.toThrow(
+            'Expected the override file to contain an object'
+        );
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});

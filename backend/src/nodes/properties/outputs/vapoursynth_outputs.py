@@ -47,4 +47,14 @@ class VideoClipOutput(BaseOutput[Union[VideoClip, VSFilter, np.ndarray]]):
     def get_broadcast_type(self, value: object) -> navi.ExpressionJson | None:
         if self._image is not None and isinstance(value, np.ndarray):
             return self._image.get_broadcast_type(value)
+        if isinstance(value, VideoClip) and value.shown is not None:
+            shown = value.shown
+            fields: dict[str, navi.ExpressionJson] = {
+                "width": shown.width,
+                "height": shown.height,
+                "fps": navi.literal(shown.fps),
+            }
+            if shown.field_order:
+                fields["fieldOrder"] = navi.literal(shown.field_order)
+            return navi.named("VideoClip", fields)
         return None

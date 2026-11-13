@@ -26,7 +26,6 @@ from .. import adjustments_group
     key_info=KeyInfo.number(1),
 )
 def opacity_node(img: np.ndarray, opacity: float) -> np.ndarray:
-    # Convert inputs
     c = get_h_w_c(img)[2]
     if opacity == 100 and c == 4:
         return img

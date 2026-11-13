@@ -81,6 +81,9 @@ def temporal_fix_node(
                 RADIUS,
                 lookahead,
             )
+    # Before any torch mode or lease: reading ahead can run the nodes before this one on
+    # this thread (Guided Upscale trains, which inference mode would break).
+    frames = state.gather(view.index, lambda: convert(img), peek)
     folder = context.storage_dir / "temporalfix"
     with lease_resource(
         context,
@@ -90,7 +93,6 @@ def temporal_fix_node(
             device.type, settings.budget_limit, settings.force_cache_wipe
         ),
     ) as model, torch.inference_mode():
-        frames = state.gather(view.index, lambda: convert(img), peek)
         result = model(torch.stack(frames)[None])[0, :, :h, :w]
         return np.ascontiguousarray(
             result.float().flip(0).permute(1, 2, 0).cpu().numpy()

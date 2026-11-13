@@ -63,7 +63,7 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
                   ]
                 : recentFiles.map((filepath, i) => ({
                       label: filepath,
-                      accelerator: i <= 9 ? `CmdOrCtrl+${i + 1}` : undefined,
+                      accelerator: i < 9 ? `CmdOrCtrl+${i + 1}` : undefined,
                       click: async () => {
                           if (!window.isFocused()) window.show();
                           window.webContents.send('file-open', await openSaveFile(filepath));
@@ -86,7 +86,6 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
 
         return submenu;
     };
-    // Usage
 
     const openRecentSubmenu = createOpenRecentSubmenu(openRecent, mainWindow, isMac, enabled);
 
@@ -489,7 +488,7 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
                     label: 'Report a Bug or Feature Request',
                     click: async () => {
                         await shell.openExternal(
-                            'https://github.com/chaiNNer-org/chaiNNer/issues/new/choose'
+                            'https://github.com/Rift73/chaiNNer-C/issues/new/choose'
                         );
                     },
                 },

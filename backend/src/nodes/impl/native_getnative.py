@@ -315,6 +315,8 @@ def linear_plane(
     """The linear-light analysis plane of a B, G, R float image: the weighted R, G, B sum of the
     channels through `domain`'s inverse transfer, signed and unclipped (Vernier's linearFrame)."""
     source = np.ascontiguousarray(image, np.float32)
+    if source.ndim != 3 or source.shape[2] != 3:
+        raise ValueError("A linear-light plane needs a three-channel B, G, R image")
     height, width = source.shape[:2]
     plane = np.empty((height, width), np.float64)
     status = _lib.cn_getnative_linear_plane(

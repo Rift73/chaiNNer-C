@@ -6,8 +6,6 @@ also installs the missing VapourSynth user modules."""
 from __future__ import annotations
 
 import asyncio
-import importlib
-import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -22,25 +20,20 @@ from nodes.impl.vapoursynth import user_modules
 from server_process_helper import WorkerServer
 
 
-@pytest.fixture
-def server_host(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    # The module parses its command line when imported.
-    monkeypatch.setattr(sys, "argv", ["server_host.py"])
-    return importlib.import_module("server_host")
-
-
 @pytest.mark.parametrize("fails", [False, True], ids=["finished", "failed"])
 def test_a_closed_request_starts_the_worker_after_pip_and_logs_the_outcome(
     server_host: ModuleType, monkeypatch: pytest.MonkeyPatch, fails: bool
 ):
     events: list[str] = []
-    logged: list[str] = []
+    logged: list[tuple[str, object]] = []
+
+    def log(message: str, exc_info: object = None) -> None:
+        logged.append((message, exc_info))
+
     monkeypatch.setattr(
         server_process_helper,
         "logger",
-        SimpleNamespace(
-            **dict.fromkeys(("debug", "info", "warning", "error"), logged.append)
-        ),
+        SimpleNamespace(**dict.fromkeys(("debug", "info", "warning", "error"), log)),
     )
 
     class WorkerProcess:
@@ -83,7 +76,8 @@ def test_a_closed_request_starts_the_worker_after_pip_and_logs_the_outcome(
         if fails
         else "Dependency change finished after its request closed"
     )
-    assert outcome in logged
+    error = next(error for message, error in logged if message == outcome)
+    assert isinstance(error, ValueError) == fails
 
 
 def test_an_uninstall_also_takes_what_nothing_else_needs(

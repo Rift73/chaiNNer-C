@@ -191,7 +191,7 @@ def white_balance_node(
     mode: WhiteBalanceMode,
     brightest_percent: float,
     neutral_color: Color,
-    temperature: float,
+    temperature: int,
     tint: float,
     linear_light: bool,
     transfer: LightTransfer,

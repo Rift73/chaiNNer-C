@@ -143,13 +143,12 @@ def trimap_matting_keying(
 
     # The solver needs both background and foreground. A frame without the key colour
     # stays unkeyed and a frame of only the key colour is keyed whole, as Binary mode
-    # gives them (2026-10-23); upstream failed on both.
+    # gives them.
     if not (trimap <= 0.1).any():
         return np.dstack((img, np.ones((h, w), np.float32)))
     if not (trimap >= 0.9).any():
         return np.dstack((img, np.zeros((h, w), np.float32)))
 
-    # convert to rgb
     if img.dtype == np.float32:
         img, trimap = matting_input(img, trimap)
     else:

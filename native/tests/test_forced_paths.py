@@ -1,4 +1,4 @@
-"""Forced paths: every ISA level gives the scalar level's outputs (SP4 spec 4.4).
+"""Forced paths: every ISA level gives the scalar level's outputs.
 
 The level decides only which implementation runs an output's operation sequence;
 the mirror parameters (lanes, fused) decide the sequence. Each test runs its cases
@@ -8,7 +8,7 @@ the case's payload rule (golden_kernels.digest: a mixed-payload case compares Na
 positions and every non-NaN bit, every other case every bit).
 
 Shapes: S1 is multi-chunk for the convolution, and some chunk ends inside an 8-lane
-group of its row (the separable filters run S1 in D9's row tiles since SP4b Task 3);
+group of its row (the separable filters run S1 in row tiles);
 S2 has height 7, widths 1 to 2R + 1 (R = 8, the AVX2 lanes) and 1, 3 or 4
 channels; S3 (Gaussian only) has heights 1 to 17 at width 9. Inputs: the clean,
 edges, nan and mixed sets at golden_kernels' listed indices, plus a clean src in
@@ -64,8 +64,7 @@ CONVOLUTION_ISA = (
 CONVOLUTION_AVX512 = (
     Path(__file__).resolve().parents[1] / "src" / "convolution_avx512.c"
 )
-# SP4b (D4): each task appends its kernels; their manifests (B3) and a sweep run
-# at every level.
+# The kernels whose manifests (B3) and a sweep run at every level.
 SP4B_KERNELS = (
     "conversion",
     "conversion_small",
@@ -81,8 +80,7 @@ SP4B_KERNELS = (
     "blend",
     "tail",
 )
-# The kernels whose scratch is leased from the shared pool (SP4b D10; palette since
-# Task 5, coordinator ruling; composite since Task 6).
+# The kernels whose scratch is leased from the shared pool.
 POOLED_KERNELS = ("morphology", "resample", "palette", "composite")
 SCRATCH_SLOTS = 4
 SCRATCH_RETAIN_BYTES = 16 << 20
@@ -95,7 +93,7 @@ B3_CONVOLUTION_GRAIN = 4096  # B3's, at which the convolution manifests were wri
 COMPOSE_GRAIN = 65536  # cn_lens_compose's partition grain
 MORPH_COMBINE_GRAIN = 65536  # cn_morphology_complete's ellipse combine grain
 B3_MORPH_COMBINE_GRAIN = 16384  # B3's, at which the morphology manifest was written
-# The separable filters' row tiles (D9, box_complete_ops.c's #defines, which
+# The separable filters' row tiles (box_complete_ops.c's #defines, which
 # test_separable_tile_edges_match_b3_at_every_level reads back): the stack buffer's
 # floats, B0 (a band's fewest rows), the largest radius with coordinate tables, and
 # the fallback's grain.
@@ -193,8 +191,8 @@ def assert_levels_equal_scalar(found, levels):
 
 def test_s1_ends_a_chunk_inside_a_vector_group():
     """Precondition: in every convolution S1 call some chunk ends inside an 8-lane
-    group of its row, which then runs scalar (vector groups never cross a chunk; spec
-    4.3). The separable S1 runs in row tiles (D9), whose blocks start on the lane grid;
+    group of its row, which then runs scalar (vector groups never cross a chunk).
+    The separable S1 runs in row tiles, whose blocks start on the lane grid;
     the separable fallback's chunk starts: test_separable_tile_edges_match_b3_at_every_level."""
     calls = []
     h, w, c = S1["convolution"]
@@ -232,7 +230,7 @@ def test_convolution_levels_equal_scalar(form, padding, fused, levels):
 
 
 def sp4b_cases():
-    """(kernel, case): each SP4b kernel's matrix, then its sweep (D4)."""
+    """(kernel, case): each kernel's matrix, then its sweep."""
     return [
         pytest.param(kernel, case, id=f"{kernel}-{case.id}")
         for kernel in SP4B_KERNELS
@@ -263,8 +261,8 @@ def holds_denormal(case):
 
 
 def assert_levels_match_b3(found, levels):
-    """Each case matches B3 or its independent F26/D-17.1 reference at every level;
-    only the cases B3 refused and Consult 8 D-5 dithers remain mismatches."""
+    """Each case matches B3 or its independent reference at every level; only the
+    cases B3 refused and the corrected dithers remain mismatches."""
     corrected = [case.id for case, _ in found if d5_corrected(case)]
     for level in levels:
         assert isa_set(level) == level
@@ -278,8 +276,8 @@ def assert_levels_match_b3(found, levels):
 
 @pytest.mark.parametrize("kernel", SP4B_KERNELS)
 def test_daz_cases_match_b3(kernel, levels):
-    """D4: at least 10 DAZ|FTZ cases on denormal-bearing inputs, each equal to its
-    manifest outputs (assert_levels_match_b3) at every level (review focus 3: compares
+    """At least 10 DAZ|FTZ cases on denormal-bearing inputs, each equal to its
+    manifest outputs (assert_levels_match_b3) at every level (compares
     honour DAZ, bit tests do not)."""
     found = [
         (case, outputs)
@@ -291,7 +289,7 @@ def test_daz_cases_match_b3(kernel, levels):
 
 
 def scratch_fill():
-    """cn_scratch_fill (test-only, SP4b D10): grows every idle pool slot to
+    """cn_scratch_fill (test-only): grows every idle pool slot to
     min(bytes, 16 MiB), fills it wholly with the word and returns the slots filled."""
     fill = native.lib()["cn_scratch_fill"]
     fill.argtypes = [ctypes.c_uint32, ctypes.c_size_t]
@@ -301,7 +299,7 @@ def scratch_fill():
 
 @pytest.mark.parametrize("kernel", POOLED_KERNELS)
 def test_pooled_kernels_ignore_nan_filled_scratch(kernel, levels):
-    """Review focus 4 (spec 4.5): B3's fresh large allocations arrived zeroed, a pooled
+    """B3's fresh large allocations arrived zeroed, a pooled
     lease does not. Each case of the kernel's manifest runs, at every level, once after
     each SCRATCH_FILLS word fills every slot of the pool as a 16 MiB block, which is
     larger than any case's lease; each run still gives the case's outputs
@@ -359,7 +357,7 @@ def sorted_palette(palette, state):
 
 
 def brute_force(colors, src, state):
-    """D12's rule for every pixel of a mode 0 call on the sorted colors: each entry's
+    """The rule for every pixel of a mode 0 call on the sorted colors: each entry's
     distance as palette_distance computes it (0 + d0 d0, then + dk dk in channel order,
     float32, under the state); index 0 when the first distance is NaN, else the first
     index whose distance compares equal to the minimum of the non-NaN ones. Returns the
@@ -380,7 +378,7 @@ def brute_force(colors, src, state):
 
 
 def test_d5_cases_follow_the_linear_rule_at_every_level(levels):
-    """Consult 8 D-5: the dither cases B3 refused (test_golden_kernels.d5_corrected:
+    """The dither cases B3 refused (test_golden_kernels.d5_corrected:
     300 unique colors, a NaN src) now dither. In mode 0 each gives brute_force's rule
     at every level: the kd tree's answer for a finite pixel, the linear scan's for a
     NaN one. Every case gives the scalar level's outputs at every level."""
@@ -405,7 +403,7 @@ def test_d5_cases_follow_the_linear_rule_at_every_level(levels):
 
 
 def test_dither_ties_resolve_to_the_lowest_palette_index(levels):
-    """D12 (Step 2: palettes below 300 unique colors take nearest_palette's linear scan,
+    """(Palettes below 300 unique colors take nearest_palette's linear scan,
     whose strict < keeps the first index; the brute-force search must keep it): every
     mode 0 cn_neighborhood_palette_apply case of the dither manifest below 300 unique
     colors equals, on B3, brute_force's rule on sorted_palette's colors; and group T
@@ -460,7 +458,7 @@ def zero_class_ties(case):
 
 
 def test_median_cut_zero_ties_match_b3_at_every_level(levels):
-    """D12 as built (Task 5, coordinator ruling): where a channel's extremum compares
+    """Where a channel's extremum compares
     equal to zero (+-0, and under DAZ the denormals), the AVX2 extrema may keep another
     tied value than B3's first-seen one; the extrema reach only range = high - low and
     its compares, which that choice leaves unchanged (palette_shared.h). Group Z of the
@@ -503,7 +501,7 @@ def root_middle(case):
 
 
 def test_median_cut_selection_tie_classes_match_b3_at_every_level(levels):
-    """Task 5b: the median cut takes ranks middle (and, for even counts, middle - 1) by
+    """The median cut takes ranks middle (and, for even counts, middle - 1) by
     a radix select over order-preserving keys (palette_ops.c), where B3 ran a quickselect
     and a maxss fold over compares. The two can choose different bits only inside a
     compare class that holds several (+-0, and under DAZ the denormals and +-0); the
@@ -537,7 +535,7 @@ def test_median_cut_selection_tie_classes_match_b3_at_every_level(levels):
 
 
 def test_composite_shortcut_geometries_match_b3(levels):
-    """D13 (Task 6): cn_composite_canvas blends a full overlap straight into out, with
+    """cn_composite_canvas blends a full overlap straight into out, with
     no fill, gather or paste (shortcut_clauses holds every clause). Group S of the
     composite manifest takes that shortcut: base and overlay channels {1, 3, 4}^2 at a
     full overlap, modes 0, 1, 2, 4, 9, 13, 17 and 22. Group N holds its near misses (the
@@ -571,7 +569,7 @@ BLEND_GRAIN = 65536  # cn_blend_images' partition grain, in pixels
 
 
 def test_blend_chunks_start_off_the_lane_grid(levels):
-    """Review focus 2 (Task 6 Step 6): the blend manifest's group W runs modes 0 and 1
+    """The blend manifest's group W runs modes 0 and 1
     with (overlay, base) channels (1, 1) and (3, 3), the AVX2 unit's 8-lane form, on
     196,613 pixels: 4 chunks of 49,154/49,153 pixels at BLEND_GRAIN, whose element
     starts lie off the 8-lane grid at both channel counts. A vector group never crosses
@@ -635,7 +633,7 @@ def tile_span(case, column):
 
 
 def test_tail_chunks_start_mid_row_with_odd_lengths(levels):
-    """Review focus 2 (Task 8): every tail entry's group W case runs several chunks, one
+    """Every tail entry's group W case runs several chunks, one
     of odd length (tail_partition); the tile's, the store's and the caption's chunks
     start mid-row, where the row loops begin with a partial row: the tile's in its
     image, in both border edges and in its frame. Each equals B3 at every level."""
@@ -660,7 +658,7 @@ def test_tail_chunks_start_mid_row_with_odd_lengths(levels):
     assert_levels_match_b3(found, levels)
 
 
-# Task 6 Step 6: MULTIPLY's operands, every ordered pair of these words: quiet and
+# MULTIPLY's operands, every ordered pair of these words: quiet and
 # signalling NaNs of both signs, the default NaN, +-inf, -0 and finite values (-0 x inf
 # generates the default NaN).
 MULTIPLY_WORDS = (
@@ -691,7 +689,7 @@ def first_source_product(overlay, base):
 
 @pytest.mark.parametrize("channels", [1, 3])
 def test_blend_multiply_keeps_the_overlays_nan_at_every_level(channels, levels):
-    """Task 6 Step 6: where an overlay NaN meets a base NaN, B3's MULTIPLY keeps the
+    """Where an overlay NaN meets a base NaN, B3's MULTIPLY keeps the
     overlay's, quieted (its mulss takes the overlay as the first source). The AVX2
     unit's 8-pixel blocks select it explicitly (the compiler may commute vmulps), and
     its tail pixels run image_pixels, so every level gives first_source_product's bits
@@ -732,7 +730,7 @@ def test_blend_multiply_keeps_the_overlays_nan_at_every_level(channels, levels):
         assert mismatched.tolist() == [], native.ISA_LEVELS[level]
 
 
-# Task 8: the normal output's inputs, every ordered (dx, dy) pair of these words but
+# The normal output's inputs, every ordered (dx, dy) pair of these words but
 # two NaNs: quiet and signalling NaNs of both signs, +-inf, -0, finite values and a
 # denormal.
 NORMAL_WORDS = (
@@ -777,7 +775,7 @@ def normal_model(dx, dy, alpha, invert_r, invert_g, channels):
 @pytest.mark.parametrize("channels", [3, 4])
 @pytest.mark.parametrize("invert", [0, 1])
 def test_normal_output_nan_and_sign_forms_at_every_level(channels, invert, levels):
-    """Task 8: on every ordered pair of NORMAL_WORDS with at most one NaN (84 pixels: 10
+    """On every ordered pair of NORMAL_WORDS with at most one NaN (84 pixels: 10
     groups of 8 and 4 tail pixels), each level gives normal_model's bits: a NaN's payload
     quieted, its sign flipped by an inversion and cleared in z, the default NaN of
     inf / inf, and alpha's words (signalling NaNs included) copied."""
@@ -819,7 +817,7 @@ def test_normal_output_nan_and_sign_forms_at_every_level(channels, invert, level
         assert mismatched == [], native.ISA_LEVELS[level]
 
 
-# Task 8 fix round 1: the multiply's operand words, each placed in turn in ar, ai, br and
+# The multiply's operand words, each placed in turn in ar, ai, br and
 # b[stride] of a pair whose other three operands are PAIR_FILLERS: quiet and
 # signalling NaNs of both signs, +-inf, +-0 and finite values.
 PAIR_WORDS = (
@@ -846,7 +844,7 @@ def multiply_model(ar, ai, br, bim):
 
 
 def test_spectral_multiply_keeps_single_nan_payloads_at_every_level(levels):
-    """Task 8 fix round 1 (review Minor 1): where at most one NaN meets an operation the
+    """Where at most one NaN meets an operation the
     payload is kept bit for bit, so each level gives multiply_model's bits on one row of
     43 pairs (an odd count: at avx2 21 two-pair vectors and the last pair through
     multiply_pair): every PAIR_WORDS word in each operand slot beside fillers, two pairs
@@ -896,7 +894,7 @@ def test_spectral_multiply_keeps_single_nan_payloads_at_every_level(levels):
 
 
 CAPTION_GRAIN = 16384  # cn_caption_compose's partition grain, in output pixels
-# Task 8 fix round 1 (review Minor 2): (height, width, caption_height, top). Top 1: 310 x
+# (height, width, caption_height, top). Top 1: 310 x
 # 64 pixels run 2 chunks of 9,920; the second starts inside the caption's 19,200 pixels and
 # the caption/image boundary falls inside it. Top 0: 340 x 64 run 2 chunks of 10,880; the
 # image's 19,200 pixels end inside the second.
@@ -908,7 +906,7 @@ CAPTION_STRADDLES = ((10, 64, 300, 1), (300, 64, 40, 0))
     "form", CAPTION_STRADDLES, ids=lambda form: f"top{form[3]}-{form[0]}x{form[1]}"
 )
 def test_caption_chunks_straddle_its_runs_at_every_level(form, channels, levels):
-    """Task 8 fix round 1 (review Minor 2): caption_range's runs where a chunk starts
+    """caption_range's runs where a chunk starts
     inside the caption (top 1) and where the caption/image boundary falls inside a chunk
     (both forms) give, at every level, the model's bits: the image copied (NaN payloads,
     a signalling NaN, -0 and a denormal kept) beside the raster's np.float32(k) /
@@ -956,7 +954,7 @@ def test_caption_chunks_straddle_its_runs_at_every_level(form, channels, levels)
 
 
 COMPOSITE_GRAIN = 65536  # canvas_fill's and canvas_gather's partition grain
-# Task 6: canvases off D13's shortcut whose fill (height x width pixels) and gather
+# Canvases off the full-overlap shortcut whose fill (height x width pixels) and gather
 # (region pixels) run several chunks, some starting inside a row: (base (h, w, c),
 # base constant, overlay (h, w, c), overlay constant, x, y, crop, mode). A constant
 # layer takes the image's h and w. In order: a padded canvas, its 3-channel base
@@ -1038,7 +1036,7 @@ def numpy_canvas(arrays, form):
 
 
 def test_composite_row_spans_across_chunks_equal_a_numpy_canvas(levels):
-    """Task 6 (D13's row loops): canvas_fill and canvas_gather walk row spans of each
+    """canvas_fill and canvas_gather walk row spans of each
     chunk, so a chunk may start or end inside a row; the composite manifest's and
     sweep's canvases (sizes up to 40) are one chunk each. On each CANVAS_FORMS canvas
     (off the shortcut; some fill and some gather chunk starts inside a row at
@@ -1089,7 +1087,7 @@ def test_composite_row_spans_across_chunks_equal_a_numpy_canvas(levels):
 
 # The resample sets whose values tell the vertical pass's clip forms apart (NaN, -0, the
 # denormals, values just outside [0, 1] and the largest finite ones), and the floats of
-# one block of the AVX2 vertical pass (8 groups of 8, SP4b Task 7).
+# one block of the AVX2 vertical pass (8 groups of 8).
 RESAMPLE_CLIP_SETS = ("nan", "edges", "denorm")
 RESAMPLE_VERTICAL_BLOCK = 64
 
@@ -1103,7 +1101,7 @@ def resample_clip(args):
 
 
 def test_resample_vertical_clip_forms_match_b3(levels):
-    """SP4b Task 7 (D14): the AVX2 vertical pass clips with B3's instructions, clip 1 as
+    """The AVX2 vertical pass clips with B3's instructions, clip 1 as
     min(1, max(0, acc)) and clip 2 as min(max(acc, 0), 1), whose unordered selections
     differ (a NaN acc stays NaN under clip 1 and becomes +0 under clip 2). The resample
     manifest holds at least 4 cases of each clip form on each of RESAMPLE_CLIP_SETS, in
@@ -1134,14 +1132,14 @@ def test_resample_vertical_clip_forms_match_b3(levels):
     assert_levels_match_b3(found, levels)
 
 
-# Task 7: a (3, 50, 3) src of one row each of +inf, -inf and this NaN, resampled to
+# A (3, 50, 3) src of one row each of +inf, -inf and this NaN, resampled to
 # (1, 25), with (filter, vector_clip) and B3's output word for every element.
 RESAMPLE_MEET_NAN = 0x7FC12345
 RESAMPLE_MEET_FORMS = ((2, 0, 0xFFC00000), (11, 0, 0xFFC00000), (11, 1, 0x00000000))
 
 
 def test_resample_vertical_nan_meets_keep_b3s_payload_at_every_level(levels):
-    """SP4b Task 7: where the accumulated NaN meets a tap's NaN of another payload, B3's
+    """Where the accumulated NaN meets a tap's NaN of another payload, B3's
     addss keeps the accumulated one (its first source), and the AVX2 unit's vaddps may
     take its sources in either order. Every tap weight of the triangle (filter 2, clip 0)
     and Gaussian (11: clip 1, and clip 2 with vector_clip) filters is positive here, so
@@ -1174,7 +1172,7 @@ def test_resample_vertical_nan_meets_keep_b3s_payload_at_every_level(levels):
 
 
 def test_filter_morphology_rejects_dimensions_beyond_int_max():
-    """D11: cn_filter_morphology refuses a height or width above INT_MAX (OpenCV's int
+    """cn_filter_morphology refuses a height or width above INT_MAX (OpenCV's int
     dimensions) with CN_SIZE_OVERFLOW (2), after its argument checks and before any
     allocation or read: here on 1-float buffers that no call may read. (B3 had no such
     bound: its 2**62-byte malloc failed first and returned CN_ALLOCATION_FAILED.)"""
@@ -1195,7 +1193,7 @@ def test_filter_morphology_rejects_dimensions_beyond_int_max():
 
 
 def test_morphology_combine_chunks_start_off_the_lane_grid():
-    """Precondition (SP4b Task 4b): the ellipse combine on golden_kernels.MORPH_CHUNKS
+    """Precondition: the ellipse combine on golden_kernels.MORPH_CHUNKS
     (the morphology manifest's ellipse cases of groups C and T whose src is not
     exceptional) ran 8 chunks at B3's grain, at which the manifest was written, and runs
     2 at MORPH_COMBINE_GRAIN; at both some chunk starts off the 8-lane grid of its row,
@@ -1213,7 +1211,7 @@ def test_morphology_combine_chunks_start_off_the_lane_grid():
 
 @pytest.mark.parametrize("mode", DIRECTED)
 def test_u8_f32_follows_the_callers_rounding_mode(mode, levels):
-    """Review M1, stand-in (iv): u8 -> f32 is B3's divss (float)k / 255.0f, which
+    """u8 -> f32 is B3's divss (float)k / 255.0f, which
     rounds in the caller's MXCSR mode; the table holds its round-to-nearest
     quotients only. Every level, scalar heads and tails included, gives NumPy's
     float32 division under the same mode (count 7: a tail only; 17: two groups and
@@ -1252,7 +1250,7 @@ def test_u8_f32_follows_the_callers_rounding_mode(mode, levels):
 
 
 def test_conversion_chunk_starts_off_the_lane_grid(levels):
-    """Review focus 2: 720p conversions run 11 chunks of 251,345/251,346, so chunks
+    """720p conversions run 11 chunks of 251,345/251,346, so chunks
     start off the 8-lane grid; a vector group must never cross a chunk boundary.
     Each such case equals its manifest outputs at every level."""
     count = 2_764_800
@@ -1270,8 +1268,8 @@ def test_conversion_chunk_starts_off_the_lane_grid(levels):
 
 
 def test_sp4b_sweep_reaches_scaled_values_beyond_int32():
-    """The sweep includes raw finite values beyond int32 when scaled. F26 now
-    saturates these even with normalize=0; SIMD and scalar must still agree."""
+    """The sweep includes raw finite values beyond int32 when scaled. The
+    conversion saturates these even with normalize=0; SIMD and scalar must still agree."""
     found = []
     for kernel in SP4B_KERNELS:
         if kernel not in golden_kernels.CONVERSION_KERNELS:
@@ -1290,7 +1288,7 @@ def test_sp4b_sweep_reaches_scaled_values_beyond_int32():
 
 
 # The enforce clamp is np.clip(x, 0, 1) on the reference stack (NumPy 2.5.3, this
-# venv's; it was NumPy 1.24.4's until U2). NaN passes with its payload, quiet or
+# venv's). NaN passes with its payload, quiet or
 # signalling; -0 stays -0; v < 0 gives +0 (-inf included); v > 1 gives 1 (+inf
 # included); otherwise v. NumPy's maxps/minps take a denormal as a zero of its sign
 # under DAZ, so a positive one gives +0 and a negative one -0; at the default MXCSR a
@@ -1320,7 +1318,7 @@ CLAMP_TABLE = (
     (0x7F812345, 0x7F812345, 0x7F812345),
     (0xFF812345, 0xFF812345, 0xFF812345),  # a negative signalling NaN
 )
-# float64 sources (D7: a float64 src clamps at either normalize) whose float32 casts
+# float64 sources (a float64 src clamps at either normalize) whose float32 casts
 # include -0, denormals, NaN and values out of [0, 1].
 CLAMP_DOUBLES = (
     -0.0,
@@ -1338,7 +1336,7 @@ CLAMP_DOUBLES = (
 
 @pytest.mark.parametrize("count", [1, 7, 8, 17, 155])
 def test_clamp_is_np_clip_at_every_level(count, levels):
-    """Task 3b1: in both MXCSR states and at every level, f32 -> f32 (0,0,1) gives
+    """In both MXCSR states and at every level, f32 -> f32 (0,0,1) gives
     CLAMP_TABLE's words, which np.clip gives too; f64 -> f32 gives
     np.clip(x.astype(np.float32), 0, 1) at either normalize; and every clamping
     integer output (whose bytes +-0 cannot change) equals the unclamped tail (type 0,
@@ -1346,7 +1344,7 @@ def test_clamp_is_np_clip_at_every_level(count, levels):
     8) or the doubles: the scalar level runs every word through the scalar helper; at
     count 1 each word and each double runs alone, so at avx2 and avx512, where a
     one-element call is all tail, the AVX2 unit's own (VEX) copy of clamp_unit runs
-    every word (Task 3b2); and at 155 (19 groups of 8, then 3) every word reaches the
+    every word; and at 155 (19 groups of 8, then 3) every word reaches the
     8-lane form in several lanes."""
     lib = native.lib()
     words = np.array([row[0] for row in CLAMP_TABLE], np.uint32)
@@ -1477,7 +1475,7 @@ def test_gbr_planes_take_the_white_they_are_given_at_every_level(pixels, levels)
 
 @pytest.mark.parametrize("kernel", golden_kernels.CONVERSION_KERNELS)
 def test_clamping_conversions_equal_the_oracle_at_every_level(kernel, levels):
-    """Task 3b1 (P-4): every clamping conversion (golden_kernels.clamps) of the kernel's
+    """Every clamping conversion (golden_kernels.clamps) of the kernel's
     manifest and in-suite sweep gives the oracle's outputs at every level, +-0 and NaN
     positions included (golden_kernels.oracle_outputs: np.clip, upstream's
     normalize, under the case's MXCSR state; an integer output must equal
@@ -1498,13 +1496,13 @@ def test_clamping_conversions_equal_the_oracle_at_every_level(kernel, levels):
         assert mismatched == [], native.ISA_LEVELS[level]
 
 
-# Task 3b2: freeze_normalized(clamp=True) runs the enforce's (0, 0, 1) with src == out.
+# freeze_normalized(clamp=True) runs the enforce's (0, 0, 1) with src == out.
 IN_PLACE_COUNTS = (*range(1, 18), 196_613, 589_824, 2_764_800)
 IN_PLACE_SETS = ("clean", "edges", "nan", "denorm")
 
 
 def test_conversion_in_place_matches_out_of_place(levels):
-    """Task 3b2: cn_pixels_convert_checked with src == out at (type 0, output 0,
+    """cn_pixels_convert_checked with src == out at (type 0, output 0,
     normalize 1) gives the same build's out-of-place bytes and events, at every
     level, in both MXCSR states, on the clean, edges, nan and denorm sets (signed
     values, so about half clamp to +0), at counts 1-17 (a tail only, one group and a
@@ -1557,7 +1555,7 @@ def test_conversion_in_place_matches_out_of_place(levels):
 
 
 def interior_size(case, axis):
-    """Rows (axis 0) or pixel columns (axis 1) of a convolution case's interior (D8):
+    """Rows (axis 0) or pixel columns (axis 1) of a convolution case's interior:
     the outputs where every non-zero tap (at the default MXCSR) maps into the image
     without reflection."""
     args = case.args
@@ -1570,7 +1568,7 @@ def interior_size(case, axis):
 
 
 def test_convolution_regions_match_b3_at_every_level(levels):
-    """Review focus 1 (D8): each convolution_border case equals B3 at every level.
+    """Each convolution_border case equals B3 at every level.
     check_border_manifest pins the groups: the 61-tap reach (R), widths and heights
     1-33 (W), the lens-like plane (L, T) and the (5,5) DAZ-row kernel (Z). This test
     adds its own preconditions: the R interiors are 0-6 pixels wide (empty up to 60,
@@ -1611,12 +1609,12 @@ def separable_radii(case):
 
 
 def band_rows(ry):
-    """D9's band rule before the clamp to the height: max(B0, 4 ry)."""
+    """The row tiles' band rule before the clamp to the height: max(B0, 4 ry)."""
     return max(SEPARABLE_MIN_BAND, 4 * ry)
 
 
 def tile_geometry(case):
-    """D9's (B, R, W, bands, blocks) of a separable case, or None for the fallback
+    """The row tiles' (B, R, W, bands, blocks) of a separable case, or None for the fallback
     (R > SEPARABLE_TILE_FLOATS / 16, or a radius above SEPARABLE_TABLE_RADIUS):
     B = min(h, max(B0, 4 ry)), R = min(h, B + 2 ry) and
     W = min(16 ceil(row_width / 16), 16 floor(SEPARABLE_TILE_FLOATS / (16 R)))."""
@@ -1633,7 +1631,7 @@ def tile_geometry(case):
 
 
 def test_separable_tile_edges_match_b3_at_every_level(levels):
-    """Review focus 1 (D9): each separable_tiles case equals B3 at every level, on the
+    """Each separable_tiles case equals B3 at every level, on the
     chosen constants (this module's, read back from box_complete_ops.c).
     check_tiles_manifest pins the groups; this test adds the geometry they rely on:
     group H holds the heights B - 1, B, B + 1, 2B and 2B + 1 of each of its forms'
@@ -1642,7 +1640,7 @@ def test_separable_tile_edges_match_b3_at_every_level(levels):
     tiles; the second TILE_FALLBACKS shape is a fallback whose chunks at grain 1024
     start off the 8-lane grid, and the first has R = 600; the untabled cases have a
     radius above SEPARABLE_TABLE_RADIUS (both fallbacks); and some width-group row
-    has row_width / 8 * 8 = 8 (mod 16) (Task 9's 16-lane groups)."""
+    has row_width / 8 * 8 = 8 (mod 16) (the AVX-512 16-lane groups)."""
     for name, value in (
         ("SEPARABLE_TILE_FLOATS", SEPARABLE_TILE_FLOATS),
         ("SEPARABLE_MIN_BAND", SEPARABLE_MIN_BAND),
@@ -1692,10 +1690,10 @@ def test_separable_tile_edges_match_b3_at_every_level(levels):
     assert_levels_match_b3(found, levels)
 
 
-# The separable R fallback (D9: R > SEPARABLE_TILE_FLOATS / 16) runs two passes in
+# The separable R fallback (R > SEPARABLE_TILE_FLOATS / 16) runs two passes in
 # chunks of SEPARABLE_GRAIN whose row segments start off the 8-lane grid, so their
 # fused heads and tails run the scalar spans beside the vector groups. The frozen
-# separable_tiles manifest holds these shapes clean only (Task 3's review): here
+# separable_tiles manifest holds these shapes clean only: here
 # TILE_FALLBACKS' second shape and 70 x 3 rows (26 groups: an 8-group block, a
 # 4-group tail and single groups) take NaN, edges and denormal inputs.
 R_FALLBACK_SHAPES = (golden_kernels.TILE_FALLBACKS[1][0], (2100, 70, 3))
@@ -1751,7 +1749,7 @@ def border_runs(row_width, inner, outer, lanes=8, block=None):
     return end, stop, head, tail
 
 
-# Task 3c: a horizontal border run's taps read one reflected copy of the row's
+# A horizontal border run's taps read one reflected copy of the row's
 # elements they reach (run + 2 rx c floats), and a convolution run's taps one copy
 # per tap row (run + (high - low) c floats each); a run whose copies exceed the
 # unit's bound takes the per-group path. Each pair of shapes straddles its bound, at
@@ -1895,14 +1893,14 @@ def off_grid_starts(total, grain, row):
 # every straddling manifest case is a single chunk. Rows here have their fused boundary
 # at 8 (mod 16), and some chunk starts mid-row off the grid. Convolution: (101, 67, 3)
 # at paddings 0 and 1 (201- and 207-wide rows; two chunks at CONVOLUTION_GRAIN, the
-# second starting at column 101 or 104). Separable: the R fallback (D9) on 27-wide rows
+# second starting at column 101 or 104). Separable: the R fallback on 27-wide rows
 # at SEPARABLE_GRAIN, with Gaussian horizontal radii 1 and 4 and the box's 2.
 STRADDLE_CONVOLUTION = ((101, 67, 3), ((3, 3), (1, 61), (11, 11)), (0, 1))
 STRADDLE_SEPARABLE = ((2100, 9, 3), (((3, 685), 4), ((9, 685), 1)), (1.5, 342.5))
 
 
 def test_avx512_groups_straddling_the_fused_boundary(levels):
-    """Review focus 2 (D15). The straddling manifest cases (straddling_cases) equal B3
+    """The straddling manifest cases (straddling_cases) equal B3
     at every level: a row's last 16-lane group holds 8 fused outputs, its other lanes
     are masked off, and the outputs from the boundary on are unfused. Preconditions:
     both kernels have such cases, some on the nan and mixed sets and some under
@@ -2024,7 +2022,7 @@ CLAMP_OUTPUTS = {
 
 
 def test_lens_power_keeps_b3s_input_clamp(levels):
-    """Task 3b: cn_lens_power's power_one pins B3's maxss(+0, x) input clamp; at every
+    """cn_lens_power's power_one pins B3's maxss(+0, x) input clamp; at every
     level and in both MXCSR states the finishing power gives B3's outputs at
     exponent -1."""
     dll = native.lib()
@@ -2044,8 +2042,8 @@ def test_lens_power_keeps_b3s_input_clamp(levels):
 
 
 def generated_nan_case(count, accumulate):
-    """A lens case where an input payload meets a NaN the operation generates (Task 2
-    review, scenarios A and D), (a, b) = (0.5, -1.25). Index % 5 == 0 holds A: f1 =
+    """A lens case where an input payload meets a NaN the operation generates
+    (scenarios A and D), (a, b) = (0.5, -1.25). Index % 5 == 0 holds A: f1 =
     0x7fc12345, f2 = +inf, f3 = f4 = 1, so real = p meets 0 * inf - 0. Index % 5 == 2
     holds D: f1 = f4 = +inf, f2 = p, f3 = 1, so inf - inf meets 0 * p - 0. Every other
     element is a signed value, out included."""
@@ -2091,7 +2089,7 @@ def compose_tail(count):
 @pytest.mark.parametrize(("count", "a_in_tail"), [(21, True), (196_613, False)])
 @pytest.mark.parametrize("accumulate", [0, 1])
 def test_lens_compose_generated_nan_meets_payload(count, a_in_tail, accumulate, levels):
-    """Stand-in ruling (spec 4.4, cfbd52f2): a NaN the operation generates (0 * inf,
+    """A NaN the operation generates (0 * inf,
     inf - inf) counts as a payload, so where one meets an input payload only the NaN
     positions and every non-NaN bit are pinned (the "mixed" digest), not the NaN bits.
     Each level equals the scalar level and B3 under that rule. B3's positions and

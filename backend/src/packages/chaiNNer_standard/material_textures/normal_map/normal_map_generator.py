@@ -3,13 +3,11 @@ from __future__ import annotations
 import math
 from enum import Enum
 
-import cv2
 import numpy as np
 
 import navi
 from nodes.groups import icon_set_group, if_enum_group
 from nodes.impl.image_utils import fast_gaussian_blur
-from nodes.impl.native_color_complete import cvt_color
 from nodes.impl.native_color_ops import height_map, normal_output, prepare_height
 from nodes.impl.native_convolution import convolve
 from nodes.impl.native_layout import pad
@@ -35,23 +33,6 @@ class AlphaOutput(Enum):
     ONE = "one"
 
 
-def as_grayscale(img: np.ndarray) -> np.ndarray:
-    c = get_h_w_c(img)[2]
-    if c == 1:
-        return img
-    if c == 3:
-        return cvt_color(img, cv2.COLOR_BGR2GRAY)
-    raise AssertionError("Only grayscale and RGB images are supported.")
-
-
-def normalize(x: np.ndarray, y: np.ndarray):
-    h, w, _ = get_h_w_c(x)
-    # No idea why, but that's the value NvTT uses
-    z = 2
-    l = np.sqrt(np.square(x) + np.square(y) + z * z)
-    return x / l, y / l, np.ones((h, w), dtype=np.float32) * z / l
-
-
 @normal_map_group.register(
     schema_id="chainner:image:normal_generator",
     name="Normal Map Generator",
@@ -61,7 +42,7 @@ def normalize(x: np.ndarray, y: np.ndarray):
         "### Height map generation",
         "Since this node needs a height map, it will always convert the input image into one. The **Height** input determines how this conversion happens.",
         "Generally, if you have already have a good height map for a texture, use it with *Average RGB* for best results.",
-        "If you have a albedo/diffuse texture, most height sources will approximate the height map using pixel brightness. This is a very crude approximation, but can work well enough. Start with *Average RGB* and test our difference filters before using a different height source.",
+        "If you have an albedo/diffuse texture, most height sources will approximate the height map using pixel brightness. This is a very crude approximation, but can work well enough. Start with *Average RGB* and test our difference filters before using a different height source.",
         "### Filters",
         "There are many filters available. Generally, the *Sobel (dUdV) (3x3)* filter is a good choice for obtaining a normal map. Since the filter is small and not too aggressive, it works well even with crude height maps (e.g. height maps obtained from albedo/diffuse textures). For a more aggressive filter, try *Scharr (3x3)* or *4 Sample (1x3)*.",
         "If you want more control over the output normal map, use the *Multi Gaussian* filter. This filter operates on multiple frequencies and allows you to control the strength of each frequency. This allows you to adjust the influence of tiny details and large features. *Scale 1** is the strength of the smallest details, and **Scale 8** is the strength of the largest features.",

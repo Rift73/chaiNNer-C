@@ -162,3 +162,24 @@ test('a chain copied by an older version pastes without what it no longer fits',
     expect(nodes[0].data.id).toBe(nodes[0].id);
     expect(edges).toEqual([]);
 });
+
+test('a pasted image becomes a Load Image node at the middle of the editor', async () => {
+    stubs.invoke.mockResolvedValueOnce({ kind: 'image', path: 'C:/clip.png' });
+    const createNode = vi.fn();
+    const editor = { getBoundingClientRect: () => ({ x: 300, y: 40, width: 1000, height: 600 }) };
+
+    await pasteFromClipboard(
+        vi.fn(),
+        vi.fn(),
+        createNode,
+        (position) => position,
+        { current: editor as unknown as Element },
+        schemata,
+        vi.fn()
+    );
+
+    expect(createNode).toHaveBeenCalledWith({
+        position: { x: 800, y: 340 },
+        data: { schemaId: 'chainner:image:load', inputData: { 0: 'C:/clip.png' } },
+    });
+});

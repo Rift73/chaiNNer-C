@@ -349,8 +349,7 @@ static float vector_round(float value) {
     return fraction > 0.5f || (fraction == 0.5f && fmodf(lower, 2) != 0) ? lower + 1 : lower;
 }
 
-/* isnan and isfinite as bit tests on the float's word, whatever the MXCSR state
-   (B3 called the CRT's _fdclass per pixel). */
+/* isnan and isfinite as bit tests on the float's word, whatever the MXCSR state. */
 static uint32_t float_bits(float value) {
     uint32_t bits;
     memcpy(&bits, &value, sizeof(bits));
@@ -450,7 +449,7 @@ static size_t build_palette_tree(dither_job *job, size_t *indices, size_t begin,
    300 or more unique finite colors get the kd tree. A palette holding a nonfinite
    color gets none, so every pixel takes the linear scan used below 300 colors; with a
    tree, a pixel with a nonfinite channel takes it too (nearest_palette). Upstream's
-   R-tree decides those queries by its traversal; Consult 8 D-5 applies the sub-300
+   R-tree decides those queries by its traversal; this unit applies the sub-300
    rule there instead of refusing the input. */
 static cn_status prepare_palette(dither_job *job, const float *palette, size_t count,
                                  int ordered) {
@@ -903,9 +902,8 @@ CN_EXPORT cn_status cn_neighborhood_uniform_riemersma(const float *src, float *o
 }
 
 /* compatible, on the three palette entries: optional, and written 1 when given. Every
-   input is dithered since Consult 8 D-5; the slot stays because the B3 golden manifests
-   and the frozen reference_image_preparation/native_neighborhood.py record it, and its
-   removal is a ruling. */
+   input is dithered; the slot stays because the B3 golden manifests
+   and the frozen reference_image_preparation/native_neighborhood.py record it. */
 CN_EXPORT cn_status cn_neighborhood_palette_riemersma(const float *src, float *out,
         size_t h, size_t w, size_t c, const float *palette, size_t count,
         uint32_t history_length, float decay_ratio, int *compatible) {

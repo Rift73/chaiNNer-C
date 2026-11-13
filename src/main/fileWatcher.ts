@@ -4,9 +4,8 @@ import { BrowserWindowWithSafeIpc } from './safeIpc';
 
 type EventType = 'add' | 'change' | 'unlink';
 
-// Keep track of all the files being watched and how many times they are being watched
-const watchedFiles = new Set<string>();
-const watchedFilesCount: Record<string, number> = {};
+// How many times each watched file is watched
+const watchCounts = new Map<string, number>();
 
 const listenerWindows: Set<BrowserWindowWithSafeIpc> = new Set();
 
@@ -39,13 +38,11 @@ export const addBrowserWindow = (window: BrowserWindowWithSafeIpc) => {
 };
 
 export const addFile = (path: string) => {
-    if (watchedFiles.has(path)) {
-        watchedFilesCount[path] += 1;
-    } else {
-        watchedFiles.add(path);
+    const count = watchCounts.get(path) ?? 0;
+    if (count === 0) {
         watcher.add(path);
-        watchedFilesCount[path] = 1;
     }
+    watchCounts.set(path, count + 1);
 };
 
 export const addFiles = (paths: readonly string[]) => {
@@ -55,12 +52,12 @@ export const addFiles = (paths: readonly string[]) => {
 };
 
 export const removeFile = (path: string) => {
-    if (watchedFilesCount[path] === 1) {
-        watchedFiles.delete(path);
-        delete watchedFilesCount[path];
+    const count = watchCounts.get(path);
+    if (count === 1) {
+        watchCounts.delete(path);
         watcher.unwatch(path);
-    } else {
-        watchedFilesCount[path] -= 1;
+    } else if (count !== undefined) {
+        watchCounts.set(path, count - 1);
     }
 };
 

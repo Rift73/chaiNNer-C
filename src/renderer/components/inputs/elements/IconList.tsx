@@ -23,7 +23,6 @@ export const IconList = memo(({ value, onChange, isDisabled, options }: IconList
             {options.map((o, i) => {
                 const selected = i === selection;
 
-                // n: var(--chakra-colors-whiteAlpha-200)
                 return (
                     <Tooltip
                         closeOnClick

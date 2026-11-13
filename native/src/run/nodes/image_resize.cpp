@@ -38,17 +38,6 @@ std::string python_repr(double value)
     return digits.substr(0, size_t(point)) + "." + digits.substr(size_t(point));
 }
 
-/* round(value, 3) of a finite double: the decimal rounded half to even at three places, read back (CPython's
- * double_round through dtoa mode 3). */
-double python_round3(double value)
-{
-    char buffer[400];
-    auto end = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 3).ptr;
-    double rounded = 0;
-    std::from_chars(buffer, end, rounded);
-    return rounded;
-}
-
 /* The exact product mantissa_a * mantissa_b * factor (factor 1 or 3, operands below 2^63) rounded half to even to a
  * double, times 2^exponent: an overflow is the infinity. */
 double scaled_product(uint64_t mantissa_a, uint64_t mantissa_b, uint64_t factor, int exponent)
@@ -129,7 +118,7 @@ void check_image_memory(const char *name, Extent height, Extent width, int32_t c
     if (!over) return;
     double gigabytes = scaled_product(width.mantissa, height.mantissa, factor, exponent - 30);
     throw NodeError("RuntimeError", std::string(name) + " would require " +
-                                        (std::isinf(gigabytes) ? "inf" : python_repr(python_round3(gigabytes))) +
+                                        (std::isinf(gigabytes) ? "inf" : python_repr(python_round(gigabytes, 3))) +
                                         " GB of memory, but only 16 GB are allowed.");
 }
 

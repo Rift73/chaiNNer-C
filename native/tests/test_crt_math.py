@@ -1,9 +1,9 @@
-"""The CRT math table of chainner_native.dll (cn_crt_math.h; Consult 6 D-4).
+"""The CRT math table of chainner_native.dll (cn_crt_math.h).
 
 Group-1 mirrors call cn_crt, which the DLL fills from the process's ucrtbase.dll as it
 loads; the table holding exactly those exports is checked here. The comparison of each
 entry with the build SDK's static UCRT, with the CRT's FMA3 path on and off, is
-informational (STATUS's SP5a item): a difference means this machine's ucrtbase.dll moved
+informational: a difference means this machine's ucrtbase.dll moved
 away from the static UCRT, so the tracked goldens may lag the live oracle. The
 live-NumPy assertions are the contract.
 

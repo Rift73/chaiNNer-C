@@ -257,6 +257,29 @@ const getTypeText = (type: Type): TagValue[] => {
                 tags.push({ kind: 'literal', value: subType.value });
             }
         }
+        if (type.descriptor.name === 'VideoClip') {
+            const width = type.getField('width') ?? NeverType.instance;
+            const height = type.getField('height') ?? NeverType.instance;
+            if (
+                isNumericLiteral(width) &&
+                isNumericLiteral(height) &&
+                width.value > 0 &&
+                height.value > 0
+            ) {
+                tags.push({
+                    kind: 'literal',
+                    value: `${width.toString()}x${height.toString()}`,
+                });
+            }
+            const fps = type.getField('fps') ?? NeverType.instance;
+            if (isNumericLiteral(fps) && fps.value > 0) {
+                tags.push({ kind: 'literal', value: `${formatNumber(fps.value)} fps` });
+            }
+            const fieldOrder = type.getField('fieldOrder') ?? NeverType.instance;
+            if (isStringLiteral(fieldOrder)) {
+                tags.push({ kind: 'literal', value: fieldOrder.value });
+            }
+        }
     }
 
     if (type.type === 'union') {

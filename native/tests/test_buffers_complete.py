@@ -49,7 +49,7 @@ def test_random_float_bitpatterns(bits, shape, layout):
     with np.errstate(all="ignore"):
         expected = getattr(ORIGINAL, f"to_uint{bits}")(image, normalized=False)
         actual = getattr(image_utils, f"to_uint{bits}")(image, normalized=True)
-        assert native.converted_pixels(image, bits, True) is not None
+        assert native.converted_pixels(image, bits) is not None
     assert actual.tobytes() == expected.tobytes()
     assert image.tobytes() == saved
 

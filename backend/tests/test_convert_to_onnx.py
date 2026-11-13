@@ -10,7 +10,7 @@ import weakref
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TypedDict, cast
 
 import numpy as np
 import onnx
@@ -30,6 +30,7 @@ from spandrel.architectures.__arch_helpers.fp32_last_group import (
     FP32Conv2d,
     FP32LayerNorm,
 )
+from spandrel.architectures.__arch_helpers.padded_norm import KernelLayerNorm
 from spandrel.architectures.Compact import Compact
 from spandrel.architectures.DAT import DAT
 from spandrel.architectures.DAT.__arch.DAT import (
@@ -54,6 +55,7 @@ from spandrel.architectures.GFISRv2 import GFISRV2
 from spandrel.architectures.GFISRv2.__arch.gfisrv2 import DySample as GfisrDySample
 from spandrel.architectures.HAT import HAT
 from spandrel.architectures.HAT.__arch.HAT import OCAB, WindowAttention
+from spandrel.architectures.HEART import HEART
 from spandrel.architectures.HVICIDNet import HVICIDNet
 from spandrel.architectures.MixDehazeNet import MixDehazeNet
 from spandrel.architectures.MoESR import MoESR
@@ -190,6 +192,26 @@ ARCHS: dict[str, Callable[[], torch.nn.Module]] = {
         dim=16, n_blocks=2, gc=2, square_kernel_size=3, band_kernel_size=3, scale=2
     ),
     "RetinexFormer": lambda: RetinexFormer(n_feat=16, stage=1),
+    # gaterv3.2's layout with three levels, as the trained 2x models: a multiple of 8
+    "GaterV3": lambda: GateRV3(
+        dim=16,
+        enc_blocks=(1, 1, 1),
+        dec_blocks=(1, 1, 1),
+        num_latent=1,
+        sisr_blocks=1,
+        upsample_mid_dim=16,
+    ),
+    # Its windows are 32 wide, the smallest image it takes
+    "HEART": lambda: HEART(
+        embed_dim=12,
+        depths=(2,),
+        num_heads=(2,),
+        window_size=32,
+        compress_ratio=2,
+        squeeze_factor=4,
+        upscale=2,
+        num_feat=16,
+    ),
 }
 # An architecture with no export rewrite of its own
 PLAIN = "SwiftSRGAN"
@@ -276,6 +298,15 @@ def tiny_model(arch: str) -> ImageModelDescriptor:
     return model.eval()
 
 
+def only_output(
+    session: ort.InferenceSession, feeds: dict[str, np.ndarray]
+) -> np.ndarray:
+    """The session's one output, a dense tensor."""
+    (output,) = session.run(None, feeds)
+    assert isinstance(output, np.ndarray)
+    return output
+
+
 def torch_output(model: ImageModelDescriptor, image: np.ndarray) -> np.ndarray:
     with torch.no_grad():
         return model(torch.from_numpy(image)[None]).numpy()[0]
@@ -293,6 +324,17 @@ def test_what_the_exporter_cannot_write_is_refused_by_name(net: type[torch.nn.Mo
     assert is_onnx_supported(tiny_model("SwinIR"))
 
 
+def test_an_unsupported_architecture_is_refused_by_its_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(convert_to_onnx, "is_onnx_supported", lambda model: False)
+    with pytest.raises(
+        AssertionError,
+        match=r"^RealESRGAN Compact is not supported for ONNX conversion at this time\.$",
+    ):
+        convert(tiny_model("Compact"))
+
+
 @pytest.mark.parametrize(
     ("arch", "sizes"),
     [
@@ -308,6 +350,8 @@ def test_what_the_exporter_cannot_write_is_refused_by_name(net: type[torch.nn.Mo
         ("Swin2SR", SIZES),
         ("RGT", SIZES),
         ("DRCT", SIZES),
+        ("HEART", SIZES),
+        ("GaterV3", SIZES),
     ],
 )
 def test_convert_to_onnx_matches_pytorch(arch: str, sizes: list[tuple[int, int]]):
@@ -317,7 +361,7 @@ def test_convert_to_onnx_matches_pytorch(arch: str, sizes: list[tuple[int, int]]
         providers=["CPUExecutionProvider"],
     )
     for image in images(sizes):
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(
             np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-5
         )
@@ -335,7 +379,7 @@ def test_a_fourier_export_loads_and_matches_pytorch(arch: str, opset: int):
     for image in images([(32, 32), (37, 51), (48, 64)]):
         expected = torch_output(model, image)
         assert ((expected > 0) & (expected < 1)).mean() > 0.5
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(np.asarray(actual)[0], expected, rtol=0, atol=1e-4)
 
 
@@ -377,7 +421,7 @@ def test_a_fourier_export_in_fp16_matches_pytorch(arch: str):
         providers=["CPUExecutionProvider"],
     )
     for image in images([(32, 32), (37, 51)]):
-        (actual,) = session.run(None, {"input": image[None].astype(np.float16)})
+        actual = only_output(session, {"input": image[None].astype(np.float16)})
         np.testing.assert_allclose(
             np.asarray(actual)[0].astype(np.float32),
             torch_output(model, image),
@@ -476,7 +520,7 @@ def test_an_lda_export_follows_the_input_size(arch: str, scale: int):
     # Not the 32x32 example, wide and tall
     for image in images([(37, 51), (48, 80), (80, 48), (16, 64)]):
         expected = torch_output(model, image)
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         assert np.asarray(actual)[0].shape == expected.shape
         np.testing.assert_allclose(np.asarray(actual)[0], expected, rtol=0, atol=1e-4)
 
@@ -495,7 +539,7 @@ def test_an_export_follows_the_input_size(arch: str):
     )
     for image in images(sizes):
         expected = torch_output(model, image)
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         assert np.asarray(actual)[0].shape == expected.shape
         np.testing.assert_allclose(np.asarray(actual)[0], expected, rtol=0, atol=1e-4)
 
@@ -519,7 +563,7 @@ def test_a_seemore_export_runs_the_expert_each_image_picks():
     torch_output(model, bright)
     torch_output(model, dark)
     hook.remove()
-    router = layer.gate.body[2].weight
+    router = layer.get_parameter("gate.body.2.weight")
     router.zero_()
     router[0] = features[0] / features[0].norm()
     router[1] = features[1] / features[1].norm()
@@ -538,7 +582,7 @@ def test_a_seemore_export_runs_the_expert_each_image_picks():
     )
     assert [type(m) for m in model.model.modules()] == classes
     for image, want in zip([bright, dark], expected):
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(np.asarray(actual)[0], want, rtol=0, atol=1e-5)
 
 
@@ -555,7 +599,7 @@ def test_an_fp16_retinexformer_holds_on_a_flat_image(value: float):
     model = tiny_model("RetinexFormer")
     image = np.full((3, 32, 32), value, np.float32)
     session = fp16_export_session(model)
-    (actual,) = session.run(None, {"input": image[None].astype(np.float16)})
+    actual = only_output(session, {"input": image[None].astype(np.float16)})
     assert np.isfinite(actual).all()
     np.testing.assert_allclose(
         np.asarray(actual, np.float32)[0], torch_output(model, image), atol=0.02
@@ -643,7 +687,7 @@ def test_an_fp16_hat_export_runs_as_the_model_at_another_size():
     model = tiny_model("HAT")
     image = images([(24, 40)])[0]
     session = fp16_export_session(model)
-    (actual,) = session.run(None, {"input": image[None].astype(np.float16)})
+    actual = only_output(session, {"input": image[None].astype(np.float16)})
     np.testing.assert_allclose(
         np.asarray(actual, np.float32)[0], torch_output(model, image), atol=0.02
     )
@@ -690,7 +734,7 @@ def test_a_seemore_export_runs_the_one_expert_topk_picks_of_a_tie(logits: list[f
             convert_to_onnx_impl(model, torch.device("cpu"), opset_version=opset),
             providers=["CPUExecutionProvider"],
         )
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(np.asarray(actual)[0], expected, rtol=0, atol=1e-5)
 
 
@@ -724,7 +768,7 @@ def test_an_fp16_seemore_export_runs_one_expert_of_a_tie(opset: int):
         providers=["CPUExecutionProvider"],
     )
     image = images([(37, 51)])[0]
-    (actual,) = session.run(None, {"input": image[None].astype(np.float16)})
+    actual = only_output(session, {"input": image[None].astype(np.float16)})
     np.testing.assert_allclose(
         np.asarray(actual, np.float32)[0], torch_output(model, image), atol=0.02
     )
@@ -908,7 +952,7 @@ def test_dysample_exports_its_grid_for_every_size(arch: str):
         providers=["CPUExecutionProvider"],
     )
     for image in images([(32, 32), (37, 51), (64, 48)]):
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(
             np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-4
         )
@@ -1011,7 +1055,8 @@ def outgrowing_fp16(arch: str) -> ImageModelDescriptor:
     torch.manual_seed(0)
     model = ModelLoader().load_from_state_dict(TWO_GROUPS[arch]().state_dict())
     assert isinstance(model, ImageModelDescriptor)
-    conv = model.model.layers[0].conv
+    conv = model.model.get_submodule("layers.0.conv")
+    assert isinstance(conv, torch.nn.Conv2d)
     with torch.no_grad():
         conv.weight *= 1e5
         peak = conv(torch.ones(1, conv.in_channels, 8, 8)).abs().max()
@@ -1028,11 +1073,12 @@ def test_an_fp16_export_holds_a_group_past_fp16_on_a_smooth_image(
     half = convert_to_onnx_impl(model, torch.device("cpu"), True, opset_version=20)
     full = convert_to_onnx_impl(model, torch.device("cpu"), False, opset_version=20)
     x = SMOOTH[image]
-    (actual,) = ort.InferenceSession(half, providers=["CPUExecutionProvider"]).run(
-        None, {"input": x.astype(np.float16)}
+    actual = only_output(
+        ort.InferenceSession(half, providers=["CPUExecutionProvider"]),
+        {"input": x.astype(np.float16)},
     )
-    (expected,) = ort.InferenceSession(full, providers=["CPUExecutionProvider"]).run(
-        None, {"input": x}
+    expected = only_output(
+        ort.InferenceSession(full, providers=["CPUExecutionProvider"]), {"input": x}
     )
     assert np.isfinite(expected).all()
     assert np.isfinite(actual).all()
@@ -1063,16 +1109,33 @@ def swin_in_fp16(model: ImageModelDescriptor) -> ImageModelDescriptor:
 
 
 def swin_closing_convolution(arch: str, net: torch.nn.Module) -> torch.nn.Conv2d:
-    group = net.layers[-1]
-    if arch == "DRCT":
-        return group.adjust5
-    return group.patch_embed.proj if arch == "Swin2SR" else group.conv
+    layers = net.get_submodule("layers")
+    assert isinstance(layers, torch.nn.ModuleList)
+    name = {"DRCT": "adjust5", "Swin2SR": "patch_embed.proj"}.get(arch, "conv")
+    convolution = layers[-1].get_submodule(name)
+    assert isinstance(convolution, torch.nn.Conv2d)
+    return convolution
+
+
+class SwinOptions(TypedDict):
+    embed_dim: int
+    num_heads: list[int]
+    window_size: int
+    upsampler: str
+    upscale: int
+    img_size: int
 
 
 def stored_at(arch: str, img_size: int, window_size: int = 8) -> ImageModelDescriptor:
     """A tiny model that stored its masks at `img_size`, as a checkpoint trained there."""
-    swin = {"embed_dim": 12, "num_heads": [2], "window_size": window_size}
-    swin |= {"upsampler": "pixelshuffle", "upscale": 2, "img_size": img_size}
+    swin = SwinOptions(
+        embed_dim=12,
+        num_heads=[2],
+        window_size=window_size,
+        upsampler="pixelshuffle",
+        upscale=2,
+        img_size=img_size,
+    )
     net = {
         "SwinIR": lambda: SwinIR(depths=[2], **swin),
         "Swin2SR": lambda: Swin2SR(depths=[2], **swin),
@@ -1110,7 +1173,7 @@ def test_a_mask_stored_at_the_examples_size_does_not_stay_in_the_export(
         x = np.linspace(0, 1, h * w, dtype=np.float32).reshape(h, w)
         x = np.repeat(x[None], 3, axis=0)
         feed = x.astype(np.float16) if use_half else x
-        (actual,) = session.run(None, {"input": feed[None]})
+        actual = only_output(session, {"input": feed[None]})
         np.testing.assert_allclose(
             actual[0].astype(np.float32),
             torch_output(model, x),
@@ -1163,7 +1226,9 @@ def float64_operators(data: bytes) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("arch", [*SWIN, "HAT", "DAT", "OmniSR", "RetinexFormer"])
+@pytest.mark.parametrize(
+    "arch", [*SWIN, "HAT", "DAT", "OmniSR", "RetinexFormer", "HEART"]
+)
 @pytest.mark.parametrize("opset", [14, 16])
 def test_an_fp16_export_below_opset_17_holds_no_float64(arch: str, opset: int):
     model = tiny_model(arch)
@@ -1176,11 +1241,30 @@ def test_an_fp16_export_below_opset_17_holds_no_float64(arch: str, opset: int):
     # OmniSR takes its input in FP32
     fp16 = session.get_inputs()[0].type == "tensor(float16)"
     feed = x.astype(np.float16) if fp16 else x
-    (actual,) = session.run(None, {"input": feed[None]})
+    actual = only_output(session, {"input": feed[None]})
     assert np.isfinite(actual).all()
     np.testing.assert_allclose(
         actual[0].astype(np.float32), torch_output(model, x), atol=0.03
     )
+
+
+@pytest.mark.parametrize("opset", [14, 16])
+def test_an_fp16_export_below_opset_17_takes_kernel_layer_norms_in_fp32(opset: int):
+    # Two residual groups: the first group's norms and every spatial gate's are spandrel's
+    # KernelLayerNorm (an nn.LayerNorm subclass), which the export copy keeps
+    torch.manual_seed(0)
+    net = DAT(
+        embed_dim=24,
+        depth=[2, 2],
+        num_heads=[4, 4],
+        upsampler="pixelshuffle",
+        upscale=2,
+    )
+    model = ModelLoader().load_from_state_dict(net.state_dict())
+    assert isinstance(model, ImageModelDescriptor)
+    assert any(type(m) is KernelLayerNorm for m in model.model.modules())
+    data = export_onnx(swin_in_fp16(model.eval()), opset_version=opset)
+    assert float64_operators(data) == []
 
 
 def test_layer_norms_stay_as_they_are_but_for_fp16_below_opset_17():
@@ -1204,7 +1288,7 @@ def test_a_swin_export_in_fp32_matches_pytorch_and_is_not_rewritten(arch: str):
         providers=["CPUExecutionProvider"],
     )
     for image in images(SWIN_SIZES):
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(
             np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-5
         )
@@ -1221,7 +1305,7 @@ def test_a_swin_traces_in_fp16_and_follows_the_input_size(arch: str, opset: int)
     for h, w in SWIN_SIZES:
         x = np.linspace(0, 1, h * w, dtype=np.float32).reshape(h, w)
         x = np.repeat(x[None], 3, axis=0)
-        (actual,) = session.run(None, {"input": x[None].astype(np.float16)})
+        actual = only_output(session, {"input": x[None].astype(np.float16)})
         expected = torch_output(model, x)
         assert actual.shape[1:] == expected.shape
         assert np.isfinite(actual).all()
@@ -1308,8 +1392,9 @@ def test_a_swin_holds_a_last_group_past_fp16_on_a_smooth_image(arch: str, image:
         conv.weight *= 1e5
     x = SMOOTH[image]
     data = export_onnx(swin_in_fp16(model), opset_version=20)
-    (actual,) = ort.InferenceSession(data, providers=["CPUExecutionProvider"]).run(
-        None, {"input": x.astype(np.float16)}
+    actual = only_output(
+        ort.InferenceSession(data, providers=["CPUExecutionProvider"]),
+        {"input": x.astype(np.float16)},
     )
     expected = torch_output(model, x[0])
     assert np.isfinite(expected).all()
@@ -1352,7 +1437,7 @@ def test_convert_model_with_trainable_weights():
         providers=["CPUExecutionProvider"],
     )
     (image,) = images([(37, 51)])
-    (actual,) = session.run(None, {"input": image[None]})
+    actual = only_output(session, {"input": image[None]})
     np.testing.assert_allclose(
         np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-5
     )
@@ -1754,6 +1839,44 @@ def test_an_fp16_export_of_a_model_loaded_in_fp16_is_checked_against_its_file_we
         assert torch.equal(source[name], weight)
 
 
+def test_a_model_with_weights_derived_in_eval_mode_exports_its_fp32_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # GaterV3's Conv3XC fuses its branches into eval_conv in evaluation mode; the file
+    # holds an eval_conv from before (a model saved in training mode), which Load Model
+    # replaces: the reread is compared on the file's own weights, then fused again.
+    count_exports(monkeypatch)
+    straight_to_fp32(monkeypatch, "GaterV3")
+    logged = warnings_logged(monkeypatch)
+    path = model_file(tmp_path, ARCHS["GaterV3"])
+    stored = torch.load(path)["span_block0.c1_r.eval_conv.weight"]
+    half = load_model(path, FP16)
+    full = load_model(path, FP32)
+    assert isinstance(half, ImageModelDescriptor)
+    assert isinstance(full, ImageModelDescriptor)
+    fused = full.model.state_dict()["span_block0.c1_r.eval_conv.weight"]
+    assert not torch.equal(stored, fused)
+    assert convert(half)[0].bytes == convert(full)[0].bytes
+    assert logged == []
+
+
+def test_a_rewritten_file_of_a_model_with_derived_weights_still_fails_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    count_exports(monkeypatch)
+    straight_to_fp32(monkeypatch, "GaterV3")
+    logged = warnings_logged(monkeypatch)
+    monkeypatch.setattr(load_model_module, "file_identity", lambda path: 0)
+    path = model_file(tmp_path, ARCHS["GaterV3"])
+    half = load_model(path, FP16)
+    assert isinstance(half, ImageModelDescriptor)
+    torch.manual_seed(1)
+    torch.save(ARCHS["GaterV3"]().state_dict(), path)
+    convert(half)
+    assert len(logged) == 1
+    assert "no longer holds the weights Load Model loaded" in logged[0]
+
+
 def rewrite(path: Path) -> None:
     """Other weights in `path`, a second later (a rewrite within the file system's
     time resolution keeps the identity; the weights' comparison catches that)."""
@@ -1979,6 +2102,8 @@ FP16_MODELS = [
     "MixDehazeNet",
     "FIGSR",
     "RGT",
+    "HEART",
+    "GaterV3",
 ]
 # An architecture off the list, as one spandrel adds later is
 FP32_MODEL = "GFISRv2"
@@ -2131,7 +2256,7 @@ def test_plksr_exports_without_a_scatter_and_with_the_same_values(
     assert "ScatterND" not in ops and "Range" not in ops
     session = ort.InferenceSession(data, providers=["CPUExecutionProvider"])
     for image in images(SIZES):
-        (actual,) = session.run(None, {"input": image[None]})
+        actual = only_output(session, {"input": image[None]})
         np.testing.assert_allclose(
             np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-5
         )
@@ -2148,8 +2273,9 @@ def test_realplksr_samples_in_fp32_in_an_fp16_export():
     model.eval()
     # The sampler's weights are the loaded FP32 ones, not FP16 roundings of them.
     export = convert_to_onnx.export_copy(model, torch.device("cpu"), use_half=True)
-    loaded = model.model.to_img.state_dict()
-    for name, weight in export.model.to_img.source.state_dict().items():
+    loaded = model.model.get_submodule("to_img").state_dict()
+    sampler = export.model.get_submodule("to_img.source")
+    for name, weight in sampler.state_dict().items():
         assert weight.dtype == torch.float32
         assert torch.equal(weight, loaded[name])
     onnx_model = convert(model)[0]
@@ -2252,7 +2378,7 @@ def test_a_model_that_fails_the_check_converts_in_fp32_with_verify_off():
     # What the user receives is right: the FP32 model's own output.
     session = ort.InferenceSession(onnx_model.bytes, providers=["CPUExecutionProvider"])
     image = images([(16, 16)])[0]
-    output = session.run(None, {"input": image[None]})[0][0]
+    output = only_output(session, {"input": image[None]})[0]
     np.testing.assert_allclose(output, torch_output(model, image), rtol=0, atol=1e-3)
     assert_unchanged(model, before)
     # A saved file stays seamless.
@@ -2448,7 +2574,7 @@ def fp16_chain(k: float, inverse: float) -> bytes:
 
 def run_chain(data: bytes) -> np.ndarray:
     session = ort.InferenceSession(data, providers=["CPUExecutionProvider"])
-    return session.run(None, {"x": np.array([1.0], np.float16)})[0]
+    return only_output(session, {"x": np.array([1.0], np.float16)})
 
 
 def test_holding_keeps_a_chain_of_arithmetic_in_fp16_on_the_cpu():
@@ -2523,6 +2649,7 @@ def test_the_check_takes_its_own_limit_on_the_images_with_detail(
             self, names: list[str], feed: dict[str, np.ndarray]
         ) -> list[np.ndarray]:
             (output,) = self.real.run(names, feed)
+            assert isinstance(output, np.ndarray)
             (image,) = feed.values()
             if image.shape[-1] != 64:
                 return [output]
@@ -2542,10 +2669,12 @@ def test_the_check_takes_its_own_limit_on_the_images_with_detail(
             convert_to_onnx.verify_models(model, data, True, device)
 
 
-def test_the_smooth_images_are_the_same_in_every_run():
+@pytest.mark.parametrize("fp16", [True, False])
+def test_the_check_images_are_the_same_in_every_run(fp16: bool):
     model = tiny_model("Compact")
-    first = convert_to_onnx.verify_inputs(model, True)
-    second = convert_to_onnx.verify_inputs(model, True)
+    first = convert_to_onnx.verify_inputs(model, fp16)
+    torch.rand(1)  # the global generator moves between runs
+    second = convert_to_onnx.verify_inputs(model, fp16)
     for one, other in zip(first, second, strict=True):
         assert torch.equal(one, other)
 
@@ -2775,6 +2904,7 @@ def change_onnx_output(
             self, names: list[str], feed: dict[str, np.ndarray]
         ) -> list[np.ndarray]:
             (output,) = self.real.run(names, feed)
+            assert isinstance(output, np.ndarray)
             return [change(output.astype(np.float64)).astype(output.dtype)]
 
     monkeypatch.setattr(ort, "InferenceSession", Changed)
@@ -2911,7 +3041,7 @@ def test_an_fp16_export_runs_in_fp16_on_the_cpu(
     assert session.get_inputs()[0].type == input_type
     assert session.get_outputs()[0].type == "tensor(float16)"
     image = np.random.default_rng(0).random((1, 3, 16, 16)).astype(dtype)
-    output = session.run(None, {session.get_inputs()[0].name: image})[0]
+    output = only_output(session, {session.get_inputs()[0].name: image})
     assert output.shape == (1, 3, 16 * scale, 16 * scale) and np.isfinite(output).all()
 
 
@@ -2937,8 +3067,8 @@ def test_an_fp16_export_sees_what_fp16_would_round_away(arch: str, first: str):
     b = a.copy()
     b[..., ::2, ::2] += 2.0**-13
     assert np.array_equal(a.astype(np.float16), b.astype(np.float16))
-    (from_a,) = session.run(None, {"input": a})
-    (from_b,) = session.run(None, {"input": b})
+    from_a = only_output(session, {"input": a})
+    from_b = only_output(session, {"input": b})
     assert not np.array_equal(from_a, from_b)
 
 
@@ -2952,9 +3082,9 @@ def test_an_fp16_export_holds_on_a_smooth_image(arch: str, image: str):
     session = ort.InferenceSession(half, providers=["CPUExecutionProvider"])
     assert session.get_inputs()[0].type == "tensor(float)"
     assert session.get_outputs()[0].type == "tensor(float16)"
-    (actual,) = session.run(None, {"input": x})
-    (expected,) = ort.InferenceSession(full, providers=["CPUExecutionProvider"]).run(
-        None, {"input": x}
+    actual = only_output(session, {"input": x})
+    expected = only_output(
+        ort.InferenceSession(full, providers=["CPUExecutionProvider"]), {"input": x}
     )
     assert np.isfinite(actual).all()
     np.testing.assert_allclose(actual.astype(np.float32), expected, atol=0.02)
@@ -2975,6 +3105,28 @@ def test_upscale_image_runs_a_saved_fp16_export(arch: str):
     )
 
 
+@pytest.mark.parametrize("arch", FP32_INPUT_MODELS)
+def test_each_fp32_input_architecture_takes_its_first_convolution(arch: str):
+    assert input_export.fp32_first_convolution(tiny_model(arch)) is not None
+
+
+@pytest.mark.parametrize(
+    "convolution",
+    [
+        torch.nn.Conv2d(3, 8, 3, padding=2, dilation=2),
+        torch.nn.Conv2d(3, 6, 3, padding=1, groups=3),
+        torch.nn.Conv2d(3, 8, 3, padding=1, padding_mode="reflect"),
+    ],
+)
+def test_a_first_convolution_it_would_run_wrongly_is_refused(
+    convolution: torch.nn.Conv2d,
+):
+    model = tiny_model("Compact")
+    model.model.set_submodule("body.0", convolution)
+    with pytest.raises(ValueError, match="FP16 export's FP32 input does not take"):
+        input_export.fp32_first_convolution(model)
+
+
 def old_and_new_compact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[ImageModelDescriptor, OnnxGeneric, OnnxGeneric]:
@@ -2987,9 +3139,11 @@ def old_and_new_compact(
 
     def saved() -> OnnxGeneric:
         data = convert_to_onnx_impl(model, torch.device("cpu"), True, opset_version=20)
-        return load_onnx_model(
+        onnx_model = load_onnx_model(
             with_recorded_arch(data, model.architecture.name, "fp16")
         )
+        assert isinstance(onnx_model, OnnxGeneric)
+        return onnx_model
 
     new = saved()
     with monkeypatch.context() as patched:
@@ -3027,7 +3181,7 @@ def test_interpolate_models_mixes_two_fp16_exports(
     mixed = interpolate_models_node(interpolation_context(tmp_path), new, new, 50)[0]
     session = ort.InferenceSession(mixed.bytes, providers=["CPUExecutionProvider"])
     image = np.full((1, 3, 16, 16), 0.5, np.float32)
-    (output,) = session.run(None, {"input": image})
+    output = only_output(session, {"input": image})
     np.testing.assert_allclose(
         output.astype(np.float32)[0], torch_output(model, image[0]), atol=0.02
     )
@@ -3056,7 +3210,10 @@ def test_a_saved_onnx_keeps_its_record(arch: str, monkeypatch: pytest.MonkeyPatc
     }
     loaded = load_onnx_model(converted.bytes)
     assert (loaded.info.arch, loaded.info.dtype) == (name, "fp16")
-    fields = OnnxModelOutput().get_broadcast_type(loaded)["fields"]
+    broadcast = OnnxModelOutput().get_broadcast_type(loaded)
+    assert isinstance(broadcast, dict) and broadcast["type"] == "named"
+    fields = broadcast["fields"]
+    assert fields is not None
     assert fields["arch"] == {"type": "string-literal", "value": name}
 
 
@@ -3073,7 +3230,7 @@ def test_the_node_hides_data_type_alone_and_keeps_its_input_ids():
         for n in convert_to_onnx.utility_group.nodes
         if n.schema_id == "chainner:pytorch:convert_to_onnx"
     )
-    labels = {i.id: i.label for i in node.inputs}
+    labels = {int(i.id): i.label for i in node.inputs}
     assert (labels[1], labels[2], labels[3]) == ("Data Type", "Opset", "Verify")
     # A saved chain's Calibration Image and Mixed data types migrate away (migrations.ts).
     assert 7 not in labels

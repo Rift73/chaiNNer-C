@@ -1,5 +1,5 @@
 /* Median cut's per-channel extrema (palette_ops.c's describe) and its median's radix
- * select (SP4b Task 5b). Shared by that baseline unit and the /arch:AVX2 unit
+ * select. Shared by that baseline unit and the /arch:AVX2 unit
  * palette_avx2.c: static helpers compiled into each including unit, never inline, used
  * by both (C4505). */
 #ifndef CHAINNER_PALETTE_SHARED_H
@@ -56,8 +56,8 @@ static uint32_t median_key(float value)
 /* channels 1-4: every channel's low and high, a vector pass folding with strict
  * compares; a channel holding a NaN is redone by channel_extrema. Without a NaN these
  * are channel_extrema's values: equal compares mean equal bits except within the zero
- * class (+-0, and under DAZ the denormals), where the representative may differ (SP4b
- * D12 as built). The extrema reach nothing but range = high - low, whose bits that
+ * class (+-0, and under DAZ the denormals), where the representative may differ.
+ * The extrema reach nothing but range = high - low, whose bits that
  * choice leaves unchanged, except that two zero-class extrema give +0 or -0, a range
  * that never compares above the +0 a bucket starts from, so it is never stored; the
  * stored range is only ever compared. */
@@ -68,7 +68,7 @@ void cn_palette_extrema_avx2(const float *data, size_t start, size_t count, size
  * them: the predicate here must stay exactly the split's (a > compare honouring DAZ,
  * false for NaN), or the split writes past the bucket's span (count too high) or leaves
  * slots of it unwritten, which the copy-back then reads as stale pooled bytes (count too
- * low). SP4b Task 5b kept this coupling unbounded: the bound cost 9-12 % of the split. */
+ * low). This coupling stays unbounded: the bound cost 9-12 % of the split. */
 size_t cn_palette_count_above_avx2(const float *values, size_t count, float median);
 /* 1 when values[0, count) holds a NaN (an unordered compare per lane), else 0. */
 int cn_palette_any_nan_avx2(const float *values, size_t count);

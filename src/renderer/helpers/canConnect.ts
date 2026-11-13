@@ -4,6 +4,7 @@ import { EdgeState } from '../../common/nodes/EdgeState';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { TypeState } from '../../common/nodes/TypeState';
 import {
+    clipImageError,
     generateAssignmentErrorTrace,
     printErrorTrace,
     simpleError,
@@ -92,6 +93,9 @@ export const canConnect = (
         const input = schema.inputs.find((i) => i.id === targetInputId)!;
         const inputType = withoutNull(targetFn.inputExpectations.get(targetInputId)!);
 
+        const clipError = clipImageError(outputType, inputType);
+        if (clipError) return invalid(clipError);
+
         const error = simpleError(outputType, inputType);
         if (error) {
             return invalid(
@@ -111,12 +115,7 @@ export const canConnect = (
 
     // Iterator lineage check
     const sourceLineage = chainLineage.getOutputLineage(sourceHandle);
-    const lineageValid = checkAssignedLineage(
-        sourceLineage,
-        targetHandle.nodeId,
-        targetHandle.inputId,
-        targetSchema
-    );
+    const lineageValid = checkAssignedLineage(sourceLineage, targetHandle.inputId, targetSchema);
     if (!lineageValid.isValid) {
         return lineageValid;
     }

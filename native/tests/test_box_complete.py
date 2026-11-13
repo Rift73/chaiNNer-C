@@ -14,8 +14,9 @@ from test_convolution_ops import INSTALLED_BOX, MODULES
 from test_normalized_outputs import RAW_BOX, assert_enforced_equal
 
 from nodes.impl import native_box, native_convolution
+from nodes.impl.image_utils import to_uint8
 from nodes.impl.native import lib
-from nodes.impl.native_color_ops import adaptive_threshold, quantize_u8
+from nodes.impl.native_color_ops import adaptive_threshold
 
 ORIGINAL_BLUR = cv2.blur
 ORIGINAL_BOX = cv2.boxFilter
@@ -65,7 +66,7 @@ def test_mean_rounding_regimes(shape, radius, pattern):
 def test_adaptive_mean_result(radius, maximum, kind, delta):
     source = np.random.default_rng(92).random((17, 35), dtype=np.float32)
     expected = cv2.adaptiveThreshold(
-        quantize_u8(source),
+        to_uint8(source),
         maximum,
         cv2.ADAPTIVE_THRESH_MEAN_C,
         kind,
@@ -129,7 +130,7 @@ def test_paths_do_not_call_opencv_kernels(monkeypatch):
     source = np.random.default_rng(47).random((13, 17), dtype=np.float32)
     source[1, 2] = np.nan
     exact(native_convolution.box_blur(source, 3, 0), ORIGINAL_BLUR(source, (7, 1)))
-    u8 = quantize_u8(source)
+    u8 = to_uint8(source)
     exact(native_box.mean_u8(u8, 9), original_mean(u8, 9))
 
 
@@ -374,10 +375,10 @@ def test_large_fractional_box_preserves_ipp_pixel_ties(radii, channels, monkeypa
 
     monkeypatch.setattr(cv2, "filter2D", forbidden)
     # As the user receives it (ImageOutput.enforce of both returns); the ties and
-    # the kernel parity on the helpers' raw result (RAW_BOX) (SP4b Task 3b2).
+    # the kernel parity on the helpers' raw result (RAW_BOX).
     assert_enforced_equal(
         MODULES["box_blur"][0].box_blur_node(source, *radii), expected
     )
     raw = RAW_BOX.box_blur_node(source, *radii)
     exact(raw, expected)
-    np.testing.assert_array_equal(quantize_u8(raw), quantize_u8(expected))
+    np.testing.assert_array_equal(to_uint8(raw), to_uint8(expected))

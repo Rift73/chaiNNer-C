@@ -5,12 +5,10 @@ import { SchemaMap } from '../../common/SchemaMap';
 import { EMPTY_MAP, deriveUniqueId, stringifyTargetHandle } from '../../common/util';
 
 /**
- * Given a graph, this will returns a map from node id to the input hash of the node with that id.
+ * The input hash of every node of a graph, by node id.
  *
- * An input hash is a representation of the inputs for a node. If the input hash changes, at least
- * of its inputs changed. At least, that's the idea. Due to the imperfect nature of hashes, input
- * hashes only guarantee that if the input hash doesn't change, that the inputs for a node did not
- * change.
+ * A changed input hash means changed inputs; hashes can collide, so an unchanged one does not
+ * prove unchanged inputs.
  *
  * Each node's hash is one hash of everything its inputs are: its schema, whether it passes its
  * inputs through, and per input the value (`null` for none) or, for a connected input, the hash of
@@ -122,7 +120,7 @@ export const useInputHashes = (
             setHashes(newHashes);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, deps);
+    }, [schemata, ...deps]);
 
     return [hashes, ref];
 };

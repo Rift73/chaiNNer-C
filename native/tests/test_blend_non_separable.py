@@ -19,11 +19,10 @@ import pytest
 
 from nodes.impl.blend import (
     BlendMode,
-    ImageBlender,
     blend_images,
-    blend_mode_normalized,
 )
 from nodes.impl.native import lib, ptr
+from nodes.impl.native_blend import raw_blend
 from nodes.impl.native_composite import canvas
 
 MODES = [BlendMode.COLOR, BlendMode.LUMINOSITY]
@@ -226,16 +225,11 @@ def test_canvas_blends_the_overlap_of_a_placed_overlay(mode, channels):
     )
 
 
-def test_modes_are_not_marked_normalized_and_the_clip_applies():
-    assert not blend_mode_normalized(BlendMode.COLOR)
-    assert not blend_mode_normalized(BlendMode.LUMINOSITY)
-
-
 @pytest.mark.parametrize("mode", MODES)
 def test_element_entry_refuses_a_mode_that_needs_whole_pixels(mode):
     a = np.ones((2, 2, 3), dtype=np.float32)
     with pytest.raises(ValueError, match="Invalid image dimensions or arguments"):
-        ImageBlender().apply_blend(a, a, mode)
+        raw_blend(a, a, mode.value)
 
 
 def test_mode_past_the_last_is_refused():

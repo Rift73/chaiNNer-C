@@ -1,9 +1,9 @@
 import { QuestionIcon } from '@chakra-ui/icons';
-import { Box, Center, HStack, Text, Tooltip } from '@chakra-ui/react';
+import { Box, Center, HStack, Text } from '@chakra-ui/react';
 import { memo } from 'react';
 import { useContext } from 'use-context-selector';
 import { InputContext } from '../../contexts/InputContext';
-import { Markdown } from '../Markdown';
+import { HintTooltip } from '../HintTooltip';
 import { TypeTags } from '../TypeTag';
 import { WithoutLabel } from './InputContainer';
 import { InputProps } from './props';
@@ -16,21 +16,10 @@ export const GenericInput = memo(
 
         return (
             <WithoutLabel>
-                <Box
-                    display="flex"
-                    flexDirection="row"
-                >
-                    <Tooltip
-                        hasArrow
-                        borderRadius={8}
-                        label={
-                            hint ? (
-                                <Markdown nonInteractive>{description ?? ''}</Markdown>
-                            ) : undefined
-                        }
-                        openDelay={500}
-                        px={2}
-                        py={1}
+                <HintTooltip description={hint ? description : undefined}>
+                    <Box
+                        display="flex"
+                        flexDirection="row"
                     >
                         <HStack
                             m={0}
@@ -63,8 +52,8 @@ export const GenericInput = memo(
                                 />
                             </Center>
                         </HStack>
-                    </Tooltip>
-                </Box>
+                    </Box>
+                </HintTooltip>
             </WithoutLabel>
         );
     }

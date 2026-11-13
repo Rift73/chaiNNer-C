@@ -7,9 +7,7 @@ import { LEVEL_NAME, log } from '../common/log';
 import { getLogsFolder, getRootDir } from './platform';
 
 const setupLogging = () => {
-    // setup logging
-    // I don't trust electron-log to work properly in this context, so I'm
-    // rolling my simple log file. It's going to be append-only.
+    // electron-log may not work in a Squirrel hook, so the hook appends to a log file of its own
     const logFile = path.join(getLogsFolder(), 'install.log');
     log.addTransport({
         log: ({ level, message, additional }) => {
@@ -27,13 +25,8 @@ const setupLogging = () => {
     });
 };
 
-const onInstall = () => {
-    // nothing right now
-};
-
 const onUninstall = () => {
     const foldersToCleanUp = [
-        // chaiNNer folders
         'ffmpeg',
         'python',
         'settings',
@@ -43,7 +36,6 @@ const onUninstall = () => {
         // don't delete settings.json in case the user re-installs the app
     ];
 
-    // delete all folders + their content
     for (const folder of foldersToCleanUp) {
         const p = path.join(getRootDir(), folder);
         log.info(`Deleting folder: ${p}`);
@@ -82,16 +74,8 @@ export const handleSquirrel = (): boolean => {
     log.info(`Process execPath: ${process.execPath}`);
 
     try {
-        switch (squirrelCommand) {
-            case '--squirrel-install':
-            case '--squirrel-updated':
-                onInstall();
-                break;
-            case '--squirrel-uninstall':
-                onUninstall();
-                break;
-            default:
-                break;
+        if (squirrelCommand === '--squirrel-uninstall') {
+            onUninstall();
         }
     } catch (e) {
         log.error(e);

@@ -10,14 +10,16 @@ import {
 import { HStack, MenuDivider, MenuItem, MenuList, Spacer, Text } from '@chakra-ui/react';
 import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { BsFillJournalBookmarkFill } from 'react-icons/bs';
+import { BsEyeFill, BsFillJournalBookmarkFill } from 'react-icons/bs';
 import { IoMdFastforward } from 'react-icons/io';
 import { MdPlayArrow, MdPlayDisabled } from 'react-icons/md';
 import { useReactFlow } from 'reactflow';
-import { useContext } from 'use-context-selector';
+import { useContext, useContextSelector } from 'use-context-selector';
 import { EdgeData, NodeData, SchemaId } from '../../common/common-types';
 import { log } from '../../common/log';
+import { getClipOutput } from '../../common/types/util';
 import { BackendContext } from '../contexts/BackendContext';
+import { ExecutionContext, ExecutionStatus } from '../contexts/ExecutionContext';
 import { GlobalContext } from '../contexts/GlobalNodeState';
 import { NodeDocumentationContext } from '../contexts/NodeDocumentationContext';
 import { copyToClipboard } from '../helpers/copyAndPaste';
@@ -54,17 +56,28 @@ export const useNodeMenu = (
 ): UseContextMenu => {
     const { t } = useTranslation();
     const { openNodeDocumentation } = useContext(NodeDocumentationContext);
-    const { backend } = useContext(BackendContext);
+    const { backend, isBackendReady } = useContext(BackendContext);
     const { id, isLocked = false, schemaId } = data;
 
-    const { removeNodesById, resetInputs, resetConnections, duplicateNodes, toggleNodeLock } =
-        useContext(GlobalContext);
+    const {
+        removeNodesById,
+        resetInputs,
+        resetConnections,
+        duplicateNodes,
+        toggleNodeLock,
+        typeStateRef,
+    } = useContext(GlobalContext);
+    const previewClip = useContextSelector(ExecutionContext, (c) => c.previewClip);
+    const status = useContextSelector(ExecutionContext, (c) => c.status);
     const { isDirectlyDisabled, canDisable, setDirectlyDisabled } = disabled;
     const { canPassthrough, isPassthrough, setIsPassthrough } = passthrough;
 
     const { getNode, getNodes, getEdges } = useReactFlow<NodeData, EdgeData>();
 
     const resetMenuParentRef = useRef<HTMLButtonElement>(null);
+
+    // the output Preview shows, as the node's types stand when the menu opens
+    const clipOutput = () => getClipOutput(typeStateRef.current.functions.get(id));
 
     return useContextMenu(() => (
         <MenuList className="nodrag">
@@ -185,6 +198,21 @@ export const useNodeMenu = (
                     }}
                 >
                     {isLocked ? t('nodeMenu.unlock', 'Unlock') : t('nodeMenu.lock', 'Lock')}
+                </MenuItem>
+            )}
+
+            {clipOutput() !== undefined && (
+                <MenuItem
+                    icon={<BsEyeFill />}
+                    isDisabled={!isBackendReady || status !== ExecutionStatus.READY}
+                    onClick={() => {
+                        const outputId = clipOutput();
+                        if (outputId !== undefined) {
+                            previewClip(id, outputId).catch(log.error);
+                        }
+                    }}
+                >
+                    {t('nodeMenu.previewClip', 'Preview')}
                 </MenuItem>
             )}
 

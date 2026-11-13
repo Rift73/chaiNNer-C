@@ -70,8 +70,9 @@ CN_EXPORT int cn_getnative_create(const cn_getnative_options *options, void **se
     return guarded(error, capacity, [&] {
         if (!options || !session) throw std::invalid_argument("Invalid Get Native Resolution options");
         const auto *unit = cn_isa_current() >= CN_ISA_AVX2 ? cn_getnative_unit_avx2() : cn_getnative_unit_base();
-        void *state = unit->create(*options);
-        *session = new Session(unit, state);
+        std::unique_ptr<void, void (*)(void *)> state(unit->create(*options), unit->destroy);
+        *session = new Session(unit, state.get());
+        state.release();
     });
 }
 

@@ -115,7 +115,7 @@ def test_success_drains_owned_broadcast_before_cleanup(monkeypatch):
     monkeypatch.setattr(
         executor,
         "chain",
-        SimpleNamespace(topological_order=list, get_parent_iterator_map=dict),
+        SimpleNamespace(nodes={}, topological_order=list, get_parent_iterator_map=dict),
         raising=False,
     )
     monkeypatch.setattr(

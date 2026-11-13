@@ -16,12 +16,6 @@ export const useChangeCounter = () => {
     return [counter as ChangeCounter, change] as const;
 };
 
-export const wrapChanges = <T>(setter: SetState<T>, addChange: () => void): SetState<T> => {
-    return (value) => {
-        setter(value);
-        addChange();
-    };
-};
 export const wrapRefChanges = <T>(
     setter: Readonly<React.MutableRefObject<SetState<T>>>,
     addChange: () => void

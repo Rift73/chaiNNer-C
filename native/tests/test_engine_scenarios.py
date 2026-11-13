@@ -1,4 +1,4 @@
-"""The native run engine against process.Executor on executor scenarios (explore-executor.md section 12): chains of
+"""The native run engine against process.Executor on executor scenarios: chains of
 test nodes (Python bodies, no registry) run whole through both executors in this process
 (native/tools/engine_differential.py), compared by outcome, SSE events (verify_runtime.sse_event_mismatches), the
 engine's A6 order invariants, and the side effects the nodes record (their calls, in order)."""
@@ -13,6 +13,7 @@ import weakref
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +54,7 @@ from chain.chain import (
 )
 from events import EventConsumer
 from native_executor import NativeExecutor
+from nodes.impl import execution_scheduler
 from nodes.impl.execution_scheduler import ALWAYS_READ_LAZY_INPUTS
 from nodes.impl.item_window import (
     ITEM_WINDOW_VARIABLE,
@@ -83,6 +85,7 @@ class Builder:
         lazy: tuple[int, ...] = (),
         iterated_outputs: tuple[int, ...] = (0,),
         temporal: tuple[int, int] | None = None,
+        gate: tuple[int, Callable[[object], bool]] | None = None,
     ):
         node_class = {
             "generator": GeneratorNode,
@@ -120,6 +123,7 @@ class Builder:
             features=[],
             run=run,
             temporal_context=temporal,
+            temporal_if=None if gate is None else (InputId(gate[0]), gate[1]),
         )
         node = object.__new__(node_class)
         node.id, node.schema_id, node.data = NodeId(node_id), data.schema_id, data
@@ -738,6 +742,37 @@ def sink_after_loop_failure(trace: list[object]) -> Chain:
     return b.chain
 
 
+def generator_without_sinks(trace: list[object]) -> Chain:
+    # A seek bar's preview run: Clip Frames behind its clip feeds nothing; it runs for
+    # its static output (a Preview) and its items are not read.
+    b = Builder()
+    b.node("clip", lambda: 5, inputs=0)
+
+    def numbers(clip, _seek):
+        trace.append(("ran", clip))
+
+        def supplier():
+            for value in (1, 2, 3):
+                trace.append(("item", value))
+                yield value
+
+        return Generator(supplier, 3), "preview"
+
+    frames = b.node(
+        "numbers", numbers, kind="generator", inputs=2, outputs=2, side_effects=True
+    )
+    seek = BaseInput("any", "Seek", kind="video-seek").with_id(1)
+    object.__setattr__(
+        frames, "data", replace(frames.data, inputs=[frames.data.inputs[0], seek])
+    )
+    b.edge("clip", 0, "numbers", 0)
+    b.value("numbers", 1, 0)
+
+    b.node("later", lambda x: trace.append(("later", x)), outputs=0, side_effects=True)
+    b.value("later", 0, 9)
+    return b.chain
+
+
 SCENARIOS = [
     independent_sinks,
     diamond,
@@ -769,6 +804,7 @@ SCENARIOS = [
     collector_iterate_error,
     collector_construction_error,
     sink_after_loop_failure,
+    generator_without_sinks,
 ]
 
 
@@ -780,6 +816,33 @@ def test_scenario_matches(scenario, tmp_path):
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s.__name__ for s in SCENARIOS])
 def test_scenario_matches_without_broadcasts(scenario, tmp_path):
     assert_same(scenario, tmp_path, send_broadcast_data=False)
+
+
+def stray_generator(trace: list[object]) -> Chain:
+    # An unconnected generator without a seek bar (Load Images or Load Video whose file
+    # is gone) feeds nothing and stays skipped: it neither runs nor fails the run.
+    b = Builder()
+
+    def stray():
+        trace.append("stray ran")
+        raise FileNotFoundError("the folder is gone")
+
+    b.node("stray", stray, kind="generator", inputs=0, side_effects=True)
+    b.node("later", lambda x: trace.append(("later", x)), outputs=0, side_effects=True)
+    b.value("later", 0, 9)
+    return b.chain
+
+
+def test_a_stray_generator_without_a_seek_bar_is_skipped(tmp_path):
+    _, _, _, oracle_trace, engine_trace = run_both(stray_generator, tmp_path)
+
+    assert oracle_trace == engine_trace == [("later", 9)]
+
+
+def test_a_generator_without_sinks_runs_without_reading_its_items(tmp_path):
+    _, _, _, oracle_trace, engine_trace = run_both(generator_without_sinks, tmp_path)
+
+    assert oracle_trace == engine_trace == [("ran", 5), ("later", 9)]
 
 
 def test_generator_item_errors_name_their_node(tmp_path):
@@ -973,7 +1036,7 @@ def test_nested_look_ahead(tmp_path):
 @pytest.mark.parametrize("kind", ["python", "native"])
 def test_a_node_s_time_leaves_out_its_waits_for_other_work(kind, tmp_path):
     # TensorRT Upscale Image's items ahead queue for one session (util.held): a node reports its own work, not its
-    # turn in that queue (9-11 s shown for a 1.5 s upscale, 2026-10-14; again in the run engine, 2026-10-21).
+    # turn in that queue (9-11 s shown for a 1.5 s upscale, in both engines).
     def upscale() -> int:
         with util.waiting():
             time.sleep(0.5)
@@ -1129,7 +1192,7 @@ def test_individual_runs_match(tmp_path, kind):
     assert outcomes[1] == outcomes[0]
 
 
-# Context frames (native/local/video-seek/DESIGN.md): a generator reading a range of its source also reads, for the
+# Context frames: a generator reading a range of its source also reads, for the
 # loop's temporal nodes, the neighbours they need (NodeData.temporal_context, Generator.context). Items before the
 # range run the temporal nodes and the nodes they need alone; items after it only serve look-aheads. Each test runs on
 # both executors (CONTEXT_EXECUTORS), and each must see what it sees in its own full run.
@@ -1376,7 +1439,9 @@ def test_context_frames_give_a_range_its_neighbours(
     else:
         # The engine keeps one pending broadcast per node (LatestBroadcasts; the oracle sends each one), so it may
         # send fewer: each of the range's items, never a context item's.
-        assert all(0 < count <= most for count, most in zip(counts, (6, 4, 4)))
+        assert all(
+            0 < count <= most for count, most in zip(counts, (6, 4, 4), strict=True)
+        )
         range_values = {i * 10 + 1001 for i in range(8, 12)}
         assert {value for node, value in sent if node == "frames"} <= {
             None,
@@ -1566,6 +1631,685 @@ def test_context_frames_match_across_executors(serial, monkeypatch, tmp_path):
         assert sorted(records(engine_trace, tag)) == sorted(
             records(oracle_trace, tag)
         ), tag
+
+
+def gated_chain(
+    trace: list[object],
+    generator: Callable[[], Generator],
+    model: object,
+    *,
+    fed: str = "outside",
+    reader: tuple[int, int] | None = None,
+    beside: bool = False,
+    applies: Callable[[object], bool] = lambda model: model != "image",
+    second: str | None = None,
+    collect: bool = False,
+    lazy: bool = False,
+    source: Callable[[Builder], None] | None = None,
+) -> Chain:
+    """frames -> gated -> sink, gated's context (3, 2) applying only when `applies` (by default: its model input is
+    not "image", as Upscale Image's applies to a temporal model alone) is true for its model. The model comes from
+    `fed`: "outside" the loop (load, as Load Model; a model "broken" fails it), a "constant", "none" (the input left
+    unconnected), or "inside" it (pick, per item). Then, in this order, toward the sink:
+    - `second`: gated feeds gated2, (2, 1), gated the same way by load2's model `second`;
+    - `reader`: a temporal node of that context, reader;
+    - `beside`: both, which also reads frames -> temporal (3, 2);
+    - `collect`: the last node also feeds collect -> report;
+    - `lazy`: the sink reads the last node through a lazy input it never takes.
+    `source(b)` adds the loop's source "frames" instead of the generator. gated and gated2 record their index,
+    context and unread flags and model; reader and temporal their index and context flag; load, load2, pick,
+    collect, report and the sink their runs."""
+    b = Builder()
+    if source is None:
+        b.node("frames", generator, kind="generator", inputs=0)
+    else:
+        source(b)
+
+    def gated(tag: str):
+        def run(context, value, model):
+            view = context.iteration
+            trace.append((tag, view.index, view.context, view.unread, model))
+            return value
+
+        return run
+
+    def load(tag: str):
+        def run(name):
+            trace.append((tag, name))
+            if name == "broken":
+                raise ValueError("the model file is broken")
+            return name
+
+        return run
+
+    node = b.node(
+        "gated",
+        gated("gated"),
+        inputs=2,
+        context=True,
+        temporal=(3, 2),
+        gate=(1, applies),
+    )
+    b.edge("frames", 0, "gated", 0)
+    if fed == "none":
+        node.data.inputs[1].make_optional()
+    elif fed == "outside":
+        b.node("load", load("load"))
+        b.value("load", 0, model)
+        b.edge("load", 0, "gated", 1)
+    elif fed == "constant":
+        b.value("gated", 1, model)
+    elif fed == "inside":
+        b.node("pick", lambda _frame: (trace.append(("pick",)), model)[1])
+        b.edge("frames", 0, "pick", 0)
+        b.edge("pick", 0, "gated", 1)
+
+    def recorded(tag: str):
+        def run(context, value):
+            view = context.iteration
+            trace.append((tag, view.index, view.context))
+            return value
+
+        return run
+
+    last = "gated"
+    if second is not None:
+        b.node(
+            "gated2",
+            gated("gated2"),
+            inputs=2,
+            context=True,
+            temporal=(2, 1),
+            gate=(1, applies),
+        )
+        b.node("load2", load("load2"))
+        b.value("load2", 0, second)
+        b.edge("gated", 0, "gated2", 0)
+        b.edge("load2", 0, "gated2", 1)
+        last = "gated2"
+    if reader is not None:
+        b.node("reader", recorded("reader"), context=True, temporal=reader)
+        b.edge(last, 0, "reader", 0)
+        last = "reader"
+    if beside:
+        b.node("temporal", recorded("temporal"), context=True, temporal=(3, 2))
+        b.node("both", lambda x, _y: x, inputs=2)
+        b.edge("frames", 0, "temporal", 0)
+        b.edge(last, 0, "both", 0)
+        b.edge("temporal", 0, "both", 1)
+        last = "both"
+    if collect:
+
+        def gather(_):
+            trace.append(("collector",))
+            collected: list[object] = []
+
+            def iterate(value):
+                trace.append(("collect", value))
+                collected.append(value)
+
+            return Collector(iterate, lambda: len(collected))
+
+        b.node("collect", gather, kind="collector")
+        b.node(
+            "report",
+            lambda count: trace.append(("report", count)),
+            outputs=0,
+            side_effects=True,
+        )
+        b.edge(last, 0, "collect", 0)
+        b.edge("collect", 0, "report", 0)
+    if lazy:
+        b.node(
+            "sink",
+            lambda _x: trace.append(("sink", "untaken")),
+            outputs=0,
+            side_effects=True,
+            lazy=(0,),
+        )
+    else:
+        b.node(
+            "sink", lambda x: trace.append(("sink", x)), outputs=0, side_effects=True
+        )
+    b.edge(last, 0, "sink", 0)
+    return b.chain
+
+
+def both_engines(
+    scenario: Scenario, monkeypatch, tmp_path: Path, label: str, window: str = "4"
+) -> tuple[Result, list[object]]:
+    """The scenario on both executors with K = `window`: the same events (mismatches) and the same trace. The native
+    run's result and trace."""
+    oracle, oracle_trace, _ = run_context(
+        "python", scenario, tmp_path, monkeypatch, window
+    )
+    engine, engine_trace, chain = run_context(
+        "native", scenario, tmp_path, monkeypatch, window
+    )
+    assert mismatches(label, chain, oracle, engine, tmp_path) == []
+    assert engine_trace == oracle_trace
+    return engine, engine_trace
+
+
+@pytest.mark.parametrize(
+    ("model", "fed", "asked"),
+    [
+        ("image", "outside", []),
+        ("temporal", "outside", [(3, 2)]),
+        ("image", "constant", []),
+        ("temporal", "constant", [(3, 2)]),
+        ("image", "inside", [(3, 2)]),
+        (None, "none", [(3, 2)]),
+    ],
+    ids=["off", "on", "constant-off", "constant-on", "fed-inside-the-loop", "unset"],
+)
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_gate_decides_whether_the_context_applies(
+    kind, model, fed, asked, monkeypatch, tmp_path
+):
+    # Items 8..11 of 20. The gate's value known before the loop (load, run once before the first item, or a
+    # constant) decides: "image" asks no context items, so gated runs for the range alone; a temporal model asks
+    # (3, 2). A model fed from inside the loop is not known then: the context applies, whatever the model. An
+    # unconnected gate's value (None) is the predicate's to judge; this one applies.
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: gated_chain(t, lambda: frames.range(8, 4), model, fed=fed),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    first, last = (5, 14) if asked else (8, 12)
+    assert frames.asked == asked and frames.pulled == list(range(first, last))
+    assert [r[:2] for r in records(trace, "gated")] == [
+        (i, i < 8) for i in range(first, 12)
+    ]
+    assert records(trace, "load") == ([(model,)] if fed == "outside" else [])
+    assert records(trace, "sink") == [(i * 10 + 1,) for i in range(8, 12)]
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_gated_off_node_adds_nothing_to_a_reader_s_context(
+    kind, monkeypatch, tmp_path
+):
+    # gated (3, 2), off, feeds reader (2, 1): the loop asks reader's (2, 1), not (5, 3). gated still runs for the
+    # two context items, as reader needs its output there (not unread).
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: gated_chain(t, lambda: frames.range(8, 4), "image", reader=(2, 1)),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    assert frames.asked == [(2, 1)]
+    assert records(trace, "gated") == [(i, i < 8, False, "image") for i in range(6, 12)]
+    assert records(trace, "reader") == [(i, i < 8) for i in range(6, 12)]
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_gated_off_node_beside_a_temporal_one_skips_its_context_items(
+    kind, monkeypatch, tmp_path
+):
+    # gated (off) and temporal (3, 2) both feed the sink: the loop asks temporal's (3, 2) and only temporal runs for
+    # the context items; gated, whose context does not apply, runs for the range alone.
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: gated_chain(t, lambda: frames.range(8, 4), "image", beside=True),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    assert frames.asked == [(3, 2)]
+    assert [r[:2] for r in records(trace, "gated")] == [
+        (i, False) for i in range(8, 12)
+    ]
+    assert records(trace, "temporal") == [(i, i < 8) for i in range(5, 12)]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "asked"),
+    [
+        ("image", "image", []),
+        ("image", "temporal", [(2, 1)]),
+        ("temporal", "image", [(3, 2)]),
+        ("temporal", "temporal", [(5, 3)]),
+    ],
+    ids=["off-off", "off-on", "on-off", "on-on"],
+)
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_two_gated_nodes_in_a_chain(kind, first, second, asked, monkeypatch, tmp_path):
+    # gated (3, 2) -> gated2 (2, 1), each with its own model: only the contexts that apply add along the path.
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: gated_chain(t, lambda: frames.range(8, 4), first, second=second),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    assert frames.asked == asked
+    before = asked[0][0] if asked else 0
+    assert [r[:2] for r in records(trace, "gated2")] == [
+        (i, i < 8) for i in range(8 - (before if second == "temporal" else 0), 12)
+    ]
+    assert [r[:2] for r in records(trace, "gated")] == [
+        (i, i < 8) for i in range(8 - before, 12)
+    ]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"model": "image", "reader": (2, 1)},
+        {"model": "temporal", "reader": (2, 1)},
+        {"model": "image", "beside": True},
+        {"model": "temporal", "collect": True},
+        {"model": "image", "collect": True, "beside": True},
+        {"model": "temporal", "second": "image", "collect": True},
+    ],
+    ids=[
+        "off-read",
+        "on-read",
+        "off-beside",
+        "on-collect",
+        "off-beside-collect",
+        "two",
+    ],
+)
+def test_gated_context_matches_across_executors(options, monkeypatch, tmp_path):
+    # Both engines resolve the gate at the same point (before the collectors are made) and run the same nodes for
+    # the same items: the same events, reads and records.
+    pulled: list[list[int]] = []
+
+    def scenario(trace: list[object]) -> Chain:
+        frames = Frames(20)
+        pulled.append(frames.pulled)
+        return gated_chain(trace, lambda: frames.range(8, 4), **options)
+
+    result, trace = both_engines(scenario, monkeypatch, tmp_path, "gated context")
+    assert result.error is None, result.error
+    assert pulled[0] == pulled[1]
+    if options.get("collect"):
+        assert records(trace, "report") == [(4,)]
+        assert trace.index(("collector",)) > trace.index(("load", options["model"]))
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_gate_reached_only_through_an_untaken_lazy_input_is_not_known(
+    kind, monkeypatch, tmp_path
+):
+    # The sink never takes gated's output: gated's gate is not resolved before the loop, so its context applies
+    # (the safe side) and load runs when gated first runs, for the first context item. Not in the cross-engine
+    # comparison: any temporal node behind an untaken lazy input, gated or not, runs for context items outside the
+    # reader's executions, which its lazy-input order check reports.
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: gated_chain(t, lambda: frames.range(8, 4), "image", lazy=True),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    assert frames.asked == [(3, 2)]
+    assert trace[:2] == [("load", "image"), ("gated", 5, True, True, "image")]
+
+
+def test_a_failing_gate_source_fails_before_the_first_item(monkeypatch, tmp_path):
+    # load fails while the gate is resolved: the run fails with load's error in both engines, and no item is read.
+    pulled: list[list[int]] = []
+
+    def scenario(trace: list[object]) -> Chain:
+        frames = Frames(20)
+        pulled.append(frames.pulled)
+        return gated_chain(trace, lambda: frames.range(8, 4), "broken")
+
+    result, trace = both_engines(scenario, monkeypatch, tmp_path, "failing source")
+    error = result.error
+    assert isinstance(error, process.NodeExecutionError), error
+    assert error.node_id == "load" and "the model file is broken" in str(error)
+    assert pulled == [[], []]
+    assert trace == [("load", "broken")]
+
+
+def range_source(stop: int) -> Callable[[Builder], None]:
+    """The native Range generator (0 to stop) as the loop's source "frames"; the Python executor runs a body that
+    gives the same items."""
+
+    def add(b: Builder) -> None:
+        node = b.node(
+            "frames",
+            lambda start, _first, end, _last: Generator(
+                lambda: iter(range(start, end)), end - start, source_paths=()
+            ),
+            kind="generator",
+            inputs=4,
+        )
+        node.data = replace(node.data, schema_id="chainner:utility:range")
+        node.schema_id = node.data.schema_id
+        for index, value in enumerate((0, True, stop, False)):
+            b.value("frames", index, value)
+
+    return add
+
+
+def zipped_source(length: int) -> Callable[[Builder], None]:
+    """Two generators of `length` items, zipped into the loop's source "frames"."""
+
+    def add(b: Builder) -> None:
+        for name in ("left", "right"):
+            b.node(
+                name,
+                lambda: Generator(lambda: iter(range(length)), length, source_paths=()),
+                kind="generator",
+                inputs=0,
+            )
+        b.node("frames", lambda x, y: x + y, inputs=2)
+        b.edge("left", 0, "frames", 0)
+        b.edge("right", 0, "frames", 1)
+
+    return add
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        lambda: Frames(0).whole(),
+        lambda: Frames(20).range(8, 0),
+        lambda: Frames(20).whole(),
+    ],
+    ids=["empty", "empty-range", "whole"],
+)
+def test_a_loop_that_reads_no_context_runs_its_gate_s_source_as_before(
+    source, monkeypatch, tmp_path
+):
+    # A generator without context items (an empty one, one that reads its source whole): no gate is resolved
+    # before the loop, so a broken load never runs for an empty loop and fails at the first item otherwise.
+    result, trace = both_engines(
+        lambda t: gated_chain(t, source, "broken"), monkeypatch, tmp_path, "no gate"
+    )
+    if source().expected_length == 0:
+        assert result.error is None, result.error
+        assert trace == []
+    else:
+        assert isinstance(result.error, process.NodeExecutionError), result.error
+        assert result.error.node_id == "load"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [range_source(0), range_source(4), zipped_source(0), zipped_source(3)],
+    ids=["range-empty", "range", "zipped-empty", "zipped"],
+)
+def test_a_native_or_zipped_loop_resolves_no_gate(source, monkeypatch, tmp_path):
+    # Native Range, and a loop of two generators, read no context items: gated's context never applies to them and
+    # load runs as the first item needs it (never, for an empty loop).
+    result, trace = both_engines(
+        lambda t: gated_chain(t, lambda: Frames(0).whole(), "temporal", source=source),
+        monkeypatch,
+        tmp_path,
+        "native or zipped",
+    )
+    assert result.error is None, result.error
+    seen = records(trace, "gated")
+    assert all(not r[1] for r in seen)
+    assert records(trace, "load") == ([("temporal",)] if seen else [])
+
+
+@pytest.mark.parametrize("model", ["image", "temporal"])
+def test_run_this_frame_with_a_gate(model, monkeypatch, tmp_path):
+    # "Run this frame" on item 8: a temporal model asks (3, 2) and gives gated items 5..7 before it, an image
+    # model asks none.
+    asked: list[list[tuple[int, int]]] = []
+
+    def scenario(trace: list[object]) -> Chain:
+        frames = Frames(20)
+        asked.append(frames.asked)
+        return gated_chain(trace, lambda: frames.range(8, 1, chosen=8), model)
+
+    result, trace = both_engines(scenario, monkeypatch, tmp_path, "run this frame")
+    assert result.error is None, result.error
+    first = 5 if model == "temporal" else 8
+    assert [r[:2] for r in records(trace, "gated")] == [
+        (i, i < 8) for i in range(first, 9)
+    ]
+    assert asked == [[(3, 2)] if model == "temporal" else []] * 2
+    assert records(trace, "sink") == [(81,)]
+
+
+def test_a_gate_s_failing_predicate_fails_its_node(monkeypatch, tmp_path):
+    # The predicate raises for the loaded model: before the first item, both engines fail the run with gated's
+    # error, its cause the predicate's, and no item runs.
+    def applies(model: object) -> bool:
+        raise ValueError(f"cannot judge {model}")
+
+    def run(kind: str) -> tuple[Result, list[object], Chain]:
+        frames = Frames(20)
+        result, trace, chain = run_context(
+            kind,
+            lambda t: gated_chain(
+                t, lambda: frames.range(8, 4), "odd", applies=applies
+            ),
+            tmp_path,
+            monkeypatch,
+            "4",
+        )
+        assert frames.pulled == []
+        return result, trace, chain
+
+    oracle, oracle_trace, _ = run("python")
+    engine, engine_trace, chain = run("native")
+    for result in (oracle, engine):
+        error = result.error
+        assert isinstance(error, process.NodeExecutionError), error
+        assert error.node_id == "gated" and str(error) == "cannot judge odd"
+        assert isinstance(error.__cause__, ValueError)
+    assert mismatches("failing gate", chain, oracle, engine, tmp_path) == []
+    assert engine_trace == oracle_trace == [("load", "odd")]
+
+
+def device_chain(
+    trace: list[object],
+    generator: Callable[[], Generator],
+    model: str,
+    *,
+    fed: str = "outside",
+    applies: Callable[[object], bool] = lambda model: model != "image",
+) -> Chain:
+    """frames -> upscale -> sink, upscale a temporal node (3, 2) on a locked-device schema (TensorRT Upscale Image's,
+    so pure_cpu_node holds), its context applying when `applies` (by default: its model is not "image") is true for
+    its model, which comes from `fed`: "outside" the loop (load), a "constant", or "inside" it (pick, per item). With
+    a model other than "image" it records per item its index, context flag and its view's peek one item ahead;
+    with "image", nothing (it may run ahead on a worker, in no fixed order)."""
+    b = Builder()
+    b.node("frames", generator, kind="generator", inputs=0)
+
+    def upscale(context, value, model):
+        view = context.iteration
+        if model != "image":
+            trace.append(
+                (
+                    "upscale",
+                    None if view is None else view.index,
+                    None if view is None else view.context,
+                    None if view is None else view.peek(0, 1),
+                )
+            )
+        return value
+
+    node = b.node(
+        "upscale",
+        upscale,
+        inputs=2,
+        context=True,
+        temporal=(3, 2),
+        gate=(1, applies),
+    )
+    node.data = replace(node.data, schema_id="chainner:tensorrt:upscale_image")
+    node.schema_id = node.data.schema_id
+    assert execution_scheduler.pure_cpu_node(node.data)
+    b.edge("frames", 0, "upscale", 0)
+    if fed == "outside":
+        b.node("load", lambda name: (trace.append(("load", name)), name)[1])
+        b.value("load", 0, model)
+        b.edge("load", 0, "upscale", 1)
+    elif fed == "constant":
+        b.value("upscale", 1, model)
+    else:
+        b.node("pick", lambda _frame: model)
+        b.edge("frames", 0, "pick", 0)
+        b.edge("pick", 0, "upscale", 1)
+    b.node("sink", lambda x: trace.append(("sink", x)), outputs=0, side_effects=True)
+    b.edge("upscale", 0, "sink", 0)
+    return b.chain
+
+
+def spy_pure_in_loop(monkeypatch) -> list[bool]:
+    """The decisions both engines make through process.pure_in_loop, in order."""
+    decided: list[bool] = []
+    original = process.pure_in_loop
+
+    def spy(*args):
+        pure = original(*args)
+        decided.append(pure)
+        return pure
+
+    monkeypatch.setattr(process, "pure_in_loop", spy)
+    monkeypatch.setattr(native_executor, "pure_in_loop", spy)
+    return decided
+
+
+@pytest.mark.parametrize("window", ["4", "1"])
+@pytest.mark.parametrize(
+    ("model", "fed"),
+    [
+        ("temporal", "outside"),
+        ("image", "outside"),
+        ("temporal", "constant"),
+        ("image", "constant"),
+        ("image", "inside"),
+    ],
+    ids=["on", "off", "constant-on", "constant-off", "fed-inside-the-loop"],
+)
+@pytest.mark.parametrize("ranged", [True, False], ids=["context", "whole"])
+def test_a_gated_node_on_a_pure_schema_gets_its_view_while_its_context_applies(
+    model, fed, ranged, window, monkeypatch, tmp_path
+):
+    # While its context applies (a temporal model, or a model fed from inside the loop, never judged) the node runs
+    # on the driver with its view on every item, context items included, and peeks the next frame; with an image
+    # model it stays pure for the run (a run-ahead candidate, as without a gate). Both engines decide it once per
+    # run, at the node's first run on the commit path (any K, the window or none), and send the same events.
+    decided = spy_pure_in_loop(monkeypatch)
+    viewed = model != "image" or fed == "inside"
+
+    def scenario(trace: list[object]) -> Chain:
+        frames = Frames(20)
+        return device_chain(
+            trace,
+            (lambda: frames.range(8, 4)) if ranged else frames.whole,
+            "temporal" if fed == "inside" else model,
+            fed=fed,
+            applies=(lambda _model: False)
+            if fed == "inside"
+            else lambda m: m != "image",
+        )
+
+    result, trace = both_engines(
+        scenario, monkeypatch, tmp_path, "pure schema", window=window
+    )
+    assert result.error is None, result.error
+    assert decided == [not viewed] * 2
+    if viewed:
+        before = 3 if ranged else 0
+        items = range(8 - before, 12) if ranged else range(20)
+        # K = 1 builds no window: a look-ahead sees nothing.
+        assert records(trace, "upscale") == [
+            (
+                i,
+                ranged and i < 8,
+                (i + 1) * 10 + 1 if i < 19 and window != "1" else None,
+            )
+            for i in items
+        ]
+    else:
+        assert records(trace, "upscale") == []
+    assert records(trace, "sink") == [
+        (i * 10 + 1,) for i in (range(8, 12) if ranged else range(20))
+    ]
+
+
+@pytest.mark.parametrize("window", ["4", "1"])
+@pytest.mark.parametrize("fail_fast", [True, False], ids=["fail-fast", "deferred"])
+def test_a_raising_gate_predicate_fails_a_pure_schema_node_once(
+    fail_fast, window, monkeypatch, tmp_path
+):
+    # The source reads no context items, so the gate is first judged at the node's first run: the predicate's error
+    # fails that run once, as the node's error with the predicate's as its cause. With a fail-fast source the run
+    # ends there; otherwise item 0 is dropped and the node runs every later item with its view.
+    decided = spy_pure_in_loop(monkeypatch)
+
+    def applies(model: object) -> bool:
+        raise ValueError(f"cannot judge {model}")
+
+    def scenario(trace: list[object]) -> Chain:
+        frames = Frames(5)
+        return device_chain(
+            trace,
+            lambda: frames.whole().with_fail_fast(fail_fast),
+            "odd",
+            applies=applies,
+        )
+
+    result, trace = both_engines(
+        scenario, monkeypatch, tmp_path, "raising gate", window=window
+    )
+    error = result.error
+    if fail_fast:
+        assert isinstance(error, process.NodeExecutionError), error
+        assert error.node_id == "upscale" and str(error) == "cannot judge odd"
+        assert isinstance(error.__cause__, ValueError)
+    else:
+        # The loop's deferred errors, item 0's alone.
+        assert str(error) == "Errors occurred during iteration:\n- cannot judge odd"
+    assert decided == []
+    later = [] if fail_fast else list(range(1, 5))
+    assert records(trace, "upscale") == [
+        (i, False, (i + 1) * 10 + 1 if i < 4 and window != "1" else None) for i in later
+    ]
+    assert records(trace, "sink") == [(i * 10 + 1,) for i in later]
+
+
+def test_register_checks_a_gate():
+    # temporal_if gates a temporal_context and names one of the node's inputs; the node data keeps it by input id.
+    package = api.Package(
+        where="test", id="test", name="Test", description="", icon="", color="#000000"
+    )
+    group = package.add_category("Test", "", "", "#000000").add_node_group("Test")
+
+    def register(**options):
+        return group.register(
+            "chainner:utility:test_gate",
+            name="Gate",
+            description="",
+            inputs=[BaseInput("any", "Frame").with_id(0)],
+            outputs=[],
+            generated=True,
+            **options,
+        )(lambda frame: frame)
+
+    with pytest.raises(AssertionError, match="temporal_if gates a temporal_context"):
+        register(temporal_if=(0, bool))
+    with pytest.raises(AssertionError, match="names input 1, which it has not"):
+        register(temporal_context=(1, 1), temporal_if=(1, bool))
+    assert group.nodes == []
+    register(temporal_context=(1, 1), temporal_if=(0, bool))
+    assert group.nodes[0].temporal_if == (InputId(0), bool)
 
 
 @pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
@@ -1880,3 +2624,261 @@ def test_an_upscale_behind_a_driver_node_s_unread_lazy_input_is_not_computed_ahe
         b.edge("gate", 0, "save", 0)
 
     assert ahead_at_item_2(monkeypatch, tmp_path, kind, build) == [3]
+
+
+def test_a_device_node_computed_ahead_runs_its_cleanups(monkeypatch, tmp_path):
+    # A locked-device node (TensorRT's Upscale Image) is pure, so the item window computes it ahead of the
+    # committing item; the cleanups it registers there run as on the commit path: a node's after its job, a chain's
+    # at the run's end.
+    device = "chainner:utility:test_device"
+    for module in (execution_scheduler, process, native_executor):
+        monkeypatch.setattr(
+            module,
+            "LOCKED_DEVICE_NODES",
+            execution_scheduler.LOCKED_DEVICE_NODES | {device},
+        )
+
+    def scenario(trace: list[object]) -> Chain:
+        b = Builder()
+        b.node(
+            "frames",
+            lambda: items(list(range(12))),
+            kind="generator",
+            inputs=0,
+        )
+
+        def cleanup():
+            trace.append("chain cleanup")
+
+        def upscale(context, x):
+            context.add_cleanup(cleanup)
+            context.add_cleanup(lambda: trace.append(("node cleanup", x)), after="node")
+            return x * 100
+
+        b.node("device", upscale, context=True)
+        b.node(
+            "sink", lambda x: trace.append(("sink", x)), outputs=0, side_effects=True
+        )
+        b.edge("frames", 0, "device", 0)
+        b.edge("device", 0, "sink", 0)
+        return b.chain
+
+    chain = scenario([])
+    assert execution_scheduler.pure_cpu_node(chain.nodes[NodeId("device")].data)
+    chain, oracle, engine, oracle_trace, engine_trace = run_both(scenario, tmp_path)
+    assert mismatches("device", chain, oracle, engine, tmp_path) == []
+    assert engine.error is None
+    # The engine runs the jobs ahead in parallel: their node cleanups come in any order.
+    assert Counter(map(str, engine_trace)) == Counter(map(str, oracle_trace))
+    assert sum(str(entry).startswith("('node cleanup") for entry in oracle_trace) == 12
+
+
+def clip_loop_chain(trace: list[object], name_from_first: bool) -> Chain:
+    """Load Video into Frames To Clip, a loop over the clip (Clip Frames) into a sink: the sink's
+    name from the first loop's per-item Index (through Text Append), or, as must still run, from the second loop."""
+    b = Builder()
+    b.node("frames", lambda: items([1, 2, 3]), kind="generator", inputs=0)
+
+    def gather(_):
+        collected: list[Any] = []
+        return Collector(collected.append, lambda: list(collected))
+
+    b.node("clip", gather, kind="collector")
+    b.edge("frames", 0, "clip", 0)
+    b.node("clip_frames", lambda clip: items([x * 10 for x in clip]), kind="generator")
+    b.edge("clip", 0, "clip_frames", 0)
+    b.node("upscale", lambda x: x + 1)
+    b.edge("clip_frames", 0, "upscale", 0)
+    b.node("append", lambda index: f"frame {index}")
+    b.edge("frames" if name_from_first else "clip_frames", 0, "append", 0)
+    b.node(
+        "save",
+        lambda image, name: trace.append(("save", image, name)),
+        inputs=2,
+        outputs=0,
+        side_effects=True,
+    )
+    b.edge("upscale", 0, "save", 0)
+    b.edge("append", 0, "save", 1)
+    return b.chain
+
+
+def test_a_loop_reading_another_loop_s_items_and_its_collector_is_refused_before_it_runs(
+    tmp_path,
+):
+    _chain, oracle, engine, oracle_trace, engine_trace = run_both(
+        lambda trace: clip_loop_chain(trace, True), tmp_path
+    )
+    for result in (oracle, engine):
+        assert isinstance(result.error, process.NodeExecutionError), result.error
+        assert result.error.node_id == "save"
+        assert str(result.error) == (
+            "Input1 of save comes from the items of frames, one value per item, but save"
+            " also depends on clip, which has its result only after the loop of frames"
+            " has ended. Take Input1 from the outputs of clip_frames instead, or connect a"
+            " value that does not change per item."
+        )
+    assert oracle_trace == engine_trace == []
+
+
+def zipped_loops(trace: list[object]) -> Chain:
+    b = Builder()
+    b.node("a", lambda: items([1, 2]), kind="generator", inputs=0)
+    b.node("b", lambda: items([3, 4]), kind="generator", inputs=0)
+    b.node(
+        "sink",
+        lambda x, y: trace.append((x, y)),
+        inputs=2,
+        outputs=0,
+        side_effects=True,
+    )
+    b.edge("a", 0, "sink", 0)
+    b.edge("b", 0, "sink", 1)
+    return b.chain
+
+
+def second_loop_reads_a_static_output(trace: list[object]) -> Chain:
+    b = Builder()
+    b.node(
+        "frames",
+        lambda: (items([1, 2, 3]), "video"),
+        kind="generator",
+        inputs=0,
+        outputs=2,
+    )
+
+    def gather(_):
+        collected: list[Any] = []
+        return Collector(collected.append, lambda: list(collected))
+
+    b.node("clip", gather, kind="collector")
+    b.edge("frames", 0, "clip", 0)
+    b.node("clip_frames", items, kind="generator")
+    b.edge("clip", 0, "clip_frames", 0)
+    b.node(
+        "save",
+        lambda x, name: trace.append((x, name)),
+        inputs=2,
+        outputs=0,
+        side_effects=True,
+    )
+    b.edge("clip_frames", 0, "save", 0)
+    b.edge("frames", 1, "save", 1)
+    return b.chain
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        lambda trace: clip_loop_chain(trace, False),
+        zipped_loops,
+        lambda trace: loop_chain(trace, [1, 2, 3]),
+        second_loop_reads_a_static_output,
+    ],
+    ids=["second-loop-name", "zipped", "collector-after-loop", "static-output"],
+)
+def test_loops_that_read_only_what_they_can_still_run(scenario, tmp_path):
+    engine = assert_same(scenario, tmp_path)
+    assert engine.error is None
+
+
+def refusal(chain: Chain, tmp_path) -> list[tuple[object, str]]:
+    """Each engine's (node, message) for a chain refused before it runs; nothing ran."""
+    _, oracle, engine, oracle_trace, engine_trace = run_both(lambda _: chain, tmp_path)
+    assert oracle_trace == engine_trace == []
+    assert all("comes from the items of" in str(r.error) for r in (oracle, engine))
+    return [
+        (getattr(result.error, "node_id", None), str(result.error))
+        for result in (oracle, engine)
+    ]
+
+
+def gather(_: object, *_read: object) -> Collector:
+    collected: list[Any] = []
+    return Collector(collected.append, lambda: list(collected))
+
+
+def test_the_refusal_names_the_input_the_item_arrives_on(tmp_path):
+    # Save Image's Directory from Load Video's Video Directory (one value per run) and its
+    # name from Load Video's Index (one per item): the name is the input to change.
+    b = Builder()
+    b.node(
+        "frames",
+        lambda: (items([1, 2]), "folder"),
+        kind="generator",
+        inputs=0,
+        outputs=2,
+    )
+    b.node("clip", gather, kind="collector")
+    b.edge("frames", 0, "clip", 0)
+    b.node("clip_frames", items, kind="generator")
+    b.edge("clip", 0, "clip_frames", 0)
+    b.node("append", lambda index: f"frame {index}")
+    b.edge("frames", 0, "append", 0)
+    b.node("save", lambda *_: None, inputs=3, outputs=0, side_effects=True)
+    b.edge("clip_frames", 0, "save", 0)
+    b.edge("frames", 1, "save", 1)
+    b.edge("append", 0, "save", 2)
+    expected = (
+        "save",
+        (
+            "Input2 of save comes from the items of frames, one value per item, but save"
+            " also depends on clip, which has its result only after the loop of frames"
+            " has ended. Take Input2 from the outputs of clip_frames instead, or connect"
+            " a value that does not change per item."
+        ),
+    )
+    assert refusal(b.chain, tmp_path) == [expected, expected]
+
+
+def test_the_refusal_names_the_node_where_the_item_meets_the_collector(tmp_path):
+    b = Builder()
+    b.node("numbers", lambda: items([1, 2]), kind="generator", inputs=0)
+    b.node("total", gather, kind="collector")
+    b.edge("numbers", 0, "total", 0)
+    b.node("mix", lambda x, total: x, inputs=2)
+    b.edge("numbers", 0, "mix", 0)
+    b.edge("total", 0, "mix", 1)
+    b.node("scale", lambda x: x * 2)
+    b.edge("mix", 0, "scale", 0)
+    b.node("sink", lambda _: None, outputs=0, side_effects=True)
+    b.edge("scale", 0, "sink", 0)
+    assert [node for node, _ in refusal(b.chain, tmp_path)] == ["mix", "mix"]
+
+
+def test_a_collector_reading_another_collector_of_its_loop_is_refused(tmp_path):
+    b = Builder()
+    b.node("numbers", lambda: items([1, 2]), kind="generator", inputs=0)
+    b.node("total", gather, kind="collector")
+    b.edge("numbers", 0, "total", 0)
+    b.node("second", gather, kind="collector", inputs=2)
+    b.edge("numbers", 0, "second", 0)
+    b.edge("total", 0, "second", 1)
+    b.node("report", lambda _: None, outputs=0, side_effects=True)
+    b.edge("second", 0, "report", 0)
+    assert [node for node, _ in refusal(b.chain, tmp_path)] == ["second", "second"]
+
+
+def test_a_node_reading_its_zipped_partner_s_collector_is_refused(tmp_path):
+    trace: list[object] = []
+    b = Builder()
+    b.node("a", lambda: items([1, 2]), kind="generator", inputs=0)
+    b.node("b", lambda: items([3, 4]), kind="generator", inputs=0)
+    b.node(
+        "pair",
+        lambda x, y: trace.append(("pair", x, y)),
+        inputs=2,
+        outputs=0,
+        side_effects=True,
+    )
+    b.edge("a", 0, "pair", 0)
+    b.edge("b", 0, "pair", 1)
+    b.node("total", gather, kind="collector")
+    b.edge("a", 0, "total", 0)
+    b.node("mix", lambda x, total: x, inputs=2)
+    b.edge("b", 0, "mix", 0)
+    b.edge("total", 0, "mix", 1)
+    b.node("late", lambda _: None, outputs=0, side_effects=True)
+    b.edge("mix", 0, "late", 0)
+    assert [node for node, _ in refusal(b.chain, tmp_path)] == ["mix", "mix"]
+    assert trace == []

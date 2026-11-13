@@ -15,7 +15,7 @@ from scratch_storage import NO_FFMPEG, STORAGE
 # The video module loads the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
-from nodes.impl import video
+from nodes.impl import getnative_media, video
 from nodes.impl.colour_info import (
     ChromaLocation,
     Matrix,
@@ -25,6 +25,7 @@ from nodes.impl.colour_info import (
     VideoMode,
 )
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
+from nodes.impl.video import _UseCliReader
 
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
 ENV = FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE)
@@ -116,3 +117,25 @@ def test_a_lone_picture_is_still_read(tmp_path: Path):
     )
     frames = list(video.VideoLoader(path, ENV).stream_frames())
     assert len(frames) == 1 and frames[0].shape == (24, 32, 3)
+
+
+@pytest.mark.parametrize("cli", [False, True])
+def test_get_native_resolution_reads_the_video_not_its_cover(
+    files: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, cli: bool
+):
+    first, plain = files
+    info, reference = getnative_media.probe(first), getnative_media.probe(plain)
+    assert (info.width, info.height, info.pix_fmt) == (64, 48, reference.pix_fmt)
+    if cli:
+        # Without a frame index, the frame comes from the FFmpeg CLI.
+        monkeypatch.setattr(getnative_media, "frame_index", unindexed)
+    point = getnative_media.SamplePoint(0.21, getnative_media.REQUESTED)
+    plane = getnative_media.decode_frame(first, info, point, lambda: ENV, lambda: None)
+    expected = getnative_media.decode_frame(
+        plain, reference, point, lambda: ENV, lambda: None
+    )
+    np.testing.assert_array_equal(plane[0], expected[0])
+
+
+def unindexed(*_args: object) -> object:
+    raise _UseCliReader("read through the CLI in this test")

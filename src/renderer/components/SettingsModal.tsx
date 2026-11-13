@@ -32,6 +32,7 @@ import { BsFillPencilFill, BsPaletteFill } from 'react-icons/bs';
 import { FaPython, FaTools } from 'react-icons/fa';
 import { useContext } from 'use-context-selector';
 import { normalizeLanguage } from '../../common/i18n';
+import { log } from '../../common/log';
 import { isMac } from '../appConstants';
 import { BackendContext } from '../contexts/BackendContext';
 import { useMutSetting } from '../hooks/useSettings';
@@ -300,8 +301,9 @@ const EnvironmentSettings = memo(() => {
                                 )}
                                 textOverflow="ellipsis"
                                 value={startupTemplate ? path.parse(startupTemplate).base : ''}
-                                // eslint-disable-next-line @typescript-eslint/no-misused-promises
-                                onClick={onButtonClick}
+                                onClick={() => {
+                                    onButtonClick().catch(log.error);
+                                }}
                             />
                         </InputGroup>
                     </Tooltip>
@@ -452,7 +454,6 @@ export const SettingsModal = memo(({ isOpen, onClose }: SettingsModalProps) => {
         <Modal
             isCentered
             isOpen={isOpen}
-            // scrollBehavior="inside"
             returnFocusOnClose={false}
             size="xl"
             onClose={onClose}

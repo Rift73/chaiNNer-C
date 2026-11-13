@@ -1,5 +1,5 @@
 import { Edge, Node } from 'reactflow';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import {
     CategoryId,
     EdgeData,
@@ -15,7 +15,17 @@ import {
 } from '../../src/common/common-types';
 import { SchemaMap } from '../../src/common/SchemaMap';
 import { stringifySourceHandle, stringifyTargetHandle } from '../../src/common/util';
-import { computeInputHashes } from '../../src/renderer/hooks/useInputHashes';
+import { computeInputHashes, useInputHashes } from '../../src/renderer/hooks/useInputHashes';
+import { mount } from './hookRunner';
+
+const flow = vi.hoisted(() => ({ nodes: [] as unknown[], edges: [] as unknown[] }));
+vi.mock('react', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('react')>()),
+    ...(await import('./hookRunner')).fakeReact,
+}));
+vi.mock('reactflow', () => ({
+    useReactFlow: () => ({ getNodes: () => flow.nodes, getEdges: () => flow.edges }),
+}));
 
 const JOIN = 'test:hashes:join' as SchemaId;
 
@@ -133,4 +143,22 @@ test('different inputs never read as the same inputs', () => {
     expect(hashOf({ 0: '' })).not.toBe(hashOf({}));
     // a connection and a value that reads like the connected node's hash
     expect(hashOf({}, [edge(1, 2, 0)])).not.toBe(hashOf({ 0: hashes.get(id(1)) }));
+});
+
+test('the hook hashes again when the node list changes, though the chain did not', () => {
+    flow.nodes = nodes;
+    flow.edges = edges;
+    const oneInput = new SchemaMap([
+        { ...joinSchema, inputs: [input(0)], groupLayout: [0 as InputId] },
+    ]);
+    let current = schemata;
+    const hook = mount(() => useInputHashes(current, [0]));
+    expect(hook.result[0]).toEqual(hashes);
+
+    current = oneInput;
+    hook.render();
+
+    expect(hook.result[0]).not.toEqual(hashes);
+    expect(hook.result[0]).toEqual(computeInputHashes(nodes, edges, oneInput));
+    expect(hook.result[1].current).toBe(hook.result[0]);
 });

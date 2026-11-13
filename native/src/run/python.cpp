@@ -394,8 +394,8 @@ py::list native_schema_ids()
 
 namespace {
 
-/* References dropped by threads without the GIL, released in a batch by the next thread that takes it (DESIGN.md
- * amendment A2: no GIL taken only to drop a reference). */
+/* References dropped by threads without the GIL, released in a batch by the next thread that takes it: no GIL
+ * is taken only to drop a reference. */
 std::mutex deferred_lock;
 std::vector<PyObject *> deferred;
 

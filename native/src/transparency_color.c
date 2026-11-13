@@ -6,7 +6,7 @@
 #include <math.h>
 
 /* Images are row-major pixel grids: pixel p's channel c at p * pixel + c * channel
- * elements, interleaved (channels, 1) or planar (1, plane) (D-16: upstream's
+ * elements, interleaved (channels, 1) or planar (1, plane) (upstream's
  * np.dstack keeps a planar input's layout). */
 typedef struct {
     const float *image, *key;

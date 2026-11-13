@@ -178,6 +178,8 @@ def yuv_to_bgr(
     (y, y_stride), (u, u_stride), (v, v_stride) = (_plane(p) for p in (y, u, v))
     height, width = y.shape
     coefficients = np.ascontiguousarray(matrix, np.float32)
+    if coefficients.shape != (3, 3):
+        raise ValueError("The matrix must be 3 x 3.")
     out = np.empty((height, width, 3), np.float32)
     check(
         _api().cn_yuv_to_bgr(
@@ -204,6 +206,8 @@ def bgr_to_yuv(
     Y, U and V planes. matrix: 3 x 3 float32, rows Y, U, V by R, G, B; centre, when
     not 0, is added to U and V last."""
     source = np.asarray(image, np.float32)
+    if source.ndim != 3 or source.shape[2] != 3:
+        raise ValueError("The matrix step needs a three-channel B, G, R image.")
     height, width, _ = source.shape
     row, pixel, channel = source.strides
     if width == 1:
@@ -220,6 +224,8 @@ def bgr_to_yuv(
         source = np.require(source, requirements=["C", "A"])
         row = 3 * width * source.itemsize
     coefficients = np.ascontiguousarray(matrix, np.float32)
+    if coefficients.shape != (3, 3):
+        raise ValueError("The matrix must be 3 x 3.")
     y, u, v = (np.empty((height, width), np.float32) for _ in range(3))
     check(
         _api().cn_bgr_to_yuv(

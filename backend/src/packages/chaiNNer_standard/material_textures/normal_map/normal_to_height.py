@@ -72,10 +72,13 @@ def normal_to_height_node(
     else:
         x, y, z = gr_to_xyz(img)
         # The decoder shortens a longer (x, y) to length 1, so this reads the channels.
-        no_normal = (
-            np.square(img[:, :, 2] * 2 - 1) + np.square(img[:, :, 1] * 2 - 1)
-            > MAX_XY_LENGTH**2
-        )
+        # In place: each fresh full-size array costs more than the arithmetic on it.
+        r, g = img[:, :, 2] * 2, img[:, :, 1] * 2
+        for channel in (r, g):
+            np.subtract(channel, 1, out=channel)
+            np.square(channel, out=channel)
+        r += g
+        no_normal = r > MAX_XY_LENGTH**2
 
     # A normal leans away from the rising side. Rows grow downwards, and G points down in
     # DirectX and up in OpenGL.
@@ -89,8 +92,9 @@ def normal_to_height_node(
     slope_y[no_normal] = 0
     normals = ~no_normal
     if np.any(normals):
-        slope_x[normals] -= float(np.mean(slope_x[normals], dtype=np.float64))
-        slope_y[normals] -= float(np.mean(slope_y[normals], dtype=np.float64))
+        for slope in (slope_x, slope_y):
+            mean = float(np.mean(slope[normals], dtype=np.float64))
+            np.subtract(slope, mean, out=slope, where=normals)
 
     height = integrate_slopes(slope_x, slope_y, tileable)
 

@@ -17,7 +17,7 @@ downloaded again. On a GPU, the PyTorch backend's first load keeps a BF16 copy o
 (`checkpoints/ema_model.bf16.safetensors`, 2.8 GB) so later loads skip converting its 5.6 GB of FP32 weights. The first upscale also downloads OpenCV's YuNet face detector (230 KB, MIT licence, `opencv_zoo` at
 `26cc381e`, `face_detection_yunet_2026may.onnx`) into `vosr2-faces/`, the same way.
 
-## The nodes
+## The node
 
 **Upscale Image (VOSR)** (PyTorch > Processing) takes an RGB Image (no alpha) and:
 

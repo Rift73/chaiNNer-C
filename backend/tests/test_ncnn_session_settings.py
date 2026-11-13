@@ -129,3 +129,33 @@ def test_choosing_the_software_device_after_the_cpu_builds_the_net_again(
     software = session.get_ncnn_net(model, SETTINGS)
     assert software is not cpu
     assert isinstance(software, VulkanNet)
+
+
+def test_a_gpu_ncnn_cannot_describe_is_logged(monkeypatch: pytest.MonkeyPatch):
+    # The GPU setting is left out, and the log says why.
+    import importlib.util
+    import sys
+
+    from ncnn import ncnn
+    from sanic.log import logger
+
+    import packages.chaiNNer_ncnn as ncnn_package
+
+    def no_info(index: int) -> Any:
+        raise RuntimeError(f"no info on GPU {index}")
+
+    logged: list[str] = []
+    monkeypatch.setattr(ncnn, "get_gpu_count", lambda: 1)
+    monkeypatch.setattr(ncnn, "get_gpu_info", no_info)
+    monkeypatch.setattr(ncnn_package.package, "settings", [])
+    monkeypatch.setattr(logger, "exception", lambda message, *_: logged.append(message))
+    spec = importlib.util.spec_from_file_location(
+        "packages.chaiNNer_ncnn.settings_under_test", ncnn_settings.__file__
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    monkeypatch.setattr("system.is_linux", False)
+    spec.loader.exec_module(module)
+    assert "gpu_index" not in {s.key for s in ncnn_package.package.settings}
+    assert logged

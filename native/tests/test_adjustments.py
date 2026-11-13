@@ -6,14 +6,13 @@ The actual original functions and their helper imports execute unchanged.
 
 from __future__ import annotations
 
-import ast
 import ctypes as ct
-import types
 from pathlib import Path
 from runpy import run_path
 
 import numpy as np
 import pytest
+from node_bodies import load_body
 
 from nodes.impl.native import f32, lib
 
@@ -33,26 +32,6 @@ PATHS = {
     "stretch_contrast": "adjustments/stretch_contrast.py",
     "log_to_linear": "gamma/log_to_linear.py",
 }
-
-
-def load_body(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
 
 
 MODULES = {
@@ -102,7 +81,7 @@ def compare(name, img, args, reference_args=None, *, rtol=0, atol=0):
         actual = getattr(native, name + "_node")(img, *args)
     assert actual.shape == expected.shape
     assert actual.dtype == expected.dtype == np.float32
-    # Upstream's memory order, as np.clip's order K passes it on (Consult 11 D-16).
+    # Upstream's memory order, as np.clip's order K passes it on.
     assert np.empty_like(actual, order="K").strides == (
         np.empty_like(expected, order="K").strides
     )

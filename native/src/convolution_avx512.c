@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "convolution_avx512.c is an x86-64 /arch:AVX512 unit"
 #endif
-/* The spatial convolution's AVX-512 unit (/arch:AVX512, spec 4.3, D15): no export,
+/* The spatial convolution's AVX-512 unit (/arch:AVX512): no export,
  * reached only through convolution_range's dispatch on the call's ISA level (no
  * OpenCV source code incorporated). convolution_avx2.c's layout in groups of 16 at
  * absolute columns = 0 (mod 16). The fused mirror (fused_lanes 8, the checked

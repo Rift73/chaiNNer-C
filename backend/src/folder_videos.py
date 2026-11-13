@@ -17,31 +17,31 @@ import os
 import sys
 import time
 from collections.abc import Callable, Container, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from types import NoneType
 from typing import Any, TypeVar
 
-import numpy as np
 from sanic.log import logger
 
-from api import BaseInput, NodeData, NodeId, OutputId
+from api import NodeId, OutputId
 from chain.cache import OutputCache
 from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode
 from chain.input import EdgeInput, InputMap
 from events import Event, EventConsumer
 from native_executor import after_ending_runs, ending_runs
-from nodes.impl.execution_scheduler import pure_cpu_node
 from nodes.utils.utils import split_file_path
 from process import (
     ExecutionId,
     NodeExecutionError,
     NodeOutput,
     RegularOutput,
+    _colliding_files,
+    _collision_message,
+    _LoopItems,
     _output_value,
-    _relative_path_input,
+    _reached,
+    _upstream,
     enforce_inputs,
-    enforce_output,
     loop_node_error,
 )
 from progress_controller import Aborted
@@ -51,7 +51,6 @@ LOAD_VIDEO = "chainner:image:load_video"
 T = TypeVar("T")
 # Read from sys.modules: a chain with its node has it loaded, and the server starts before the nodes load.
 NODE_MODULE = "packages.chaiNNer_standard.image.video_frames.load_videos"
-_UNKNOWN = object()
 
 
 def run_executor(executor_class: Callable[..., Any], **arguments: Any) -> Any:
@@ -62,25 +61,8 @@ def run_executor(executor_class: Callable[..., Any], **arguments: Any) -> Any:
     return executor_class(**arguments)
 
 
-def _reached(
-    start: Iterable[NodeId], step: Callable[[NodeId], Iterable[NodeId]]
-) -> set[NodeId]:
-    reached = set(start)
-    pending = list(reached)
-    while pending:
-        for node_id in step(pending.pop()):
-            if node_id not in reached:
-                reached.add(node_id)
-                pending.append(node_id)
-    return reached
-
-
 def _downstream(chain: Chain, start: Iterable[NodeId]) -> set[NodeId]:
     return _reached(start, lambda n: [e.target.id for e in chain.edges_from(n)])
-
-
-def _upstream(chain: Chain, start: Iterable[NodeId]) -> set[NodeId]:
-    return _reached(start, lambda n: [e.source.id for e in chain.edges_to(n)])
 
 
 def _eager_upstream(
@@ -193,162 +175,24 @@ class _Listing:
     fail_fast: bool
 
 
-def _scalar_node(data: NodeData) -> bool:
-    """A node the collision check may run ahead of a file: pure, and no output of it is an image."""
-    return (
-        pure_cpu_node(data)
-        and not data.node_context
-        and all(o.associated_type is not np.ndarray for o in data.outputs)
-    )
-
-
-@dataclass
-class _FileScalars:
-    """The strings, paths and numbers of one file's run that follow from its path, before it runs. The folder's own
-    outputs among them are `named`; a value nothing here knows is _UNKNOWN."""
-
-    chain: Chain
-    folder: _Folder
-    computed: dict[NodeId, NodeOutput]
-    named: dict[OutputId, object]
-    outputs: dict[NodeId, list[object]] = field(default_factory=dict)
-
-    def input(self, node_id: NodeId, i: BaseInput) -> object:
-        edge = self.chain.edge_to(node_id, i.id)
-        if edge is None:
-            value = self.chain.inputs.get(node_id, i.id)
-        elif edge.source.id == self.folder.node.id:
-            value = self.named.get(edge.source.output_id, _UNKNOWN)
-        else:
-            source = self.chain.nodes[edge.source.id].data.outputs
-            index = next(
-                n for n, o in enumerate(source) if o.id == edge.source.output_id
-            )
-            if edge.source.id in self.folder.per_file:
-                results = self.outputs.get(edge.source.id)
-                value = _UNKNOWN if results is None else results[index]
-            else:
-                output = self.computed.get(edge.source.id)
-                value = _UNKNOWN if output is None else _output_value(output, index)
-        return (
-            value if isinstance(value, (str, Path, int, float, NoneType)) else _UNKNOWN
-        )
-
-    def run(self, node_id: NodeId) -> None:
-        """Runs a scalar node on this file's values, if it knows them all. Its error leaves its output unknown: this
-        file's run reports it, where the node runs."""
-        data = self.chain.nodes[node_id].data
-        inputs = [self.input(node_id, i) for i in data.inputs]
-        if any(value is _UNKNOWN for value in inputs):
-            return
-        try:
-            enforced = enforce_inputs(inputs, data, node_id, [])
-            self.outputs[node_id] = enforce_output(data.run(*enforced), data).output
-        except Exception as error:
-            logger.warning(
-                "%s, on a file's values, before the run: %s",
-                data.name,
-                error,
-                exc_info=error,
-            )
-
-
-def _colliding_files(
-    chain: Chain, listings: list[_Listing], computed: dict[NodeId, NodeOutput]
-) -> tuple[NodeId, Path, Path] | None:
-    """A writer of the folders' runs and two files that would give one path, where the later one would replace the
-    earlier one's output; None if there are none. It compares the final paths, for each file: Load Videos' outputs that
-    follow from the file's path (and frame 0's Index, as every file has one), the shared nodes' values and the scalar
-    nodes over those, run here. Two writers also have to agree on their dropdowns, which hold the format. A path that
-    reads anything else (a frame's content, FPS, a zipped generator's output) is not compared: that may tell the files
-    apart. Nor is one without a file name input: a folder alone does not say which files go there. Two writers of one
-    folder on one file are that chain's own choice."""
+def _video_items(listing: _Listing) -> _LoopItems:
+    """A folder's files: Load Videos' outputs that follow from a file's path, and frame 0's Index, as every file has
+    one."""
     module = sys.modules[NODE_MODULE]
-    order = list(reversed(chain.topological_order()))
-    seen: dict[tuple[object, ...], tuple[_Folder, Path]] = {}
-    for listing in listings:
-        folder = listing.folder
-        writers: list[tuple[NodeId, list[BaseInput], list[object]]] = []
-        for node_id in order:
-            writer = chain.nodes[node_id]
-            data = writer.data
-            if (
-                node_id in folder.per_file
-                and (
-                    isinstance(writer, CollectorNode)
-                    or (isinstance(writer, FunctionNode) and writer.has_side_effects())
-                )
-                and any(_relative_path_input(i) for i in data.inputs)
-            ):
-                path_inputs = [
-                    i
-                    for i in data.inputs
-                    if i.kind == "directory" or _relative_path_input(i)
-                ]
-                choices = [
-                    chain.inputs.get(node_id, i.id)
-                    for i in data.inputs
-                    if i.kind == "dropdown"
-                ]
-                writers.append((node_id, path_inputs, choices))
-        feeding = _upstream(
-            chain,
-            [
-                edge.source.id
-                for node_id, path_inputs, _ in writers
-                for edge in chain.edges_to(node_id)
-                if edge.target.input_id in {i.id for i in path_inputs}
-            ],
-        )
-        steps = [
-            node_id
-            for node_id in order
-            if node_id in feeding
-            and node_id in folder.per_file
-            and _scalar_node(chain.nodes[node_id].data)
-        ]
-        for path in listing.paths:
-            directory, name, _ = split_file_path(path)
-            scalars = _FileScalars(
-                chain,
-                folder,
-                computed,
-                {
-                    module.INDEX: 0,
-                    module.VIDEO_DIRECTORY: directory,
-                    module.NAME: name,
-                    module.SUBDIRECTORY: module.subdirectory_of(
-                        path, listing.directory
-                    ),
-                    module.VIDEO_COUNT: len(listing.paths),
-                },
-            )
-            for node_id in steps:
-                scalars.run(node_id)
-            for node_id, path_inputs, choices in writers:
-                parts = [scalars.input(node_id, i) for i in path_inputs]
-                if any(part is _UNKNOWN for part in parts):
-                    continue
-                try:
-                    enforced = [i.enforce_(v) for i, v in zip(path_inputs, parts)]
-                    final = os.path.join(*(p for p in enforced if p is not None))
-                except Exception as error:
-                    logger.warning(
-                        "%s's path, on a file's values, before the run: %s",
-                        chain.nodes[node_id].data.name,
-                        error,
-                        exc_info=error,
-                    )
-                    continue
-                key = (
-                    chain.nodes[node_id].schema_id,
-                    *choices,
-                    os.path.normcase(os.path.normpath(final)),
-                )
-                first_folder, first = seen.setdefault(key, (folder, path))
-                if first != path or first_folder is not folder:
-                    return node_id, first, path
-    return None
+
+    def named(_position: int, path: Path) -> dict[OutputId, object]:
+        directory, name, _ = split_file_path(path)
+        return {
+            module.INDEX: 0,
+            module.VIDEO_DIRECTORY: directory,
+            module.NAME: name,
+            module.SUBDIRECTORY: module.subdirectory_of(path, listing.directory),
+            module.VIDEO_COUNT: len(listing.paths),
+        }
+
+    return _LoopItems(
+        listing.folder.node, listing.folder.per_file, listing.paths, named
+    )
 
 
 def _file_chain(
@@ -728,19 +572,26 @@ class FolderVideosRun:
         # Before anything writes: what the folders hold, and whether their outputs can be told apart.
         listings = [await self.__list_folder(folder, computed) for folder in folders]
         colliding = await self.__on_pool(
-            functools.partial(_colliding_files, chain, listings, computed)
+            functools.partial(
+                _colliding_files,
+                chain,
+                [_video_items(listing) for listing in listings],
+                computed,
+            )
         )
         if colliding is not None:
-            writer, first, second = colliding
-            data = chain.nodes[writer].data
+            writer = colliding[0]
             raise NodeExecutionError(
                 writer,
-                data,
-                f"{data.name} would write {first} and {second} to one file: its folder and"
-                " file name do not tell them apart. Connect Load Videos' Name to its file"
-                " name, and its Subdirectory Path or Video Directory to its folder. Of two"
-                " videos with one name in one folder, choose one with a glob expression;"
-                " two Load Videos need an output folder each.",
+                chain.nodes[writer].data,
+                _collision_message(
+                    chain,
+                    colliding,
+                    "Connect Load Videos' Name to its file name, and its Subdirectory Path or"
+                    " Video Directory to its folder. Of two videos with one name in one folder,"
+                    " choose one with a glob expression; two Load Videos need an output folder"
+                    " each.",
+                ),
                 {},
             )
         if rest:

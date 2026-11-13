@@ -48,8 +48,8 @@
 cn_status cn_alpha_gamma(const float *src, float *out,
     size_t pixels, size_t channels, float gamma);
 
-/* coefficient_line, resample_context and vertical_one live in resample_shared.h (SP4b
- * Task 7), shared with the AVX2 unit resample_avx2.c. */
+/* coefficient_line, resample_context and vertical_one live in resample_shared.h,
+ * shared with the AVX2 unit resample_avx2.c. */
 typedef struct coefficient_entry {
     size_t count;
     uint32_t scale, offset;
@@ -361,7 +361,7 @@ static cn_status coefficients(size_t source, size_t target, int filter,
 }
 
 /* Horizontal outputs of one source row into out, one function per channel count
- * (SP4b D14). Output x of channel k keeps B3's sequence: acc = 0, then
+ * Output x of channel k keeps B3's sequence: acc = 0, then
  * acc += row[(start + i) * channels + k] * weights[i] for each tap i in order. The
  * tap's pixel pointer is hoisted and the channels of a pixel accumulate side by side,
  * each in its own sum. */

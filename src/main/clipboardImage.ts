@@ -43,15 +43,20 @@ const readBytes = async (item: Electron.ClipboardItem, type: string): Promise<Bu
  * ones (upstream chaiNNer #1511). An image with transparency is therefore pasted as the PNG file
  * read, or as the app's own PNG under a format Chromium does not read. An opaque image is
  * re-encoded, which makes it RGB: the app's own PNG may have an all-opaque alpha channel or
- * 16-bit samples, which would change what Load Image outputs.
+ * 16-bit samples, which would change what Load Image outputs. An image that cannot be decoded
+ * (a type nativeImage does not read) gives undefined.
  */
 export const readClipboardImageAsPng = async (
     item: Electron.ClipboardItem,
     type: string
-): Promise<Buffer> => {
+): Promise<Buffer | undefined> => {
     const read = await readBytes(item, type);
     const image = nativeImage.createFromBuffer(read);
-    if (!hasTransparency(image.toBitmap())) {
+    const bitmap = image.toBitmap();
+    if (bitmap.length === 0) {
+        return undefined;
+    }
+    if (!hasTransparency(bitmap)) {
         return image.toPNG();
     }
     const appPngs = await Promise.all(

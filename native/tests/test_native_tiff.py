@@ -451,6 +451,19 @@ def test_unported_tiffs_go_to_today_path(tmp_path, monkeypatch, name):
         load_image.load_image_node(path)
 
 
+@pytest.mark.parametrize(("limit", "asked"), [(H * W, (W, H, 1)), (H * W - 1, None)])
+def test_transposed_tiff_is_sized_before_it_is_read(monkeypatch, limit, asked):
+    """Orientation 5 (LeftTop) turns the image: the decoder asks for the turned buffer,
+    under the size limits, before it reads a strip, so a header that declares an image
+    over the limits allocates nothing. The strip is cut off here: only the request is
+    left to see."""
+    grey = RNG.integers(0, 256, (H, W), dtype=np.uint8)
+    data = raw_tiff(grey, {258: [8], 262: [1], 274: [5]})
+    monkeypatch.setenv("OPENCV_IO_MAX_IMAGE_PIXELS", str(limit))
+    request = graph().image_io_decode_request
+    assert request(data[: -grey.size], "cv", limit) == asked
+
+
 def save(path, image, params, codec):
     graph().image_io_cv_save(
         {"cv2": codec, "split_file_path": split_file_path}, path, image, params

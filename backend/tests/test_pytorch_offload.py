@@ -80,3 +80,60 @@ def test_the_pinned_ram_is_released_once_after_moves(monkeypatch: pytest.MonkeyP
     offload.release_pinned_memory()
     offload.release_pinned_memory()
     assert released == [1]
+
+
+class Entered(offload.OffloadMode):
+    """OffloadMode, counting the forwards it runs."""
+
+    count = 0
+
+    def __enter__(self) -> Entered:
+        Entered.count += 1
+        return super().__enter__()
+
+
+@torch.inference_mode()
+def test_a_first_forward_that_fits_by_the_estimate_runs_as_is_under_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model, x = model_and_input()
+    monkeypatch.setattr(offload, "MIN_PIXELS", 0)
+    monkeypatch.setattr(offload, "OffloadMode", Entered)
+    Entered.count = 0
+    caps: list[float] = []
+    set_fraction = torch.cuda.set_per_process_memory_fraction
+    monkeypatch.setattr(
+        torch.cuda,
+        "set_per_process_memory_fraction",
+        lambda fraction, device=None: (
+            caps.append(fraction),
+            set_fraction(fraction, device),
+        ),
+    )
+    before = torch.cuda.get_per_process_memory_fraction(DEVICE)
+    expected = model(x)
+    assert offload.runs_plain(DEVICE, x.shape[-2] * x.shape[-1], 1024.0)
+    with offload.offloaded(model, x, expected_bytes_per_pixel=1024.0):
+        out = model(x)
+    assert Entered.count == 0
+    assert caps and caps[-1] == before  # capped during the forward, then restored
+    assert torch.equal(out, expected)
+
+
+@torch.inference_mode()
+def test_a_first_forward_that_does_not_fit_by_the_estimate_takes_the_offload(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model, x = model_and_input()
+    monkeypatch.setattr(offload, "MIN_PIXELS", 0)
+    monkeypatch.setattr(offload, "OffloadMode", Entered)
+    Entered.count = 0
+    too_much = 10.0 * 2**40 / (x.shape[-2] * x.shape[-1])
+    assert not offload.runs_plain(DEVICE, x.shape[-2] * x.shape[-1], too_much)
+    with offload.offloaded(model, x, expected_bytes_per_pixel=too_much):
+        model(x)
+    assert Entered.count == 1
+    # Without an estimate, a model's first forward takes it as before.
+    with offload.offloaded(torch.nn.Conv2d(3, 3, 1).to(DEVICE), x):
+        pass
+    assert Entered.count == 2

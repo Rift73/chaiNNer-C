@@ -180,9 +180,9 @@ def test_wide_median_rows_at_every_isa_level(channels, shape, radius, pattern):
     elif pattern == "flat":
         image = rng.integers(120, 124, size, np.uint8)
     else:
-        image = np.uint8(np.indices(shape).sum(0) // 8 * 37 % 256)[..., None].repeat(channels, 2)
+        image = (np.indices(shape).sum(0) // 8 * 37 % 256).astype(np.uint8)[..., None].repeat(channels, 2)
     image = np.ascontiguousarray(image)
-    source = np.float32(image) / 255
+    source = image.astype(np.float32) / 255
     effective, _, cpu = isa_get()
     try:
         assert isa_set(0) == 0

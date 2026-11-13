@@ -100,10 +100,6 @@ CN_EXPORT cn_status cn_pixels_convert_checked(const void *src, void *out, size_t
     if (events) *events = (int)job.events;
     return status;
 }
-CN_EXPORT cn_status cn_pixels_convert(const void *src, void *out, size_t count,
-                                     int type, int output, int normalize) {
-    return cn_pixels_convert_checked(src, out, count, type, output, normalize, NULL);
-}
 
 typedef struct {
     const float *src;

@@ -167,12 +167,10 @@ def test_restart_and_completed_row_reuse(shape, split_at, overlap):
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-7)
 
 
-@pytest.mark.parametrize("variant", ["pinned", "installed", "source"])
+@pytest.mark.parametrize("variant", ["pinned", "installed"])
 @pytest.mark.parametrize("shape", [(97, 151, 3), (151, 97, 3)])
 @pytest.mark.parametrize("scale", [1, 2])
 def test_max_retry_at_second_row_preserves_pixels(variant, shape, scale):
-    from nodes.impl.native_graph import graph
-
     image = np.random.default_rng(18).random(shape, dtype=np.float32)
     auto = OLD[0] if variant == "pinned" else NEW[0]
     calls = []
@@ -192,11 +190,7 @@ def test_max_retry_at_second_row_preserves_pixels(variant, shape, scale):
         splits.append(size)
         return size[0] // 2, size[1] // 2
 
-    args = (image, upscale, (64, 48), shrink, 4)
-    if variant == "source":
-        result = graph().tiling_source_auto_split_max_split(vars(auto), *args, None)
-    else:
-        result = auto._max_split(*args)
+    result = auto._max_split(image, upscale, (64, 48), shrink, 4)
     assert splits == [(64, 48)]
     expected = np.repeat(np.repeat(image, scale, axis=0), scale, axis=1)
     np.testing.assert_allclose(result, expected, rtol=1e-6, atol=1e-7)

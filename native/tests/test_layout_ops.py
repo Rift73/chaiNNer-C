@@ -164,7 +164,7 @@ def test_metadata_unchanged(name):
                     elif definition is a:
                         replacements = {
                             "letmaxChannels=max(Input0.channels,": "letmaxChannels=max(getChannels(Input0),",
-                            # 2026-10-23: only a one-pixel strip broadcasts.
+                            # Only a one-pixel strip broadcasts.
                             "_asi=>int(1..)&round(i.width*maxHeight/i.height)": "_asi=>ifgetChannels(i)<maxChannels"
                             "andround(i.width*maxHeight/i.height)==1{maxWidth}"
                             "else{int(1..)&round(i.width*maxHeight/i.height)}",
@@ -176,6 +176,20 @@ def test_metadata_unchanged(name):
                             assert text.count(old) == 1
                             text = text.replace(old, approved)
                     expression.value.value = text
+    if name == "merge_spritesheet":
+        # Its rows and columns docs were Split Spritesheet's; they now describe Merge.
+        corrected = {
+            "The number of rows to split the image into. The height of the image must be a multiple of this number.": "The number of rows of the spritesheet. Its height is this number times the height of one image.",
+            "The number of columns to split the image into. The width of the image must be a multiple of this number.": "The number of columns of the spritesheet. Its width is this number times the width of one image.",
+        }
+        for old, approved in corrected.items():
+            docs = [
+                expression
+                for expression in ast.walk(a.decorator_list[0])
+                if isinstance(expression, ast.Constant) and expression.value == old
+            ]
+            assert len(docs) == 1
+            docs[0].value = approved
     assert [ast.dump(d) for d in a.decorator_list] == [
         ast.dump(d) for d in b.decorator_list
     ]
@@ -287,7 +301,7 @@ def test_stack(layout, orientation, channels, different_sizes):
     except ValueError as error:
         # Upstream allocates a promoted image at the largest height and width and
         # fails unless a one-pixel strip broadcasts; chaiNNer-C keeps the image's own
-        # size (2026-10-23), as stacking images promoted beforehand does.
+        # size, as stacking images promoted beforehand does.
         assert "broadcast" in str(error)
         widest = max(3 if c == 1 else c for c in channels)
         expected = reference.stack_images_node(

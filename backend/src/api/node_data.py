@@ -202,6 +202,11 @@ class NodeData:
     # whose generator reads only part of its source (Load Video's Range) also reads that
     # many items around it as context frames. None: no temporal context.
     temporal_context: tuple[int, int] | None = None
+    # (input id, predicate): the temporal context applies only when the predicate is true
+    # for that input's value. A value the predicate cannot judge must give True, and so
+    # does an input fed from inside the loop, never judged (the loop's own generator's
+    # per-run outputs included). None: it always applies.
+    temporal_if: tuple[InputId, Callable[[object], bool]] | None = None
 
     @property
     def single_iterable_input(self) -> IteratorInputInfo:

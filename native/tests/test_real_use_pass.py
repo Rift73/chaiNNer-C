@@ -517,14 +517,13 @@ SITE = "python/python/Lib/site-packages/"
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        # Consult 6 P2 and P3.
         ("logs/", "allowed"),
         ("logs/main.log", "allowed"),
         ("backend-storage/", "allowed"),
         ("backend-storage/ffmpeg/x.dll", "allowed"),
         ("settings.json", "allowed"),
         ("Settings.JSON", "allowed"),
-        # Chromium's profile in the root (Consult 8 R-i).
+        # Chromium's profile in the root.
         ("Cache/", "allowed"),
         ("Cache/Cache_Data/data_0", "allowed"),
         ("Code Cache/js/index", "allowed"),
@@ -550,8 +549,8 @@ SITE = "python/python/Lib/site-packages/"
         ("settings.json.tmp", "disallowed"),
         ("logs.txt", "disallowed"),
         ("Crashpad/", "disallowed"),
-        # Bytecode alone under the backend (Consult 8 R-i). The runtime's Lib ships
-        # compiled (Consult 10 D-9), so bytecode there is a module the build missed.
+        # Bytecode alone under the backend. The runtime's Lib ships compiled, so
+        # bytecode there is a module the build missed.
         ("resources/src/nodes/__pycache__/", "bytecode"),
         ("resources/src/nodes/__pycache__/x.cpython-314.pyc", "bytecode"),
         (SITE + "torch/__pycache__/x.cpython-314.pyc", "disallowed"),
@@ -602,7 +601,7 @@ def test_bytecode_module_names_a_runtime_pyc(path, module):
 
 
 def test_a_site_packages_bytecode_write_fails_and_names_its_module():
-    # Consult 10 D-9: the build compiles every Lib module, so a launch writing one
+    # The build compiles every Lib module, so a launch writing one
     # means the build missed it; the gate fails and says which.
     written = SITE + "sanic/__pycache__/app.cpython-314.pyc"
     backend = "resources/src/nodes/__pycache__/x.cpython-314.pyc"
@@ -622,9 +621,9 @@ def test_a_site_packages_bytecode_write_fails_and_names_its_module():
 
 
 def test_the_root_allow_list_is_frozen_with_its_evidence():
-    # An addition is a consult with its evidence (Consult 8 R-i): the 11 entries of
-    # Chromium's profile out\chaiNNer-C-py311's root held after its launches, and
-    # Consult 6's three.
+    # An addition needs its evidence: the 11 entries of Chromium's profile that
+    # out\chaiNNer-C-py311's root held after its launches, and the three log and
+    # settings entries.
     assert r.CHROMIUM_PROFILE == (
         "Cache/",
         "Code Cache/",
@@ -1069,6 +1068,16 @@ def test_each_gate_fails_on_its_own_record(change, failing):
 
 def test_an_empty_summary_fails_every_gate():
     assert not any(r.gates({}).values())
+
+
+def test_the_verdict_names_every_skipped_chain_and_the_gates_still_pass():
+    summary = passing_summary()  # a compared, b skipped
+    summary["chains"]["absent"] = {"status": "skipped"}
+    assert all(r.gates(summary).values())
+    assert r.chain_verdict(summary) == "chains: 1 compared, 2 skipped: b, absent"
+    for name in ("b", "absent"):
+        del summary["chains"][name]
+    assert r.chain_verdict(summary) == "chains: 1 compared, 0 skipped"
 
 
 # The window and process reads the launch makes (no app is started).

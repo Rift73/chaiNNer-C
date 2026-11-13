@@ -72,7 +72,6 @@ def color_transfer_node(
 ) -> np.ndarray:
     _, _, img_c = get_h_w_c(img)
 
-    # Preserve alpha
     alpha = None
     if img_c == 4:
         alpha = img[:, :, 3]
@@ -87,8 +86,7 @@ def color_transfer_node(
     ref_valid_rgb_indices = transfer_mask(ref_img)
 
     # A fully transparent image has nothing to recolour and a fully transparent
-    # reference no colour to give: the image itself (2026-10-23; upstream gave NaN
-    # or failed).
+    # reference no colour to give: the image itself.
     if not valid_rgb_indices.any() or not ref_valid_rgb_indices.any():
         return img
 

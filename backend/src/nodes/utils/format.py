@@ -23,26 +23,28 @@ def join_english(
     return ", ".join(s[:-1]) + f", {conj} " + s[-1]
 
 
-def format_image_with_channels(
-    channels: list[int],
-    conj: Conj = "and",
-    plural: bool = False,
+def _format_with_channels(
+    noun: str, article: str, channels: list[int], conj: Conj, plural: bool
 ) -> str:
     assert len(channels) > 0
 
     named = {1: "grayscale", 3: "RGB", 4: "RGBA"}
     if all(x in named for x in channels):
-        if plural:
-            return join_english(channels, lambda c: named[c], conj=conj) + " images"
-        else:
-            return (
-                "a " + join_english(channels, lambda c: named[c], conj=conj) + " image"
-            )
+        names = join_english(channels, lambda c: named[c], conj=conj)
+        return f"{names} {noun}s" if plural else f"a {names} {noun}"
 
+    numbers = join_english(channels, conj=conj)
     if plural:
-        return f"images with {join_english(channels, conj=conj)} channel(s)"
-    else:
-        return f"an image with {join_english(channels, conj=conj)} channel(s)"
+        return f"{noun}s with {numbers} channel(s)"
+    return f"{article} {noun} with {numbers} channel(s)"
+
+
+def format_image_with_channels(
+    channels: list[int],
+    conj: Conj = "and",
+    plural: bool = False,
+) -> str:
+    return _format_with_channels("image", "an", channels, conj, plural)
 
 
 def format_color_with_channels(
@@ -50,21 +52,7 @@ def format_color_with_channels(
     conj: Conj = "and",
     plural: bool = False,
 ) -> str:
-    assert len(channels) > 0
-
-    named = {1: "grayscale", 3: "RGB", 4: "RGBA"}
-    if all(x in named for x in channels):
-        if plural:
-            return join_english(channels, lambda c: named[c], conj=conj) + " colors"
-        else:
-            return (
-                "a " + join_english(channels, lambda c: named[c], conj=conj) + " color"
-            )
-
-    if plural:
-        return f"color with {join_english(channels, conj=conj)} channel(s)"
-    else:
-        return f"a color with {join_english(channels, conj=conj)} channel(s)"
+    return _format_with_channels("color", "a", channels, conj, plural)
 
 
 _CHANNEL_NUMBER_NAME = {1: "GRAY", 3: "RGB", 4: "RGBA"}

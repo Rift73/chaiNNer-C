@@ -7,7 +7,17 @@ from pathlib import Path
 import sys
 import types
 
-from .spec import CONTEXT, FACTORIES, SCHEMA, SOURCE, SOURCE_SHA256, from_model, sha256
+from .spec import (
+    CONTEXT,
+    FACTORIES,
+    LOCAL,
+    RETRIEVAL,
+    SCHEMA,
+    SOURCE,
+    SOURCE_SHA256,
+    from_model,
+    sha256,
+)
 
 
 def load_arch():
@@ -56,7 +66,6 @@ def make_model(factory, scale, *, meta=False):
         model = getattr(arch, factory)(
             scale=scale,
             use_checkpoint=False,
-            dual_core_checkpoint=False,
             g_attention_impl="sdpa",
             compile_g_attention_impl="sdpa",
             context_na=True,
@@ -149,7 +158,13 @@ def export_checkpoint(
     model.prepare_for_export()
     if sha256(checkpoint) != checkpoint_sha:
         raise RuntimeError("Checkpoint changed during export")
-    graph = Graph(arch, spec)
+    graph = Graph(
+        arch,
+        spec,
+        local_na=model.local_na,
+        retrieval_na=model.retrieval_na,
+        row_sums=True,
+    )
     with torch.inference_mode():
         onnx_model = graph.build(model)
     onnx.checker.check_model(onnx_model)
@@ -165,13 +180,18 @@ def export_checkpoint(
         "checkpoint_folded": folded,
         "specialization": spec.to_dict(),
         "context": CONTEXT,
+        "local": LOCAL,
+        "retrieval": RETRIEVAL,
         "precision": "FP32_IO_BF16_FP32_BODY",
         "dynamic_sites": graph.dynamic_sites,
         "plugin_names": [
             f"Dual{part}_{spec.plugin_key}_TRT" for part in ("Norm", "Core", "Project")
         ]
-        + ["DualAttentionBarrier_TRT"]
-        + ([f"DualNA_{spec.plugin_key}_TRT"] if graph.na_sites else []),
+        + (["DualAttentionBarrier_TRT"] if graph.barrier_sites else [])
+        + ([f"DualNA_{spec.plugin_key}_TRT"] if graph.na_sites else [])
+        + ([f"DualLocalNA_{spec.plugin_key}_TRT"] if graph.local_sites else [])
+        + ([f"DualXR_{spec.plugin_key}_TRT"] if graph.retrieval_sites else [])
+        + ([f"DualRowSum_{spec.plugin_key}_TRT"] if graph.row_sum_sites else []),
         "files": {
             p.name: sha256(p)
             for p in (output / "model.onnx", output / "weights.bin")

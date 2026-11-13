@@ -1,6 +1,6 @@
-"""Load Model of NCNN and ONNX on damaged files: a ValueError that names the files and
-keeps the reader's own error as its cause, where the reader's bare error reached the
-user before (e.g. `KeyError: b'\\xd5\\xa5\\x00%'` for weights with an unknown tag).
+"""Load Model of NCNN, ONNX and PyTorch on damaged files: a ValueError that names the
+files and keeps the reader's own error as its cause, where the reader's bare error reached
+the user before (e.g. `KeyError: b'\\xd5\\xa5\\x00%'` for weights with an unknown tag).
 A missing file still raises its OS error."""
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from google.protobuf.message import DecodeError
 
 # The NCNN reader is native, which GitHub's checks do not build.
@@ -18,7 +19,7 @@ from packages.chaiNNer_ncnn.ncnn.io.load_model import (
     load_model_node as load_ncnn_model_node,
 )
 from packages.chaiNNer_onnx.onnx.io.load_model import (
-    load_model_node as load_onnx_model_node,
+    read_model as load_onnx_model_node,
 )
 
 # A 1x1 convolution that copies its 3 channels.
@@ -41,13 +42,13 @@ def test_the_tiny_ncnn_model_loads(tmp_path: Path):
     ("param", "weights", "cause"),
     [
         # weights whose 4-byte tag NCNN does not know
-        (PARAM, b"\xd5\xa5\x00\x25" + BIN[4:], KeyError),
+        (PARAM, b"\xd5\xa5\x00\x25" + BIN[4:], ValueError),
         # a parameter that is not a number
         (PARAM.replace("0=3", "0=nan"), BIN, ValueError),
         # a .bin shorter than the weights the .param declares
         (PARAM, BIN[:20], ValueError),
         # weights of a kernel 0 wide: no channel count follows from them
-        (PARAM.replace("1=1", "1=0"), BIN, ZeroDivisionError),
+        (PARAM.replace("1=1", "1=0"), BIN, ValueError),
     ],
 )
 def test_a_damaged_ncnn_model_names_its_files(
@@ -87,3 +88,15 @@ def test_a_damaged_onnx_model_names_its_file(tmp_path: Path):
     ) as raised:
         load_onnx_model_node(path)
     assert type(raised.value.__cause__) is DecodeError
+
+
+def test_an_unreadable_pytorch_model_names_its_cause(tmp_path: Path):
+    from packages.chaiNNer_pytorch.pytorch.io.load_model import read_model
+
+    path = tmp_path / "model.pth"
+    path.write_bytes(b"not a model")
+    with pytest.raises(
+        ValueError, match=r"^Model model\.pth is unsupported by chaiNNer \(\w+: "
+    ) as raised:
+        read_model(path, torch.device("cpu"))
+    assert raised.value.__cause__ is not None

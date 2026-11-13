@@ -1,4 +1,4 @@
-"""Lane I's native codecs against today's path on every row of explore-image-io.md table (a).
+"""The native codecs against today's path on every row of explore-image-io.md table (a).
 
 Each case is a small file (decode) or a Save Image call (encode) made here, run twice in one process:
 with CHAINNER_C_NATIVE_CODECS=0 (today's Pillow/OpenCV path, the oracle) and with it unset (native
@@ -7,7 +7,7 @@ previews, or the exception's type and message, plus the warnings Load Image logs
 saved file's bytes and prepare_save_image's bytes, or the exception.
 
 NATIVE_DECODE and NATIVE_ENCODE name the rows the native path must take: there, today's codec calls are
-made to raise (Probe) and the file must still decode, or save, to the same result. Lane I adds a row as
+made to raise (Probe) and the file must still decode, or save, to the same result. A row is added as
 its codec lands; KEPT_ON_TODAYS_PATH lists the cases of those rows that decline by design.
 The full proof is the codec corpus (native/local/codec-corpus, gen_corpus.py and run_corpus.py).
 """
@@ -55,7 +55,7 @@ NATIVE_DECODE = {
     "bmp": "_read_cv",
     "pxm": "_read_cv",
 }
-# Encode rows the native path takes (chaiNNer-C's 8-bit PNG encoder takes them with or without lane I).
+# Encode rows the native path takes (chaiNNer-C's 8-bit PNG encoder takes them with or without the other native codecs).
 NATIVE_ENCODE = {
     "jpg",
     "png-u8",
@@ -1696,7 +1696,7 @@ def test_unported_opencv_extension_is_not_read_natively(
 
 
 # ---------------------------------------------------------------------------------------------
-# The image-size limit (2026-10-19): 40,000 x 40,000 pixels on every route. Headers only:
+# The image-size limit: 40,000 x 40,000 pixels on every route. Headers only:
 # the native decoders' requests are refused (image_io_decode_request), so nothing is allocated.
 
 

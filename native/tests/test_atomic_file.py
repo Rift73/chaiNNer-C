@@ -387,6 +387,42 @@ def test_a_target_held_without_delete_sharing_fails_as_before(tmp_path: Path):
     assert final.stat().st_mtime == OLD
 
 
+@windows("sharing modes are Windows file rules")
+def test_commit_or_keep_leaves_the_temporary_file_when_the_rename_fails(
+    tmp_path: Path,
+):
+    # commit_or_keep() raises what commit() raises, but the temporary file stays, with
+    # its bytes, and neither abandon() nor the target's end deletes it; commit() itself
+    # still deletes it (the test above).
+    final = aged(tmp_path / "held.bin", b"held")
+    target = graph().AtomicTarget(final)
+    temp = Path(target.temp)
+    temp.write_bytes(b"new")
+    holder = Holder(final, SHARE_READ_WRITE)
+    try:
+        with pytest.raises(PermissionError) as raised:
+            target.commit_or_keep()
+        assert raised.value.errno == 13 and raised.value.filename == str(final)
+    finally:
+        holder.close()
+    target.abandon()
+    del target
+    gc.collect()
+    assert contents(tmp_path) == {final: b"held", temp: b"new"}
+    assert final.stat().st_mtime == OLD
+
+
+def test_commit_or_keep_commits_as_commit_does(tmp_path: Path):
+    final = aged(tmp_path / "a.bin", b"same")
+    target = graph().AtomicTarget(final)
+    Path(target.temp).write_bytes(b"same")
+    assert target.commit_or_keep() is False
+    target = graph().AtomicTarget(final)
+    Path(target.temp).write_bytes(b"new")
+    assert target.commit_or_keep() is True
+    assert contents(tmp_path) == {final: b"new"}
+
+
 def test_concurrent_writers_and_a_reader_on_one_target(tmp_path: Path):
     # Eight writers replace one file while another thread opens and closes it with full
     # sharing, as a thumbnailer does: every write succeeds and the file is one whole
@@ -517,3 +553,24 @@ def test_move_from_another_folder(tmp_path: Path):
         graph().atomic_move(source_folder / "none.dds", final)
     assert str(raised.value) == f"[Errno 2] No such file or directory: {str(final)!r}"
     assert contents(target_folder) == {**others, final: b"texture"}
+
+
+@windows("sharing modes are Windows file rules")
+def test_a_failed_move_keeps_the_source(tmp_path: Path):
+    # A target held without delete sharing refuses the rename: the moved file must stay
+    # at its source, as a failed os.replace leaves it, never be deleted with the temporary.
+    source_folder, target_folder = tmp_path / "chaiNNer-x", tmp_path / "out"
+    source_folder.mkdir()
+    target_folder.mkdir()
+    source = source_folder / "model.pth"
+    source.write_bytes(b"weights")
+    final = aged(target_folder / "model.pth", b"held")
+    holder = Holder(final, SHARE_READ_WRITE)
+    try:
+        with pytest.raises(PermissionError) as raised:
+            graph().atomic_move(source, final)
+        assert raised.value.errno == 13 and raised.value.filename == str(final)
+    finally:
+        holder.close()
+    assert source.read_bytes() == b"weights"
+    assert contents(target_folder) == {final: b"held"}

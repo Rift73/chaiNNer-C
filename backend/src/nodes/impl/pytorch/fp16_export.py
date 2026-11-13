@@ -45,7 +45,6 @@ import copy
 from typing import TypeVar
 
 import torch
-import torch.nn.functional as F
 from einops import rearrange
 from spandrel import ModelDescriptor
 from spandrel.architectures.__arch_helpers.attention import in_migraphx_export
@@ -57,6 +56,7 @@ from spandrel.architectures.DAT.__arch.DAT import (
 from spandrel.architectures.FDAT.__arch.fdat import FastChannelAttention
 from spandrel.architectures.RetinexFormer.__arch.retinexformer_arch import IG_MSA
 from torch import nn
+from torch.nn import functional
 
 from .omnisr_export import unit_length
 
@@ -166,21 +166,21 @@ class _TokenSpatialAttention(Adaptive_Spatial_Attention):
         offset = norm.bias.float() - norm.running_mean.float() * scale
         weight = (conv_0.weight[:, :, 0, 0].float() * scale[:, None]).to(tokens.dtype)
         bias = (conv_0.bias.float() * scale + offset).to(tokens.dtype)
-        x = activation(F.linear(tokens, weight, bias))
-        return F.linear(x, conv_1.weight[:, :, 0, 0], conv_1.bias)
+        x = activation(functional.linear(tokens, weight, bias))
+        return functional.linear(x, conv_1.weight[:, :, 0, 0], conv_1.bias)
 
-    def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
-        B, L, C = x.shape
-        d = C // self.num_heads
-        qkv = self.qkv(x).reshape(B, H, W, 3, self.num_heads, -1)
-        v = qkv[:, :, :, 2, :, :d].permute(0, 3, 4, 1, 2).reshape(B, C, H, W)
+    def forward(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        b, n, c = x.shape
+        d = c // self.num_heads
+        qkv = self.qkv(x).reshape(b, height, width, 3, self.num_heads, -1)
+        v = qkv[:, :, :, 2, :, :d].permute(0, 3, 4, 1, 2).reshape(b, c, height, width)
         half = self.num_heads * qkv.shape[-1] // 2
-        qkv = qkv.reshape(B, H, W, 3, 2 * half).permute(3, 0, 1, 2, 4)
+        qkv = qkv.reshape(b, height, width, 3, 2 * half).permute(3, 0, 1, 2, 4)
         split = max(self.split_size)
-        pad_r = (split - W % split) % split
-        pad_b = (split - H % split) % split
-        qkv = F.pad(qkv, (0, 0, 0, pad_r, 0, pad_b))
-        full_h, full_w = H + pad_b, W + pad_r
+        pad_r = (split - width % split) % split
+        pad_b = (split - height % split) % split
+        qkv = functional.pad(qkv, (0, 0, 0, pad_r, 0, pad_b))
+        full_h, full_w = height + pad_b, width + pad_r
         first, second = qkv[..., :half], qkv[..., half:]
         if (self.rg_idx % 2 == 0 and self.b_idx > 0 and (self.b_idx - 2) % 4 == 0) or (
             self.rg_idx % 2 != 0 and self.b_idx % 4 == 0
@@ -201,13 +201,15 @@ class _TokenSpatialAttention(Adaptive_Spatial_Attention):
         heads = self.num_heads // 2
         attened = torch.cat(
             [
-                part[:, :H, :W].reshape(B, H, W, heads, -1)[..., :d].reshape(B, L, C // 2)
+                part[:, :height, :width]
+                .reshape(b, height, width, heads, -1)[..., :d]
+                .reshape(b, n, c // 2)
                 for part in (x_0, x_1)
             ],
             dim=2,
         )
         conv_x = self.dwconv(v)
-        channel_map = self.channel_interaction(conv_x).reshape(B, 1, C)
+        channel_map = self.channel_interaction(conv_x).reshape(b, 1, c)
         spatial_map = self._spatial_map(attened)
         conv_x = conv_x.flatten(2).transpose(1, 2)
         return self.proj_drop(
@@ -247,10 +249,13 @@ def for_opset(model: _Descriptor, opset_version: int) -> _Descriptor:
     as it is."""
     if opset_version >= 17:
         return model
+    # Any nn.LayerNorm, spandrel's kernel-running KernelLayerNorm among them (an nn.LayerNorm
+    # in all but its eager CUDA forward); FP32LayerNorm already computes in FP32.
     norms = [
         name
         for name, module in model.model.named_modules()
-        if type(module) is nn.LayerNorm
+        if isinstance(module, nn.LayerNorm)
+        and not isinstance(module, FP32LayerNorm)
         and module.elementwise_affine
         and module.weight.dtype == torch.float16
     ]

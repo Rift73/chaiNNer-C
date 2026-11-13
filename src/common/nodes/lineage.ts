@@ -1,15 +1,13 @@
 import { Edge, Node } from 'reactflow';
-import { EdgeData, InputId, NodeData, NodeSchema, SchemaId } from '../common-types';
+import { EdgeData, NodeData, NodeSchema, SchemaId } from '../common-types';
 import { SchemaMap } from '../SchemaMap';
 import {
     EMPTY_ARRAY,
-    EMPTY_SET,
     ParsedSourceHandle,
     ParsedTargetHandle,
     assertNever,
     groupBy,
     parseSourceHandle,
-    parseTargetHandle,
     stringifyTargetHandle,
 } from '../util';
 
@@ -104,11 +102,7 @@ export class ChainLineage {
         return this.byTargetHandle.get(stringifyTargetHandle(handle));
     }
 
-    private getInputLineageImpl(
-        nodeId: string,
-        schema: NodeSchema,
-        exclude: ReadonlySet<InputId>
-    ): Lineage | null {
+    private getInputLineageImpl(nodeId: string, schema: NodeSchema): Lineage | null {
         switch (schema.kind) {
             case 'generator': {
                 // iterator source nodes do not support iterated inputs
@@ -120,14 +114,6 @@ export class ChainLineage {
 
                 const edges = this.byTargetNode.get(nodeId) ?? EMPTY_ARRAY;
                 for (const edge of edges) {
-                    if (
-                        exclude.size > 0 &&
-                        exclude.has(parseTargetHandle(edge.targetHandle!).inputId)
-                    ) {
-                        // eslint-disable-next-line no-continue
-                        continue;
-                    }
-
                     const inputLineage = this.getOutputLineage(
                         parseSourceHandle(edge.sourceHandle!)
                     );
@@ -151,9 +137,6 @@ export class ChainLineage {
                 const info = schema.iteratorInputs[0];
 
                 for (const inputId of info.inputs) {
-                    // eslint-disable-next-line no-continue
-                    if (exclude.has(inputId)) continue;
-
                     const edge = this.getEdgeByTarget({ nodeId, inputId });
                     // eslint-disable-next-line no-continue
                     if (!edge) continue;
@@ -180,22 +163,13 @@ export class ChainLineage {
      *
      * Note: the input lineage of collector nodes is `null` if there are no connected iterated inputs (invalid chain).
      */
-    getInputLineage(
-        nodeId: string,
-        { exclude }: { exclude?: ReadonlySet<InputId> } = {}
-    ): Lineage | null {
+    getInputLineage(nodeId: string): Lineage | null {
         const schema = this.nodeSchemata.get(nodeId);
         if (!schema) return null;
 
-        const useCache = exclude === undefined || exclude.size === 0;
-
-        if (!useCache) {
-            return this.getInputLineageImpl(nodeId, schema, exclude);
-        }
-
         let lineage = this.nodeLineageCache.get(nodeId);
         if (lineage === undefined) {
-            lineage = this.getInputLineageImpl(nodeId, schema, EMPTY_SET);
+            lineage = this.getInputLineageImpl(nodeId, schema);
             this.nodeLineageCache.set(nodeId, lineage);
         }
         return lineage;

@@ -1,20 +1,19 @@
-"""Lens, Gaussian, Box Blur, Dilate and Erode outputs borrowed at the output enforce
-(SP4b Tasks 3b, 3b2 and 4, A3).
+"""Lens, Gaussian, Box Blur, Dilate and Erode outputs borrowed at the output enforce.
 
 Lens Blur freezes and registers its fresh CHW finishing power (native_buffers.
-freeze_normalized) and returns its transpose(1, 2, 0), as upstream returns that view
-(D-7). ImageOutput.enforce borrows the gapless permuted view through
+freeze_normalized) and returns its transpose(1, 2, 0), as upstream returns that view.
+ImageOutput.enforce borrows the gapless permuted view through
 normalized_readonly's scan (cn_pixels_normalized_f32) with its strides, the ones
 upstream's np.clip (order K) gives, instead of converting it. Bits never change: a
 borrow needs the scan's proof that enforce's clip leaves every bit as it is, and a
 refused borrow converts exactly as before, in the same order-K layout. B3's path is
 the same node unregistered: power(finish=True), then transpose(1, 2, 0).
 
-Gaussian and Box Blur (Task 3b2) first clamp their fresh float32 result in place with
+Gaussian and Box Blur first clamp their fresh float32 result in place with
 enforce's own conversion (freeze_normalized(clamp=True)), which is idempotent, so
 the user receives the bits of the raw path: the node before the opt-in, whose raw
 result is unregistered and converted by the enforce. fast_gaussian_blur's other
-callers keep its raw, writable result. Dilate and Erode (Task 4) do the same with
+callers keep its raw, writable result. Dilate and Erode do the same with
 native_filters.morphology's fresh result, which owns its data in every channel count.
 
 This module imports only the modules it needs: the node bodies and numpy_outputs
@@ -22,8 +21,8 @@ are loaded by path (the nodes.properties.outputs package would import Pillow and
 torch), and DAZ|FTZ is set through the CRT's _controlfp_s, not torch (on Linux,
 which has no such call, through torch.set_flush_denormal, as golden_kernels.py).
 
-It also holds what the Gaussian and Box Blur parity tests share (Task 3b2; owner,
-2026-10-04: the contract is the schema and the output as the user receives it, not a
+It also holds what the Gaussian and Box Blur parity tests share (the contract
+is the schema and the output as the user receives it, not a
 node's raw pre-enforce return): assert_enforced_equal, node_schema and RAW_BOX.
 """
 
@@ -32,7 +31,6 @@ import contextlib
 import ctypes
 import importlib.util
 import sys
-import types
 import warnings
 from pathlib import Path
 
@@ -40,7 +38,8 @@ import cv2
 import numpy as np
 import pytest
 from native_images import opaque
-from test_isa_dispatch import isa_get, isa_set
+from node_bodies import load_body
+from test_isa_dispatch import isa_set
 from test_native_profile import child
 
 from nodes.impl import image_utils, native, native_buffers, native_filters
@@ -86,31 +85,9 @@ FILL = 0x3F000000  # 0.5, which passes
 BENCH = (30, 3, 3)  # lens-spectral's radius, components and exposure gamma
 
 
-def load_node(path):
-    """A node module's body: imports of api, nodes.groups, nodes.properties and
-    relative imports dropped, decorators removed (as the node tests load bodies)."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
-
-
-LENS = load_node(LENS_PATH)
+LENS = load_body(LENS_PATH)
 # B3's Lens Blur: the CHW finishing power's transposed view, unregistered.
-B3_LENS = load_node(LENS_PATH)
+B3_LENS = load_body(LENS_PATH)
 vars(B3_LENS).update(freeze_normalized=lambda image: image)
 _spec = importlib.util.spec_from_file_location(
     "nodes.properties.outputs._normalized_outputs_probe", OUTPUTS_PATH
@@ -126,24 +103,24 @@ def raw_fast_gaussian_blur(img, sigma_x, sigma_y, *, normalized=False):
     return image_utils.fast_gaussian_blur(img, sigma_x, sigma_y)
 
 
-# Gaussian and Box Blur (Task 3b2), and each before its opt-in (the raw path): the
+# Gaussian and Box Blur, and each before its opt-in (the raw path): the
 # Gaussian body with fast_gaussian_blur's raw result, the Box body with
 # freeze_normalized as the identity, so each return is its helper's raw result
 # (box_blur, separable_box or filter2d), unregistered. The Box parity tests compare
 # RAW_BOX with the reference's OpenCV results (kernel parity).
-GAUSSIAN = load_node(GAUSSIAN_PATH)
-RAW_GAUSSIAN = load_node(GAUSSIAN_PATH)
+GAUSSIAN = load_body(GAUSSIAN_PATH)
+RAW_GAUSSIAN = load_body(GAUSSIAN_PATH)
 vars(RAW_GAUSSIAN).update(fast_gaussian_blur=raw_fast_gaussian_blur)
-BOX = load_node(BOX_PATH)
-RAW_BOX = load_node(BOX_PATH)
+BOX = load_body(BOX_PATH)
+RAW_BOX = load_body(BOX_PATH)
 vars(RAW_BOX).update(freeze_normalized=lambda image, *, clamp: image)
-# Dilate and Erode (Task 4), and each before its opt-in: freeze_normalized as the
+# Dilate and Erode, and each before its opt-in: freeze_normalized as the
 # identity, so the return is native_filters.morphology's raw result, unregistered.
-DILATE = load_node(DILATE_PATH)
-RAW_DILATE = load_node(DILATE_PATH)
+DILATE = load_body(DILATE_PATH)
+RAW_DILATE = load_body(DILATE_PATH)
 vars(RAW_DILATE).update(freeze_normalized=lambda image, *, clamp: image)
-ERODE = load_node(ERODE_PATH)
-RAW_ERODE = load_node(ERODE_PATH)
+ERODE = load_body(ERODE_PATH)
+RAW_ERODE = load_body(ERODE_PATH)
 vars(RAW_ERODE).update(freeze_normalized=lambda image, *, clamp: image)
 
 
@@ -247,16 +224,6 @@ def mxcsr(state):
     finally:
         assert flush(False)
         assert fp_state() == 0
-
-
-@pytest.fixture
-def levels():
-    """Every level this CPU has, scalar first; the original level afterwards."""
-    effective, _, cpu = isa_get()
-    try:
-        yield range(cpu + 1)
-    finally:
-        assert isa_set(effective) == effective
 
 
 def passes(bits):
@@ -407,8 +374,8 @@ def signed_image(rng, shape):
 
 
 def opt_in_cases():
-    """(name, node, raw node, image, parameters) for Gaussian and Box Blur (Task
-    3b2) and Dilate and Erode (Task 4). Gaussian: the gaussian and parallel-branches
+    """(name, node, raw node, image, parameters) for Gaussian and Box Blur
+    and Dilate and Erode. Gaussian: the gaussian and parallel-branches
     bench sigmas on the bench image, a large sigma on the downsample path (its last
     operation is still the blur), and sigma 0 on one axis. Box:
     integer radii (box_blur), fractional (separable_box), an integer axis then a
@@ -606,7 +573,7 @@ def test_raw_callers_receive_unclamped_writable_values():
 
         return fast_gaussian_blur
 
-    nodes = {name: load_node(path) for name, path in RAW_CALLER_PATHS.items()}
+    nodes = {name: load_body(path) for name, path in RAW_CALLER_PATHS.items()}
     for name, module in nodes.items():
         vars(module).update(fast_gaussian_blur=spy(name))
     nodes["unsharp_mask"].unsharp_mask_node(image, 2.5, 1.3, 0)
@@ -660,7 +627,7 @@ def test_raw_callers_receive_unclamped_writable_values():
 
 
 def test_morphology_helper_returns_owned_one_channel_results():
-    # Task 4 (controller ruling): native_filters.morphology allocates a one-channel
+    # native_filters.morphology allocates a one-channel
     # result (a 2-D image, or a trailing channel of 1) in its returned (h, w) shape
     # instead of reshaping an (h, w, 1) array, so the result owns its data and Dilate
     # and Erode can freeze it. Its bits are the installed chaiNNer's: cv2.dilate or
@@ -865,7 +832,7 @@ print(json.dumps({
 
 def layout_results():
     """(name, a node's float32 or uint8 return): transposed, flipped and planar
-    results, as the layouts nodes return (D-7)."""
+    results, as the layouts nodes return."""
     rng = np.random.default_rng(907)
     plane = rng.uniform(-0.5, 1.5, (3, 7, 5)).astype(np.float32)
     plane4 = rng.uniform(-0.5, 1.5, (4, 6, 9)).astype(np.float32)
@@ -890,7 +857,7 @@ def layout_results():
     ("name", "value"), layout_results(), ids=[name for name, _ in layout_results()]
 )
 def test_enforced_layout_is_np_clips(name, value):
-    # D-7: ImageOutput.enforce hands on np.clip's order-K layout, upstream's (its
+    # ImageOutput.enforce hands on np.clip's order-K layout, upstream's (its
     # normalize clips and converts with NumPy, which keeps the input's axis order);
     # values bit for bit.
     expected = upstream_enforce(value)

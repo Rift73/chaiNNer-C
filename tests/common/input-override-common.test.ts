@@ -10,7 +10,11 @@ import {
     OutputId,
     SchemaId,
 } from '../../src/common/common-types';
-import { withInputOverrides } from '../../src/common/input-override-common';
+import {
+    withClipViewer,
+    withInputOverrides,
+    withOnlyUpTo,
+} from '../../src/common/input-override-common';
 import { toBackendJson } from '../../src/common/nodes/toBackendJson';
 import { SchemaMap } from '../../src/common/SchemaMap';
 
@@ -151,4 +155,51 @@ test('connected In and Out serialize as the selected frame when overridden', () 
     ]);
     expect(overridden.edges).toEqual([edges[2]]);
     expect(toBackendJson(nodes, edges, schemata)[0]).toEqual(original);
+});
+
+test('withOnlyUpTo keeps the node and what it depends on, not what comes after it', () => {
+    const nodes = ['source', 'filter', 'side', 'frames', 'save', 'other'].map((id) => node(id, {}));
+    const edge = (source: string, target: string): Edge<EdgeData> => ({
+        id: `${source}-${target}`,
+        source,
+        target,
+        sourceHandle: `${source}-0`,
+        targetHandle: `${target}-0`,
+    });
+    const edges = [
+        edge('source', 'filter'),
+        edge('side', 'filter'),
+        edge('filter', 'frames'),
+        edge('frames', 'save'),
+        edge('source', 'other'),
+    ];
+
+    const upTo = withOnlyUpTo(nodes, edges, 'frames');
+
+    expect(upTo.nodes.map((n) => n.id)).toEqual(['source', 'filter', 'side', 'frames']);
+    expect(upTo.edges.map((e) => e.id)).toEqual(['source-filter', 'side-filter', 'filter-frames']);
+});
+
+test('withClipViewer feeds a Preview Clips node, the same one at every preview of the node', () => {
+    const id = '7d1b3c1e-1111-4a3b-8c2d-000000000001';
+    const clip = node(id, {});
+
+    const first = withClipViewer([clip], [], id, 0 as OutputId);
+    const second = withClipViewer([clip], [], id, 0 as OutputId);
+
+    expect(first.nodes).toHaveLength(2);
+    const viewer = first.nodes[1];
+    expect(viewer.data.schemaId).toBe('chainner:vapoursynth:preview_clips');
+    expect(viewer.id).toHaveLength(36);
+    expect(viewer.id).toBe(second.nodes[1].id);
+    expect(first.edges).toEqual([
+        expect.objectContaining({
+            source: id,
+            sourceHandle: `${id}-0`,
+            target: viewer.id,
+            targetHandle: `${viewer.id}-0`,
+        }),
+    ]);
+    // the editor's chain is not changed
+    expect(clip.data.inputData).toEqual({});
 });

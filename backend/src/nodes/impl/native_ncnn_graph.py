@@ -64,10 +64,6 @@ def broadcast_data(model: Any):
     return _api().ncnn_broadcast_data(model, _types())
 
 
-def get_nf(layer: Any):
-    return _api().ncnn_get_nf(layer)
-
-
 def optimize(model: Any, name: str | None = None) -> None:
     if name is None:
         _api().ncnn_optimize(model, _types())

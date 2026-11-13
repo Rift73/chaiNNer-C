@@ -1,7 +1,7 @@
 """Array ownership and scalar argument preparation for C adjustment kernels.
 
 adjust, levels and log_linear return np.clip's order-K layout, as upstream's
-NumPy expressions do (Consult 11 D-16): the result is np.empty_like(image,
+NumPy expressions do: the result is np.empty_like(image,
 order="K"), and the kernels run flat over the image and the result in that memory
 order, the channel-aware ones with the channel stride of that order.
 """

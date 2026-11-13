@@ -24,7 +24,7 @@ class SelectMode(Enum):
     name="Crop Border",
     description=[
         "Remove the border around the content of an image. The border is assumed to have an approximately constant color. This node can also be used to crop images with an approximately constant background color.",
-        "The color of the border is automatically determined by the median color of the pixels of a 1px border around the image. The *Tolerance* option can be used to adjust the sensitivity of the color matching. A tolerance of 0% means that a pixel must match the border color exactly, while a tolerance of 5% (default) give a bit of leeway to handle e.g. slight compression artifacts.",
+        "The color of the border is automatically determined by the median color of the pixels of a 1px border around the image. The *Tolerance* option can be used to adjust the sensitivity of the color matching. A tolerance of 0% means that a pixel must match the border color exactly, while a tolerance of 5% (default) gives a bit of leeway to handle e.g. slight compression artifacts.",
     ],
     icon="MdCrop",
     inputs=[

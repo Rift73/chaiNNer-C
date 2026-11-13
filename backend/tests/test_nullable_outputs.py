@@ -4,14 +4,15 @@ other options, and a None value passes the output's enforce there."""
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import Union, cast
 
 import numpy as np
 import pytest
 
 from api import NodeData
+from api.node_check import CheckFailedError, eval_type, validate_return_type
 from nodes.properties.outputs import ImageOutput, NumberOutput
-from process import enforce_output
+from process import compute_broadcast, enforce_output
 
 
 def test_null_unless_types_the_output_null_under_the_other_options():
@@ -56,3 +57,50 @@ def test_a_node_returns_none_for_its_nullable_outputs():
     # enforce_output reads only a node's name and outputs.
     result = enforce_output((3, None), cast(NodeData, node))
     assert result.output == [3, None]
+
+
+def test_a_failed_broadcast_is_logged_with_its_traceback(
+    caplog: pytest.LogCaptureFixture,
+):
+    output = NumberOutput("Count").with_id(0)
+
+    def fail(_value: object) -> None:
+        raise RuntimeError("no broadcast")
+
+    output.get_broadcast_data = fail
+    data, _types = compute_broadcast([3], [output])
+    assert data == {}
+    assert [str(r.exc_info[1]) for r in caplog.records if r.exc_info] == [
+        "no broadcast"
+    ]
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "Union[tuple[int, int], tuple[float, float]]",
+        "tuple[int, int] | tuple[float, float]",
+    ],
+)
+def test_a_return_type_of_alternative_tuples_is_checked_per_output(annotation: str):
+    # Each alternative is one tuple of the node's outputs, whichever way the union is written.
+    node = SimpleNamespace(outputs=[NumberOutput("A"), NumberOutput("B")])
+    return_type = eval_type(annotation, {"Union": Union})
+    validate_return_type(return_type, cast(NodeData, node))
+    wrong = eval_type(
+        annotation.replace("[float, float]", "[float, float, float]"),
+        {"Union": Union},
+    )
+    with pytest.raises(CheckFailedError, match="same number of arguments"):
+        validate_return_type(wrong, cast(NodeData, node))
+
+
+def test_the_type_check_accepts_none_for_a_nullable_output():
+    node = SimpleNamespace(
+        outputs=[NumberOutput("A"), NumberOutput("B").null_unless(0, "Mode::B")]
+    )
+    validate_return_type(eval_type("tuple[int, int | None]", {}), cast(NodeData, node))
+    with pytest.raises(CheckFailedError, match="must be a subset"):
+        validate_return_type(
+            eval_type("tuple[int | None, int]", {}), cast(NodeData, node)
+        )

@@ -294,3 +294,10 @@ def test_cancel_stops_promptly():
 def test_bounds_below_16_refused():
     with pytest.raises(ValueError, match="at least 16 pixels"):
         analyze(CASES["planted-720p"](), min_height=8, max_height=1000)
+
+
+@pytest.mark.parametrize("shape", [(4, 5), (4, 5, 1), (4, 5, 4), (4, 5, 2)])
+def test_linear_plane_refuses_images_that_are_not_three_channel(shape):
+    # The C kernel reads three floats (B, G, R) per pixel.
+    with pytest.raises(ValueError, match="three"):
+        gn.linear_plane(np.ones(shape, np.float32), "linear-srgb", media.BT709_WEIGHTS)

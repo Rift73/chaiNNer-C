@@ -79,6 +79,18 @@ def test_the_converted_copy_is_made_once_and_released_with_the_model():
     assert released() is None
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_a_cuda_device_without_an_index_keeps_its_copy():
+    # The app passes "cuda:<gpu index>" (PyTorchSettings.device); "cuda" is the same GPU,
+    # and its copy must be kept too, or every upscale would make a new one (and the
+    # activation offload would learn nothing about it).
+    model = compact()
+    copy = on_device(model, torch.device("cuda"), torch.float16)
+    assert on_device(model, torch.device("cuda"), torch.float16) is copy
+    index = torch.cuda.current_device()
+    assert on_device(model, torch.device("cuda", index), torch.float16) is copy
+
+
 def test_a_copy_is_dropped_once_the_model_runs_as_it_is():
     # FP16 turned off again (or the device the model is on chosen again): the copy's
     # memory is freed, not kept while the model lives.

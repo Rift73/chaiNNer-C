@@ -73,6 +73,12 @@ vi.mock('../../src/renderer/hooks/useSettings', () => ({
     useSettings: () => ({ packageSettings: {} }),
 }));
 vi.mock('../../src/renderer/safeIpc', () => ({ ipcRenderer: { send: stubs.send } }));
+vi.mock('i18next', () => ({
+    default: {
+        t: (_key: string, text: string, values?: Record<string, unknown>) =>
+            text.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(values?.[name])),
+    },
+}));
 
 const schema: NodeSchema = {
     schemaId: 'test:execution:view' as SchemaId,
@@ -104,7 +110,17 @@ interface ProviderElement {
     props: {
         value: {
             run: () => Promise<void>;
+            runWithOverrides: (
+                overrides: ReadonlyMap<string, Record<number, unknown>>
+            ) => Promise<void>;
+            renderPreview: (
+                nodeId: string,
+                overrides: Record<number, unknown>
+            ) => Promise<{ kind: string; message?: string }>;
+            executionNumber: number;
+            previewClip: (nodeId: string, outputId: number) => Promise<void>;
             kill: () => Promise<void>;
+            pause: () => Promise<void>;
             status: ExecutionStatus;
             getNodeStatus: (id: string) => NodeExecutionStatus;
             getNodeProgress: (id: string) => unknown;
@@ -464,4 +480,180 @@ test('a status reply from before a run started does not end the run', async () =
 
     reply.resolve({ type: 'success' });
     await running;
+});
+
+test.each(['kill', 'pause', 'resume'] as const)('a failed %s says why', async (action) => {
+    const context = start();
+    if (action === 'resume') {
+        backend.pause.mockResolvedValueOnce({ type: 'success' });
+        await context.execution().pause();
+    }
+    backend[action].mockRejectedValueOnce(new Error('the worker did not answer'));
+
+    const done = action === 'resume' ? context.execution().run() : context.execution()[action]();
+    await vi.advanceTimersByTimeAsync(0);
+    await done;
+
+    expect(sendAlert).toHaveBeenCalledOnce();
+    expect(sendAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+            message: expect.stringContaining('the worker did not answer') as string,
+        })
+    );
+});
+
+test("a run of a node's Preview runs that node alone and keeps what it shows, not the run's length", async () => {
+    stubs.nodes = [node('a'), node('b')];
+    const context = start();
+    const reply = deferred<unknown>();
+    backend.run.mockReturnValueOnce(reply.promise);
+    const running = context.execution().renderPreview('a', { 3: 'range' });
+    await vi.advanceTimersByTimeAsync(0);
+    // a render is no run of the chain: the Run buttons stay as they are
+    expect(context.execution().status).toBe(ExecutionStatus.READY);
+
+    const [{ data }] = backend.run.mock.calls[0] as [{ data: { id: string }[] }];
+    expect(data.map((n) => n.id)).toEqual(['a']);
+
+    const broadcast = {
+        nodeId: 'a',
+        data: { 7: 'preview' },
+        types: { 8: '120' },
+        sequenceTypes: { 0: 'one frame' },
+    } as unknown as BackendEventMap['node-broadcast'];
+    context.emit('node-broadcast', broadcast);
+    await context.tick();
+    expect(outputSet).toHaveBeenCalledWith(
+        'a',
+        undefined,
+        'hash',
+        { 7: 'preview' },
+        { 8: '120' },
+        undefined
+    );
+
+    reply.resolve({ type: 'success' });
+    expect(await running).toEqual({ kind: 'rendered' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(context.execution().status).toBe(ExecutionStatus.READY);
+    // it is no execution of the chain
+    expect(context.execution().executionNumber).toBe(1);
+});
+
+test('a Run asked for during a Preview render starts once the render ends, and no render starts meanwhile', async () => {
+    const context = start();
+    const render = deferred<unknown>();
+    backend.run.mockReturnValueOnce(render.promise);
+    const rendering = context.execution().renderPreview('a', { 3: 'range' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const chain = deferred<unknown>();
+    backend.run.mockReturnValueOnce(chain.promise);
+    const running = context.execution().run();
+    await vi.advanceTimersByTimeAsync(0);
+    // the Run waits for the render in flight, and a render asked for now is skipped
+    expect(backend.run).toHaveBeenCalledOnce();
+    expect(await context.execution().renderPreview('a', { 3: 'range' })).toEqual({
+        kind: 'skipped',
+    });
+
+    render.resolve({ type: 'success' });
+    await rendering;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backend.run).toHaveBeenCalledTimes(2);
+    expect(context.execution().status).toBe(ExecutionStatus.RUNNING);
+
+    chain.resolve({ type: 'success' });
+    await running;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(context.execution().status).toBe(ExecutionStatus.READY);
+    expect(sendAlert).not.toHaveBeenCalled();
+});
+
+test.each(['before', 'after'] as const)(
+    'a failed Preview render returns its error and raises no alert (its event %s the reply)',
+    async (order) => {
+        const context = start();
+        const reply = deferred<unknown>();
+        backend.run.mockReturnValueOnce(reply.promise);
+        const rendering = context.execution().renderPreview('a', { 3: 'range' });
+        await vi.advanceTimersByTimeAsync(0);
+        const error = {
+            message: 'Error running nodes!',
+            source: null,
+            exception: 'the clip is gone',
+            exceptionTrace: '',
+        };
+
+        if (order === 'before') context.emit('execution-error', error);
+        reply.resolve({ type: 'error', message: 'failed', exception: 'the clip is gone' });
+        const render = await rendering;
+        if (order === 'after') context.emit('execution-error', error);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(render).toMatchObject({ kind: 'failed' });
+        expect(sendAlert).not.toHaveBeenCalled();
+        expect(context.execution().status).toBe(ExecutionStatus.READY);
+    }
+);
+
+test('Run this frame keeps the outputs of the overridden node, and counts as an execution', async () => {
+    const context = start();
+    const reply = deferred<unknown>();
+    backend.run.mockReturnValueOnce(reply.promise);
+    const running = context.execution().runWithOverrides(new Map([['a', { 3: 'range' }]]));
+    await vi.advanceTimersByTimeAsync(0);
+
+    context.emit('node-broadcast', {
+        nodeId: 'a',
+        data: { 7: 'preview' },
+        types: {},
+    } as unknown as BackendEventMap['node-broadcast']);
+    await context.tick();
+    expect(outputSet).not.toHaveBeenCalled();
+
+    reply.resolve({ type: 'success' });
+    await running;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(context.execution().executionNumber).toBe(2);
+});
+
+test("a clip's Preview runs the node with a Preview Clips node the chain does not have", async () => {
+    const clipId = '7d1b3c1e-1111-4a3b-8c2d-000000000001';
+    const clip: NodeSchema = {
+        ...schema,
+        schemaId: 'test:execution:clip' as SchemaId,
+        hasSideEffects: false,
+        outputs: [{ id: 0, label: 'Clip' } as NodeSchema['outputs'][number]],
+    };
+    const viewer: NodeSchema = {
+        ...schema,
+        schemaId: 'chainner:vapoursynth:preview_clips' as SchemaId,
+        inputs: [{ id: 0, label: 'Clip 1' } as NodeSchema['inputs'][number]],
+    };
+    const { BackendContext } = await contexts();
+    (BackendContext.value as Record<string, unknown>).schemata = new SchemaMap([
+        schema,
+        clip,
+        viewer,
+    ]);
+    stubs.nodes = [
+        { ...node(clipId), data: { id: clipId, schemaId: clip.schemaId, inputData: {} } },
+        node('a'),
+    ];
+    const context = start();
+    backend.run.mockResolvedValueOnce({ type: 'success' });
+
+    await context.execution().previewClip(clipId, 0);
+
+    const [{ data }] = backend.run.mock.calls[0] as [
+        { data: { id: string; schemaId: string; inputs: { type: string; id?: string }[] }[] }
+    ];
+    expect(data.map((n) => n.schemaId).sort()).toEqual([
+        'chainner:vapoursynth:preview_clips',
+        'test:execution:clip',
+    ]);
+    const shown = data.find((n) => n.schemaId === 'chainner:vapoursynth:preview_clips');
+    expect(shown?.inputs[0]).toMatchObject({ type: 'edge', id: clipId });
+    expect(stubs.nodes).toHaveLength(2);
 });

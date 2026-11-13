@@ -75,3 +75,34 @@ def test_a_video_without_frames_still_says_so(tmp_path: Path):
     with pytest.raises((ValueError, RuntimeError)):
         load_preview("no-frames", loader, 0)
     video.close_previews()
+
+
+def test_past_an_estimated_count_the_y_plane_preview_shows_the_last_frame(
+    tmp_path: Path,
+):
+    # BT.2020 constant luminance in Planes mode: the Preview is the Y plane in gray.
+    whole = tmp_path / "whole.mp4"
+    run_ffmpeg(
+        *("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25", "-frames:v", "50"),
+        "-vf",
+        "setpts=N*(0.03+0.02*mod(N\\,3))/TB,format=yuv420p10le,"
+        "setparams=colorspace=bt2020c",
+        *("-fps_mode", "vfr"),
+        *("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le"),
+        *("-colorspace", "bt2020c", "-movflags", "faststart"),
+        str(whole),
+    )
+    path = tmp_path / "cut.mp4"
+    data = whole.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+    planes = video.ReadSettings(VideoMode.PLANES, True, AUTO)
+    loader = video.VideoLoader(path, ENV, planes)
+    assert loader.exact_frame_count() is None
+    ys = [item[1] for item in loader.stream_items()]
+    count = loader.frame_count()
+    assert count > len(ys) > 0
+    image = load_preview("past-the-end-y", loader, count - 1)
+    video.close_previews()
+    last = ys[-1]
+    assert last is not None
+    np.testing.assert_array_equal(image, np.dstack((last, last, last)))

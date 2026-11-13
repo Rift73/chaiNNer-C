@@ -419,7 +419,7 @@ def test_parallel_calls_and_large_worker_ranges():
         list(executor.map(run, range(24)))
 
 
-# The nodes that gained DPID's Lambda (2026-10-21) as their last input and parameter.
+# The nodes that gained DPID's Lambda as their last input and parameter.
 DPID_NODES = {"resize_node.py", "resize_to_side.py"}
 
 
@@ -437,7 +437,7 @@ def without_dpid(function: ast.FunctionDef) -> None:
     assert "NumberInput('Lambda'" in group
 
 
-# The node that gained Linear Light (2026-10-23): its last two inputs and parameters, and
+# The node that gained Linear Light: its last two inputs and parameters, and
 # the curve its key info appends.
 LIGHT_NODES = {"resize_node.py"}
 
@@ -500,6 +500,18 @@ def test_installed_metadata_unchanged(original, relative):
                         assert isinstance(text, str)
                         assert text.count("1 + 2 * pad") == 2
                         expression.value.value = text.replace("1 + 2 * pad", "1 + pad")
+                # The description's grammar is corrected: "give" becomes "gives".
+                typo = "(default) give a bit"
+                described = [
+                    (expression, expression.value)
+                    for expression in ast.walk(before.decorator_list[0])
+                    if isinstance(expression, ast.Constant)
+                    and isinstance(expression.value, str)
+                    and typo in expression.value
+                ]
+                assert len(described) == 1
+                constant, text = described[0]
+                constant.value = text.replace(typo, "(default) gives a bit")
             assert ast.dump(before.args) == ast.dump(after.args)
             assert [ast.dump(d) for d in before.decorator_list] == [
                 ast.dump(d) for d in after.decorator_list

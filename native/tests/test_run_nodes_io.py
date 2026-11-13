@@ -329,7 +329,7 @@ WINDOWS_SHAPES = {
 )
 def test_save_image_targets_the_same_file(tmp_path, monkeypatch, shape):
     # The native entry point's lexical target names the same file as today's Path.resolve(): same bytes, the same
-    # file, and the same names in the folder (ruling, lane I Q3).
+    # file, and the same names in the folder.
     if sys.platform != "win32" and shape in WINDOWS_SHAPES:
         pytest.skip(WINDOWS_SHAPES[shape])
     real = tmp_path / "real"
@@ -413,8 +413,8 @@ os._exit(0)
 
 
 def test_pillow_max_image_pixels_is_the_constant():
-    # The owner's limit (image_limits.py), which the native Pillow route also holds (io.cpp pillow_max_pixels): the
-    # live value after the worker's imports (Fable ruling, 2026-10-19).
+    # The image limit (image_limits.py), which the native Pillow route also holds (io.cpp pillow_max_pixels): the
+    # live value after the worker's imports.
     done = subprocess.run(
         [sys.executable, "-B", "-c", MAX_PIXELS],
         cwd=Path(__file__).resolve().parents[2] / "backend" / "src",

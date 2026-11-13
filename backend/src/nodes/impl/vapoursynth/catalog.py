@@ -7,7 +7,9 @@ never imported here.
 Storage folder (`<storage>\\vapoursynth`, from CHAINNER_VS_DIR): catalog.json, user\\*.py
 (user functions), user_modules.toml (`modules = ["vs_colorfix"]`, pip requirements) and
 overlays\\*.toml. Overlays are TOML tables `[method."<id>"]` with `label`, `family`,
-`simple` (parameter names), `labels` (parameter -> plain name), `help`, `hidden`
+`simple` (parameter names), `labels` (parameter -> plain name), `help` (the method's
+pop-up), `docs` (parameter -> its pop-up; `init_docs` first for a constructor
+parameter), `choices` (a group's dropdown entry -> its pop-up), `hidden`
 (parameters left out, keeping their defaults), `annotations` (parameter -> annotation
 text, e.g. a catalog enums key; a name the function does not have becomes one more
 keyword argument of its **kwargs), `defaults` (parameter -> the value its input
@@ -15,8 +17,16 @@ starts with: a number, a text or a dropdown choice's Python source, which the no
 then writes) and, for a group, `class_default` (the class or member preselected in its
 dropdown, whose key is "class" in `simple` and `labels`) and `images` (true: the function looks
 only at the current frame, so its Clip input also takes an image; false: it does not);
-shipped overlays load first, the user's win. A method with an overlay is listed under
-"Common" in its node.
+shipped overlays load first, the user's win. `hide = true` leaves a method (or a
+group) out of every node. `rank` (a whole number) lists a method under "Common" in
+its node, ranked ones first by rank; a user's overlay that gives any other key but
+the texts (help, docs, init_docs, choices) lists it there too, after them. Shipped
+overlays list methods by rank only. Tables `[param."<name>"]` (the
+shipped glossary.toml) apply to every parameter of that name whose annotation contains
+their `annotation` (if given): `doc` is its pop-up when no overlay gives one, before
+the docstring's text with `override = true`, else only where the docstring has none;
+`label` its plain name where the overlay's labels give none; `hidden = true` leaves
+the parameter out as the overlay key does.
 
 Images: frame_methods.json lists what was measured to look only at the current frame
 (native/tools/vs_frame_probe.py), for the versions it names. Under other versions, and
@@ -38,12 +48,13 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import subprocess
 import tempfile
 import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 
 import tomllib
 from sanic.log import logger
@@ -78,9 +89,75 @@ GROUP_MIN = 5
 # A group's dropdown, as a parameter name in `simple`, `labels` and input ids.
 CLASS = "class"
 # Overlay keys a group passes on to each member.
-_MEMBER_KEYS = ("hidden", "annotations", "labels", "defaults")
-# Enum members called through chaiNNer's helper in the script, in place of vs-jetpack's.
-BRIDGED_MEMBERS = {"vsdeband.Grainer.POISSON": "chainner_vs.poisson_grain"}
+_MEMBER_KEYS = ("hidden", "annotations", "labels", "defaults", "docs", "init_docs")
+# Of those, the ones a member's own overlay extends rather than replaces: its text of
+# one parameter keeps the group's texts of the others.
+_MERGED_KEYS = ("docs", "init_docs")
+# Overlay keys whose tables a later file extends name by name rather than replaces.
+_NAME_TABLES = frozenset({"labels", "docs", "init_docs", "choices"})
+# Overlay keys that only give texts.
+_TEXT_KEYS = frozenset({"help", "docs", "init_docs", "choices"})
+# Methods and enum members called through chaiNNer's helper in the script, in place of
+# vs-jetpack's.
+BRIDGED = {
+    "vsdeband.Grainer.POISSON": "chainner_vs.poisson_grain",
+    "vsdenoise.bm3d": "chainner_vs.bm3d",
+}
+
+
+def _own(name: str, params: Sequence[tuple[str, str, str]]) -> dict[str, Any]:
+    """The catalog entry of chainner_vs.<name>(clip, <params>): (name, annotation,
+    default source) each."""
+    return {
+        "id": f"chainner_vs.{name}",
+        "source": "chainner",
+        "module": "chainner_vs",
+        "call": f"chainner_vs.{name}",
+        "kind": "function",
+        "params": [
+            {"name": n, "annotation": a, "default": d, "kind": "keyword"}
+            for n, a, d in [("clip", "VideoNode", None), *params]
+        ],
+        "returns": "VideoNode",
+        "doc": "",
+        "arg_docs": {},
+    }
+
+
+# chaiNNer's own methods (chainner_vs), as catalog entries: added at every load, so a
+# cached catalog needs no rescan. test_vapoursynth_families checks them against the code.
+CHAINNER_FUNCTIONS = (
+    _own(
+        "range_fix",
+        [
+            (
+                "mode",
+                "Literal['Compress (Full to Limited)', 'Expand (Limited to Full)']",
+                "'Compress (Full to Limited)'",
+            )
+        ],
+    ),
+    _own(
+        "detelecine",
+        [
+            ("tff", "bool", "True"),
+            ("postprocess", "bool", "True"),
+            ("cycle", "int", "5"),
+        ],
+    ),
+    _own(
+        "scale_by",
+        [
+            ("factor", "float", "0.5"),
+            (
+                "kernel",
+                "Literal['Hermite', 'Catrom', 'Mitchell', 'Lanczos', 'Bilinear']",
+                "'Hermite'",
+            ),
+            ("linear", "bool", "True"),
+        ],
+    ),
+)
 _ID_MASK = 0x7FFFFFFF
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -427,8 +504,8 @@ def ensure_catalog(storage: Path) -> Path | None:
             encoding="utf-8",
         )
         os.replace(written, catalog)
-    except Exception as error:
-        logger.error("The VapourSynth function scan failed: %s", error)
+    except Exception:
+        logger.exception("The VapourSynth function scan failed.")
         return catalog if catalog.is_file() else None
     finally:
         scanned.unlink(missing_ok=True)
@@ -456,30 +533,45 @@ def _overlay_problem(key: str, value: object) -> str | None:
     if key in ("simple", "hidden"):
         names = isinstance(value, list) and all(isinstance(v, str) for v in value)
         return None if names else "not a list of parameter names"
-    if key in ("labels", "annotations"):
+    if key in ("labels", "annotations", "docs", "init_docs", "choices"):
         texts = isinstance(value, dict) and all(
             isinstance(v, str) for v in value.values()
         )
         return None if texts else "not a table of texts"
     if key == "defaults":
         return None if isinstance(value, dict) else "not a table"
-    if key == "images":
+    if key == "rank":
+        whole = isinstance(value, int) and not isinstance(value, bool)
+        return None if whole else "not a whole number"
+    if key in ("images", "hide"):
         return None if isinstance(value, bool) else "not true or false"
     return "not an overlay key"
 
 
-def read_overlays(overlays: Sequence[Path]) -> dict[str, dict[str, Any]]:
-    """Each method id's overlay table, merged in order: a later file's keys win. A file
-    that cannot be read is logged and skipped, and so is a key that cannot be used (an
-    earlier file's value of it stays)."""
-    merged: dict[str, dict[str, Any]] = {}
+# Overlay files as parsed: (path, TOML).
+Parsed = Sequence[tuple[Path, dict[str, Any]]]
+
+
+def parse_overlays(overlays: Sequence[Path]) -> list[tuple[Path, dict[str, Any]]]:
+    """Each overlay file's TOML; a file that cannot be read is logged and skipped."""
+    parsed: list[tuple[Path, dict[str, Any]]] = []
     for path in overlays:
         try:
             # utf-8-sig: Notepad and Windows PowerShell may start it with a BOM.
-            data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+            parsed.append((path, tomllib.loads(path.read_text(encoding="utf-8-sig"))))
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             logger.warning("Skipping the VapourSynth overlay %s: %s", path, error)
-            continue
+    return parsed
+
+
+def read_overlays(parsed: Parsed) -> dict[str, dict[str, Any]]:
+    """Each method id's overlay table, merged in order: a later file's keys win (in the
+    name and text tables, its names: a file that labels one setting keeps the others'
+    labels). A file
+    that cannot be read is logged and skipped, and so is a key that cannot be used (an
+    earlier file's value of it stays)."""
+    merged: dict[str, dict[str, Any]] = {}
+    for path, data in parsed:
         tables = data.get("method", {})
         if not isinstance(tables, dict):
             logger.warning(
@@ -492,7 +584,9 @@ def read_overlays(overlays: Sequence[Path]) -> dict[str, dict[str, Any]]:
             entry = merged.setdefault(method_id, {})
             for key, value in table.items():
                 problem = _overlay_problem(key, value)
-                if problem is None:
+                if problem is None and key in _NAME_TABLES:
+                    entry[key] = {**entry.get(key, {}), **value}
+                elif problem is None:
                     entry[key] = value
                 else:
                     logger.warning(
@@ -504,6 +598,72 @@ def read_overlays(overlays: Sequence[Path]) -> dict[str, dict[str, Any]]:
                         problem,
                     )
     return merged
+
+
+class Word(NamedTuple):
+    """A glossary entry: see the module's docstring."""
+
+    doc: str = ""
+    annotation: str = ""
+    override: bool = False
+    hidden: bool = False
+    label: str = ""
+
+    def applies(self, param: Param) -> bool:
+        return self.annotation in param.annotation
+
+
+Glossary = Mapping[str, Word]
+# Each field's type, from its default.
+_WORD_TYPES = {key: type(value) for key, value in Word._field_defaults.items()}
+
+
+def read_glossary(parsed: Parsed) -> dict[str, Word]:
+    """The overlays' `[param."<name>"]` tables, a later file's winning; an entry that
+    cannot be used is logged and skipped."""
+    glossary: dict[str, Word] = {}
+    for path, data in parsed:
+        tables = data.get("param", {})
+        for name, table in tables.items() if isinstance(tables, dict) else ():
+            entry = table if isinstance(table, dict) else {}
+            valid = bool(entry) and all(
+                isinstance(value, _WORD_TYPES.get(key, ()))
+                for key, value in entry.items()
+            )
+            if valid and ({"doc", "label"} & entry.keys() or entry.get("hidden")):
+                glossary[name] = Word(**entry)
+            else:
+                logger.warning(
+                    "Skipping the glossary entry %s in the VapourSynth overlay %s: it"
+                    " needs a doc or label text or hidden = true; annotation is a text,"
+                    " override and hidden true or false.",
+                    name,
+                    path,
+                )
+    return glossary
+
+
+# mkdocs cross-references ("[text][target]", "[target][]"), reST roles
+# (":py:func:`~x`") and admonition lines ("!!! note", "??? tip", ".. warning::").
+_XREF = re.compile(r"\[([^\[\]]+)\]\[[^\[\]]*\]")
+_ROLE = re.compile(r":(?:\w+:)+`~?([^`]+)`")
+_ADMONITION = re.compile(r"(?:!!!|\?\?\?\+?)\s+\w.*|\.\.\s+[\w-]+::.*")
+
+
+def clean_doc(text: str) -> str:
+    """A docstring text as Markdown: cross-references become their text, reST roles
+    code, admonition lines go and their indented body is dedented (Markdown would
+    show it as code); lists, backticks and links stay."""
+    text = _ROLE.sub(r"`\1`", _XREF.sub(r"\1", text))
+    lines: list[str] = []
+    body = False
+    for line in text.splitlines():
+        if _ADMONITION.fullmatch(line.strip()):
+            body = True
+            continue
+        body = body and (not line.strip() or line[:1].isspace())
+        lines.append(line.strip() if body else line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 def family_of(fn: Mapping[str, Any], overlay: Mapping[str, Any] | None) -> str:
@@ -541,8 +701,10 @@ def _params(
     entries: Sequence[Mapping[str, Any]],
     table: Mapping[str, Any],
     method_id: str,
+    glossary: Glossary,
 ) -> tuple[Param, ...]:
-    """The parameters without the overlay's hidden ones, with its annotations."""
+    """The parameters without the overlay's and the glossary's hidden ones, with the
+    overlay's annotations."""
     hidden = set(table.get("hidden", []))
     annotations: Mapping[str, str] = table.get("annotations", {})
     params: list[Param] = []
@@ -554,7 +716,8 @@ def _params(
             entry["default"],
             entry["kind"],
         )
-        if name in hidden:
+        word = glossary.get(name)
+        if name in hidden or (word and word.hidden and word.applies(param)):
             if param.default is not None or param.kind in VARIADIC:
                 continue
             logger.warning(
@@ -596,15 +759,67 @@ def _default_simple(params: Sequence[Param]) -> frozenset[str]:
     return frozenset([*first, *(p.name for p in named if p.default is None)])
 
 
-def _method(fn: Mapping[str, Any], overlay: Mapping[str, Any] | None) -> Method:
+def _param_docs(
+    fn: Mapping[str, Any],
+    init: Sequence[Param],
+    params: Sequence[Param],
+    table: Mapping[str, Any],
+    glossary: Glossary,
+) -> dict[str, str]:
+    """Each parameter's pop-up text: the overlay's (init_docs first for a constructor
+    parameter, then docs), else an override glossary entry's, else the cleaned
+    docstring text, else another glossary entry's; parameters without any are left
+    out."""
+    docs: Mapping[str, str] = table.get("docs", {})
+    init_docs: Mapping[str, str] = table.get("init_docs", {})
+    texts: dict[str, str] = {}
+    for is_init, group in ((True, init), (False, params)):
+        for param in group:
+            word = glossary.get(param.name)
+            text = (init_docs.get(param.name) if is_init else None) or docs.get(
+                param.name
+            )
+            word = word if word and word.applies(param) else None
+            if not text and word and word.override:
+                text = word.doc
+            if not text:
+                text = clean_doc(fn["arg_docs"].get(param.name, ""))
+            if not text and word:
+                text = word.doc
+            if text:
+                texts[param.name] = text
+    return texts
+
+
+def _labels(
+    params: Sequence[Param], table: Mapping[str, Any], glossary: Glossary
+) -> dict[str, str]:
+    """The overlay's labels over the glossary's of the parameters they apply to."""
+    labels: dict[str, str] = {}
+    for param in params:
+        word = glossary.get(param.name)
+        if word and word.label and word.applies(param):
+            labels[param.name] = word.label
+    return {**labels, **table.get("labels", {})}
+
+
+def _method(
+    fn: Mapping[str, Any], overlay: Mapping[str, Any] | None, glossary: Glossary
+) -> Method:
     table = overlay or {}
-    init = _params(fn.get("init_params") or [], table, fn["id"])
-    # A method argument named like a constructor argument (NNEDI3's tff) would take
-    # the same input: the constructor's covers both.
-    init_names = {p.name for p in init}
-    params = tuple(
-        p for p in _params(fn["params"], table, fn["id"]) if p.name not in init_names
+    own = _params(fn["params"], table, fn["id"], glossary)
+    # A method argument named like a constructor argument would take the same input:
+    # the constructor's covers both (NNEDI3's tff), unless the method requires its
+    # own (DFTTest(...).extract_freq(clip, sloc)); the constructor's then keeps its
+    # default.
+    required = {p.name for p in own if p.default is None and p.kind not in VARIADIC}
+    init = tuple(
+        p
+        for p in _params(fn.get("init_params") or [], table, fn["id"], glossary)
+        if p.name not in required or p.default is None
     )
+    init_names = {p.name for p in init}
+    params = tuple(p for p in own if p.name not in init_names)
     params = _with_keywords(
         params, {*init_names, *(e["name"] for e in fn["params"])}, table, fn["id"]
     )
@@ -618,15 +833,17 @@ def _method(fn: Mapping[str, Any], overlay: Mapping[str, Any] | None) -> Method:
         kind=fn["kind"],
         init_params=init,
         params=params,
-        doc=table.get("help") or fn["doc"],
+        doc=table.get("help")
+        or ("" if fn["kind"] == "plugin" else clean_doc(fn["doc"])),
         arg_docs=fn["arg_docs"],
         simple=frozenset(simple)
         if simple is not None
         else _default_simple(init + params),
         import_line=import_line,
-        labels=dict(table.get("labels", {})),
-        common=overlay is not None,
+        labels=_labels(init + params, table, glossary),
+        rank=table.get("rank"),
         defaults=dict(table.get("defaults", {})),
+        docs=_param_docs(fn, init, params, table, glossary),
         many=returns_many(fn["returns"]),
         user=fn["source"] == "user",
     )
@@ -654,8 +871,13 @@ def _group(
     dropdown's when the overlay names none."""
     choices = [m.choice for m in members]
     arg_docs: dict[str, str] = {}
+    docs: dict[str, str] = {}
     for member in members:
         arg_docs = {**member.arg_docs, **arg_docs}
+        docs = {**member.docs, **docs}
+    # The class or member dropdown's own pop-up, when the overlay's docs give one.
+    if table.get("docs", {}).get(CLASS):
+        docs[CLASS] = table["docs"][CLASS]
     choice = str(table.get("class_default", ""))
     if choice and choice not in choices:
         logger.warning(
@@ -673,6 +895,8 @@ def _group(
         params=(),
         doc=table.get("help") or members[0].doc,
         arg_docs=arg_docs,
+        docs=docs,
+        choice_docs=dict(table.get("choices", {})),
         # The dropdown, and what every member shows in Simple mode.
         simple=frozenset(simple)
         if simple is not None
@@ -680,7 +904,7 @@ def _group(
         labels={CLASS: defaults[1], **table.get("labels", {})},
         members=tuple(members),
         default_choice=choice,
-        common=bool(table),
+        rank=table.get("rank"),
     )
 
 
@@ -688,6 +912,7 @@ def _class_group(
     key: tuple[str, str],
     fns: Sequence[Mapping[str, Any]],
     tables: Mapping[str, Mapping[str, Any]],
+    glossary: Glossary,
 ) -> Method:
     """The method `key[1]` of the classes of module `key[0]`, as one group."""
     module, name = key
@@ -697,7 +922,11 @@ def _class_group(
     members: list[Method] = []
     for fn in sorted(fns, key=lambda fn: fn["call"]):
         cls = fn["call"].split("(", 1)[0]
-        member = _method(fn, {**shared, **(tables.get(fn["id"]) or {})})
+        own = tables.get(fn["id"]) or {}
+        merged = {
+            k: {**shared[k], **own.get(k, {})} for k in _MERGED_KEYS if k in shared
+        }
+        member = _method(fn, {**shared, **own, **merged}, glossary)
         members.append(replace(member, label=cls, choice=cls))
     return _group(
         group_id, fns[0], members, table, (f"{_words(name)} ({module})", "Class")
@@ -705,26 +934,26 @@ def _class_group(
 
 
 def _enum_group(
-    fn: Mapping[str, Any], tables: Mapping[str, Mapping[str, Any]]
+    fn: Mapping[str, Any],
+    tables: Mapping[str, Mapping[str, Any]],
+    glossary: Glossary,
 ) -> Method:
     """An enum whose members filter a clip (Prefilter): one group of its members."""
     if not fn["members"]:
         raise ValueError("the enum has no members")
     table = tables.get(fn["id"]) or {}
-    base = _method(fn, {k: table[k] for k in _MEMBER_KEYS if k in table})
+    base = _method(fn, {k: table[k] for k in _MEMBER_KEYS if k in table}, glossary)
     name = fn["call"].split(".", 1)[0]
     members = [
         replace(
             base,
             id=f"{fn['id']}.{member}",
             label=member,
-            call=BRIDGED_MEMBERS.get(
+            call=BRIDGED.get(
                 f"{fn['id']}.{member}", base.call.replace("<member>", member)
             ),
             import_line=(
-                BRIDGE_IMPORT
-                if f"{fn['id']}.{member}" in BRIDGED_MEMBERS
-                else base.import_line
+                BRIDGE_IMPORT if f"{fn['id']}.{member}" in BRIDGED else base.import_line
             ),
             kind="function",
             choice=member,
@@ -748,7 +977,10 @@ def load_catalog(catalog: Path, overlays: Sequence[Path]) -> Catalog:
     member is), with the overlays applied; an entry that does not load is logged and
     skipped."""
     data = json.loads(catalog.read_text(encoding="utf-8"))
-    tables = read_overlays(overlays)
+    parsed = parse_overlays(overlays)
+    tables = read_overlays(parsed)
+    glossary = read_glossary(parsed)
+    promoted = _promoted(parsed)
     measured = _measured_methods(data.get("key") or {})
     user_dir = catalog.parent / USER_DIR
     by_method: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
@@ -757,25 +989,53 @@ def load_catalog(catalog: Path, overlays: Sequence[Path]) -> Catalog:
             key = (fn["module"], fn["call"].rpartition(".")[2])
             by_method.setdefault(key, []).append(fn)
     methods: list[Method] = []
-    for fn in data["functions"]:
+    for fn in [*data["functions"], *CHAINNER_FUNCTIONS]:
         if fn.get("id") in HIDDEN_FUNCTIONS:
             continue
         try:
             key = (fn["module"], fn["call"].rpartition(".")[2])
             if fn["kind"] == "members":
-                method = _enum_group(fn, tables)
+                method = _enum_group(fn, tables, glossary)
             elif fn["kind"] != "bound" or len(by_method[key]) < GROUP_MIN:
-                method = _method(fn, tables.get(fn["id"]))
+                method = _method(fn, tables.get(fn["id"]), glossary)
             elif by_method[key][0] is fn:
-                method = _class_group(key, by_method[key], tables)
+                method = _class_group(key, by_method[key], tables, glossary)
             else:
                 continue
+            if fn["source"] == "chainner":
+                method = replace(method, import_line=BRIDGE_IMPORT)
+            elif method.id in BRIDGED:
+                method = replace(
+                    method, call=BRIDGED[method.id], import_line=BRIDGE_IMPORT
+                )
+            if (tables.get(method.id) or {}).get("hide"):
+                continue
             method = _with_search_path(method, fn, user_dir)
+            common = method.rank is not None or method.id in promoted
+            method = replace(method, common=common)
             overlay = tables.get(method.id) or {}
             methods.append(_with_frame_use(method, measured, overlay))
         except (KeyError, TypeError, ValueError) as error:
             logger.warning("Skipping the catalog entry %s: %r", fn.get("id"), error)
     return Catalog(methods, data.get("enums", {}))
+
+
+def _promoted(parsed: Parsed) -> set[str]:
+    """The method ids that a user's overlay gives a table with a usable key besides
+    the texts (or an empty table): listed under Common. Shipped methods are listed by
+    their rank."""
+    ids: set[str] = set()
+    for path, data in parsed:
+        if path.parent == SHIPPED_OVERLAYS:
+            continue
+        tables = data.get("method", {})
+        for method_id, table in tables.items() if isinstance(tables, dict) else ():
+            if not isinstance(table, dict):
+                continue
+            usable = {k for k, v in table.items() if _overlay_problem(k, v) is None}
+            if not table or usable - _TEXT_KEYS:
+                ids.add(method_id)
+    return ids
 
 
 def _with_search_path(method: Method, fn: Mapping[str, Any], user_dir: Path) -> Method:

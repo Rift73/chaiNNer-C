@@ -462,3 +462,41 @@ def test_two_loads_of_one_file_share_a_session_that_builds_into_a_cache_folder(
     assert get_onnx_session(first, 0, CUDA, False) is not get_onnx_session(
         again, 0, CUDA, False
     )
+
+
+# Nodes run on a thread pool: another node's first run may create a cache folder
+# between the check that it is missing and its creation.
+@pytest.mark.parametrize(
+    ("package", "key"),
+    [
+        ("chaiNNer_onnx", "onnx_tensorrt_cache"),
+        ("chaiNNer_tensorrt", "timing_cache"),
+        ("chaiNNer_tensorrt", "engine_cache"),
+        ("chaiNNer_migraphx", "program_cache"),
+    ],
+)
+def test_a_cache_folder_made_meanwhile_is_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, package: str, key: str
+):
+    import importlib
+
+    from api.settings import SettingsParser
+
+    settings = importlib.import_module(f"packages.{package}.settings")
+    folder = tmp_path / "cache"
+    exists = os.path.exists
+
+    def made_meanwhile(path: Any) -> bool:
+        if Path(path) == folder:
+            folder.mkdir(exist_ok=True)
+            return False
+        return exists(path)
+
+    monkeypatch.setattr(settings.os.path, "exists", made_meanwhile)
+    if package == "chaiNNer_migraphx":
+        # The settings name a GPU, which this computer need not have.
+        gpu = SimpleNamespace(index=0, name="GPU", gfx="gfx1100", supports_fp8=False)
+        monkeypatch.setattr(settings, "devices", [gpu])
+    context: Any = SimpleNamespace(settings=SettingsParser({key: str(folder)}))
+    settings.get_settings(context)
+    assert folder.is_dir()

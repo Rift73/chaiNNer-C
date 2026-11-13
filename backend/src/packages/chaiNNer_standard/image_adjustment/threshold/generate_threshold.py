@@ -40,7 +40,7 @@ _AUTO_THRESHOLD_LABELS: dict[AutoThreshold, str] = {
     ],
 )
 def generate_threshold_node(img: np.ndarray, method: AutoThreshold) -> float:
-    # Alpha is no brightness (upstream averaged it into the histogram).
+    # Alpha is no brightness: it stays out of the histogram.
     if get_h_w_c(img)[2] == 4:
         img = img[:, :, :3]
     return auto_threshold(img, method.value)

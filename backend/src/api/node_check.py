@@ -7,10 +7,22 @@ import pathlib
 from collections import OrderedDict
 from enum import Enum
 from types import UnionType
-from typing import Any, Callable, NewType, Tuple, Union, cast, get_args, get_origin
+from typing import (
+    Any,
+    Callable,
+    NewType,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+)
 
+from .lazy import Lazy
 from .node_context import NodeContext
 from .node_data import NodeData
+from .output import BaseOutput
 
 _Ty = NewType("_Ty", object)
 
@@ -28,23 +40,16 @@ class CheckLevel(Enum):
     @staticmethod
     def parse(s: str) -> CheckLevel:
         s = s.strip().lower()
-        if s == CheckLevel.NONE.value:
-            return CheckLevel.NONE
-        elif s == CheckLevel.WARN.value:
-            return CheckLevel.WARN
-        elif s == CheckLevel.FIX.value:
-            return CheckLevel.FIX
-        elif s == CheckLevel.ERROR.value:
-            return CheckLevel.ERROR
-        else:
-            raise ValueError(f"Invalid check level: {s}")
+        try:
+            return CheckLevel(s)
+        except ValueError:
+            raise ValueError(f"Invalid check level: {s}") from None
 
 
 def _get_check_level(name: str, default: CheckLevel) -> CheckLevel:
     try:
-        s = os.environ.get(name, default.value)
-        return CheckLevel.parse(s)
-    except Exception:
+        return CheckLevel.parse(os.environ.get(name, default.value))
+    except ValueError:
         return default
 
 
@@ -67,7 +72,7 @@ class TypeTransformer(ast.NodeTransformer):
                 ),
                 ctx=ast.Load(),
             )
-        return super().visit_BinOp(node)
+        return self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript):
         if isinstance(node.value, ast.Name) and node.value.id == "tuple":
@@ -76,7 +81,7 @@ class TypeTransformer(ast.NodeTransformer):
                 slice=node.slice,
                 ctx=ast.Load(),
             )
-        return super().visit_Subscript(node)
+        return self.generic_visit(node)
 
 
 def compile_type_string(s: str, filename: str = "<string>"):
@@ -149,6 +154,14 @@ def get_type_annotations(fn: Callable) -> dict[str, _Ty | FailedToParse]:
     return type_annotations
 
 
+def accepted_type(output: BaseOutput) -> Any:
+    """The type an output takes: its associated type, and None when it is nullable
+    (BaseOutput.null_unless)."""
+    if output.nullable:
+        return Optional[output.associated_type]
+    return output.associated_type
+
+
 def validate_return_type(return_type: _Ty, node: NodeData):
     outputs = node.outputs
 
@@ -160,30 +173,33 @@ def validate_return_type(return_type: _Ty, node: NodeData):
     elif len(outputs) == 1:
         o = outputs[0]
         if o.associated_type is not None and not is_subset_of(
-            return_type, o.associated_type
+            return_type, accepted_type(o)
         ):
             raise CheckFailedError(
-                f"Return type '{return_type}' must be a subset of '{o.associated_type}'"
+                f"Return type '{return_type}' must be a subset of '{accepted_type(o)}'"
             )
     else:
-        if not is_tuple(return_type):
-            raise CheckFailedError(
-                f"Return type '{return_type}' must be a tuple because there are multiple outputs"
-            )
-
-        return_args = get_args(return_type)
-        if len(return_args) != len(outputs):
-            raise CheckFailedError(
-                f"Return type '{return_type}' must have the same number of arguments as there are outputs"
-            )
-
-        for o, return_arg in zip(outputs, return_args):
-            if o.associated_type is not None and not is_subset_of(
-                return_arg, o.associated_type
-            ):
+        # A union is one tuple of the outputs per alternative.
+        union = get_origin(return_type) in (Union, UnionType)
+        for alternative in get_args(return_type) if union else (return_type,):
+            if not is_tuple(alternative):
                 raise CheckFailedError(
-                    f"Return type of {o.label} '{return_arg}' must be a subset of '{o.associated_type}'"
+                    f"Return type '{alternative}' must be a tuple because there are multiple outputs"
                 )
+
+            return_args = get_args(alternative)
+            if len(return_args) != len(outputs):
+                raise CheckFailedError(
+                    f"Return type '{alternative}' must have the same number of arguments as there are outputs"
+                )
+
+            for o, return_arg in zip(outputs, return_args):
+                if o.associated_type is not None and not is_subset_of(
+                    return_arg, accepted_type(o)
+                ):
+                    raise CheckFailedError(
+                        f"Return type of {o.label} '{return_arg}' must be a subset of '{accepted_type(o)}'"
+                    )
 
 
 def check_schema_types(
@@ -263,8 +279,14 @@ def check_schema_types(
         raise CheckFailedError(
             f"Number of inputs and arguments don't match: {len(ann)=} != {len(inputs)=}"
         )
-    for (a_name, a_type), i in zip(ann.items(), inputs):
+    for (a_name, annotated), i in zip(ann.items(), inputs):
         associated_type = i.associated_type
+        # A lazy input's argument is the Lazy of its value.
+        a_type = (
+            get_args(annotated)[0]
+            if i.lazy and get_origin(annotated) is Lazy
+            else annotated
+        )
         if (
             associated_type is not None
             and not isinstance(a_type, FailedToParse)

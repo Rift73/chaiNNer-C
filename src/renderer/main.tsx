@@ -66,17 +66,17 @@ export const Main = memo(() => {
     const [statusProgress, setStatusProgress] = useState<null | number>(null);
     const [overallProgress, setOverallProgress] = useState(0);
 
-    // Register event listeners
-    useEffect(() => {
-        ipcRenderer.on('setup-progress', (event, progress) => {
+    useIpcRendererListener(
+        'setup-progress',
+        useCallback((_, progress) => {
             setOverallProgress(progress.totalProgress);
             setStatusProgress(progress.statusProgress > 0 ? progress.statusProgress : null);
 
             if (progress.status) {
                 setStatus(progress.status);
             }
-        });
-    }, []);
+        }, [])
+    );
 
     // The editor shows as soon as it has a node list: the one cached at the last start, or else
     // the backend's, which it sends once it is ready.

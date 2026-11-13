@@ -233,10 +233,30 @@ class RawVideoWriter:
         self._stderr.close()
 
 
+_PLANE_HELP = (
+    "The {plane} plane of each frame, as Load Video's or Clip Frames' Planes mode gives"
+    " it; U and V may be smaller than Y."
+)
+
+
+_ONE_FRAME = (
+    "This clip has one frame (Run this frame, or a Range of one frame). Filters that"
+    " look at neighbouring frames, such as field matching, decimation and temporal"
+    " denoising, cannot work on it: run a Range of frames instead. To look at one"
+    " frame of a filtered clip, open the video with Load Clip and use Clip Frames'"
+    " seek bar and Run this frame: it renders that frame through the whole chain."
+)
+
+
 @clips_group.register(
     schema_id="chainner:vapoursynth:frames_to_clip",
     name="Frames to Clip",
     description=[
+        (
+            "For images that chaiNNer's image nodes made. To filter a video file, open"
+            " it with Load Clip instead: no Load Video, no Frames to Clip and no"
+            " temporary file needed."
+        ),
         (
             "Turns a sequence of RGB or gray images, or of Y, U and V planes, into a"
             " clip: the frames are saved as a lossless 16-bit video (FFV1) or as 32-bit"
@@ -246,7 +266,15 @@ class RawVideoWriter:
             "The video is a temporary file in chaiNNer's storage; the node's next run"
             " replaces it, and a start of chaiNNer deletes it once it is a day old."
         ),
+        (
+            "Run this frame gives a clip of one frame, which only filters that look at"
+            " the current frame can work on: field matching, decimation and temporal"
+            " denoising need a Range of frames. To look at one frame of a filtered"
+            " clip, use Load Clip and Clip Frames' seek bar with Run this frame: it"
+            " renders that frame through the whole chain."
+        ),
     ],
+    see_also=["chainner:vapoursynth:load_clip"],
     icon="BsFilm",
     inputs=[
         EnumInput(
@@ -260,12 +288,22 @@ class RawVideoWriter:
         )
         .with_id(2)
         .with_docs(
-            "Planes makes a YUV clip of planes at their own sizes (as Load Video's"
-            " Planes mode gives them), 16-bit and tagged with the colour information.",
+            "Frames makes the clip of RGB or gray images. Planes makes a YUV clip of"
+            " planes at their own sizes (as Load Video's Planes mode gives them),"
+            " 16-bit and tagged with the colour information.",
+            hint=True,
         ),
         if_enum_group(2, ClipSource.FRAMES)(
             required()(
-                ImageInput("Frames", channels=[1, 3]).make_optional().with_id(0)
+                ImageInput("Frames", channels=[1, 3])
+                .make_optional()
+                .with_id(0)
+                .with_docs(
+                    "The images, one per frame, from a node that gives them one by one"
+                    " (Load Video, Load Images, Clip Frames). One frame alone (Run this"
+                    " frame) is too few for filters that look at neighbouring frames.",
+                    hint=True,
+                )
             ),
             EnumInput(
                 ClipPrecision,
@@ -283,24 +321,39 @@ class RawVideoWriter:
                 "32-bit float keeps every value as it is, also outside 0-1 (RGBS or"
                 " GrayS clips), in an uncompressed file of 12 bytes per pixel (gray"
                 " frames too): about 25 MB per 1080p frame.",
+                hint=True,
             ),
         ),
         if_enum_group(2, ClipSource.PLANES)(
             required()(
-                ImageInput("Y", channels=1).make_optional().with_id(4),
-                ImageInput("U", channels=1).make_optional().with_id(5),
-                ImageInput("V", channels=1).make_optional().with_id(6),
+                ImageInput("Y", channels=1)
+                .make_optional()
+                .with_id(4)
+                .with_docs(_PLANE_HELP.format(plane="Y (brightness)"), hint=True),
+                ImageInput("U", channels=1)
+                .make_optional()
+                .with_id(5)
+                .with_docs(_PLANE_HELP.format(plane="U (colour)"), hint=True),
+                ImageInput("V", channels=1)
+                .make_optional()
+                .with_id(6)
+                .with_docs(_PLANE_HELP.format(plane="V (colour)"), hint=True),
             ),
             ColourInfoInput()
             .make_optional()
             .with_id(7)
             .with_docs(
                 "The planes' colour information, which the clip is tagged with (its"
-                " frame properties). Without it, Auto guesses from the planes' size."
+                " frame properties). Without it, Auto guesses from the planes' size.",
+                hint=True,
             ),
             *colour_override_inputs(8),
         ),
-        NumberInput("FPS", default=30, min=1, step=1, precision=4).with_id(1),
+        NumberInput("FPS", default=30, min=1, step=1, precision=4)
+        .with_id(1)
+        .with_docs(
+            "The clip's frame rate, in frames per second. Example: 23.976", hint=True
+        ),
     ],
     iterator_inputs=IteratorInputInfo(inputs=[0, 4, 5, 6]),
     outputs=[VideoClipOutput("Clip")],
@@ -341,6 +394,7 @@ def frames_to_clip_node(
     # match them.
     shapes: list[tuple[int, int, int]] = []
     tags: ColourInfo | None = None
+    count = 0
 
     def start(
         pix_fmt: str,
@@ -421,6 +475,8 @@ def frames_to_clip_node(
         writer.write(planes)
 
     def on_iterate(values: tuple[np.ndarray | None, ...]) -> None:
+        nonlocal count
+        count += 1
         frame, y, u, v = values
         if planes_mode:
             if y is None or u is None or v is None:
@@ -435,6 +491,8 @@ def frames_to_clip_node(
         if writer is None:
             raise ValueError("Frames to Clip got no frames.")
         writer.close()
+        if count == 1:
+            context.warn(_ONE_FRAME)
         var = clip_var(context.node_id)
         # cachemode=3 keeps BestSource's index (written only for long videos) beside
         # the video, so it goes with it; AssumeFPS sets the exact rate the container

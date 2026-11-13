@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import ast
 import ctypes as ct
 import importlib.util
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-
 from native_images import opaque
+from node_bodies import load_body
 
 from nodes.impl import native_convolution, native_lens
 from nodes.impl.native import lib
@@ -22,26 +20,6 @@ from nodes.impl.native_filters import normalize_lens
 ROOT = Path(__file__).resolve().parents[2]
 BASE = ROOT / "backend/src/packages/chaiNNer_standard/image_filter"
 REFERENCES = Path(__file__).parent
-
-
-def load_body(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
 
 
 LENS = load_body(BASE / "blur/lens_blur.py")
@@ -390,3 +368,10 @@ def test_spatial_nonfinite_remains_in_c(
         exact(native_convolution.convolve(image, kernel, 0), expected)
     finally:
         cv2.setUseOptimized(original_optimized)
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (2, 3, 1), (2, 3, 3), (2, 3, 5), (4,)])
+def test_straight_refuses_sums_that_are_not_four_channel_pixels(shape):
+    # The C kernel reads and writes four floats per pixel.
+    with pytest.raises(ValueError, match="four"):
+        native_lens.straight(np.ones(shape, np.float32), 1.0)

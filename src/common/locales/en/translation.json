@@ -100,14 +100,16 @@
             "firstFrame": "First frame (Home)",
             "frameBack": "Previous frame (Left)",
             "frameForward": "Next frame (Right)",
-            "in": "In",
+            "in": "Set start",
             "lastFrame": "Last frame (End)",
-            "out": "Out",
+            "out": "Set end",
             "runThisFrame": "Run this frame",
             "secondBack": "Back 1 second (Shift+Left)",
             "secondForward": "Forward 1 second (Shift+Right)",
             "setIn": "Start the frame range here",
             "setOut": "End the frame range here",
+            "tenBack": "Back 10 frames (Shift+Left)",
+            "tenForward": "Forward 10 frames (Shift+Right)",
             "waitingForVideo": "The seek bar works once the node has read the video."
         },
         "dropdown": {
@@ -117,8 +119,12 @@
     },
     "outputs": {
         "largeImage": {
+            "close": "Close (Esc)",
+            "fit": "Fit to the window (double click)",
+            "fullscreen": "Full screen (F)",
             "imageNotAvailable": "Image not available.",
-            "imagePreviewFailed": "Image preview failed to load, probably unsupported file type."
+            "imagePreviewFailed": "Image preview failed to load, probably unsupported file type.",
+            "maximize": "Maximize"
         },
         "model": {
             "modelNotAvailable": "Model data not available."
@@ -382,6 +388,7 @@
         "unlock": "Unlock",
         "lock": "Lock",
         "refreshPreview": "Refresh Preview",
+        "previewClip": "Preview",
         "delete": "Delete",
         "openDocumentation": "Open Documentation",
         "clear": "Clear"

@@ -87,7 +87,7 @@ OLD_SPLIT = node(REFERENCE / "split_r_g_b_a.py")
 
 def test_frozen_references_match_their_pinned_hashes():
     # The manifest pins each frozen file's bytes; native_normal_kernel.py records its
-    # one ruled edit (Consult 8 D-6).
+    # one approved edit.
     manifest = json.loads((REFERENCE / "manifest.json").read_text("utf-8"))
     for name, entry in manifest.items():
         digest = hashlib.sha256((REFERENCE / name).read_bytes()).hexdigest()
@@ -237,7 +237,7 @@ def test_palette_mutation_eviction_and_concurrent_leases():
 @pytest.mark.parametrize("count", [7, 317])
 @pytest.mark.parametrize("where", ["image", "palette"])
 def test_palette_nonfinite_contract(count, where):
-    # Consult 8 D-5: 300+ unique colors with a nonfinite value dither by the linear
+    # 300+ unique colors with a nonfinite value dither by the linear
     # rule instead of refusing; the frozen helper reads the kernel's compatible
     # flag, now always 1, so it returns the same result.
     rng = np.random.default_rng(819)

@@ -56,8 +56,14 @@ struct Color { channels: int(1..) }
 
 struct Video;
 
-// VapourSynth: a clip, and a filter (a function waiting for its clip)
-struct VideoClip;
+// VapourSynth: a clip, and a filter (a function waiting for its clip). A run gives a
+// clip's size (0 when it varies), frame rate (0 when it varies) and field order.
+struct VideoClip {
+    width: uint,
+    height: uint,
+    fps: number,
+    fieldOrder: string,
+}
 struct VSFilter;
 
 // models

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import cv2
 import numpy as np
 import torch
-from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from sanic.log import logger
 from spandrel import ImageModelDescriptor
-from torchvision.transforms.functional import normalize as tv_normalize
 
 from api import KeyInfo, NodeContext
 from nodes.groups import Condition, if_group
@@ -24,6 +24,9 @@ from nodes.utils.utils import file_identity, get_h_w_c
 
 from ...settings import PyTorchSettings, get_settings
 from .. import restoration_group
+
+if TYPE_CHECKING:
+    from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 
 
 def denormalize(img: np.ndarray):
@@ -46,6 +49,8 @@ def upscale(
     exec_options: PyTorchSettings,
     device: torch.device,
 ):
+    from torchvision.transforms.functional import normalize as tv_normalize
+
     face_helper.clean_all()
     face_helper.read_image(img)
     face_helper.get_face_landmarks_5(only_center_face=False, eye_dist_threshold=5)
@@ -54,7 +59,7 @@ def upscale(
     face_model = on_device(
         face_model, device, torch.float16 if should_use_fp16 else torch.float32
     )
-    for cropped_face in face_helper.cropped_faces:
+    for index, cropped_face in enumerate(face_helper.cropped_faces):
         cropped_face_t = np2tensor(
             cropped_face, bgr2rgb=True, change_range=True, add_batch=False
         )
@@ -70,8 +75,13 @@ def upscale(
             ]
             output = (output + 1) / 2
             restored_face = tensor2np(output.squeeze(0), rgb2bgr=True)
-        except RuntimeError as error:
-            logger.error(f"\tFailed inference for Face Upscale: {error}.")
+        except RuntimeError:
+            logger.warning(
+                "Upscale Face: face %d of %d failed and is pasted back unrestored",
+                index + 1,
+                len(face_helper.cropped_faces),
+                exc_info=True,
+            )
             restored_face = cropped_face
         restored_face = restored_face.astype("uint8")
         face_helper.add_restored_face(restored_face)
@@ -132,6 +142,8 @@ def upscale_face_node(
             download_path = str(context.storage_dir / "gfpgan/weights")
 
             def create():
+                from facexlib.utils.face_restoration_helper import FaceRestoreHelper
+
                 return (
                     FaceRestoreHelper(
                         upscale_factor=scale,
@@ -178,9 +190,10 @@ def upscale_face_node(
     except Exception as e:
         logger.error("Face Upscale failed: %s", e)
         face_helper = None
-        del face_helper
         safe_cuda_cache_empty()
-        raise RuntimeError("Failed to run Face Upscale.") from e
+        raise RuntimeError(
+            f"Failed to run Face Upscale ({type(e).__name__}: {e})."
+        ) from e
 
 
 def _reset_face_helper(helper: FaceRestoreHelper) -> None:

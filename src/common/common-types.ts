@@ -74,6 +74,8 @@ export interface InputOption {
     readonly icon?: string | null;
     readonly type?: ExpressionJson;
     readonly condition?: Condition | null;
+    /** Markdown shown as the option's pop-up. */
+    readonly description?: string | null;
 }
 export type FileInputKind = 'image' | 'pth' | 'pt' | 'video' | 'bin' | 'param' | 'onnx';
 export type DropDownStyle = 'dropdown' | 'checkbox' | 'tabs' | 'icons' | 'anchor';
@@ -256,10 +258,6 @@ interface OptionalListGroup extends GroupBase {
     readonly kind: 'optional-list';
     readonly options: Readonly<Record<string, never>>;
 }
-interface OptionalListGroup extends GroupBase {
-    readonly kind: 'optional-list';
-    readonly options: Readonly<Record<string, never>>;
-}
 interface ConditionalGroup extends GroupBase {
     readonly kind: 'conditional';
     readonly options: {
@@ -373,12 +371,6 @@ export interface NodeSchema {
      * Older backends don't send this field.
      */
     readonly keywords?: readonly string[];
-}
-
-export interface DefaultNode {
-    // Default nodes aren't currently used
-    __SPECIAL: never;
-    schemaId: SchemaId;
 }
 
 export interface NodeData {

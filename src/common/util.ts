@@ -11,7 +11,6 @@ export const noop = () => {};
 export const assertNever = (value: never): never => {
     throw new Error(`Unreachable code path. The value ${String(value)} is invalid.`);
 };
-export const assertType: <T>(_: T) => void = noop;
 
 export const isReadonlyArray = Array.isArray as (value: unknown) => value is readonly unknown[];
 
@@ -29,14 +28,6 @@ export const findLastIndex = <T>(
         }
     }
     return -1;
-};
-export const findLast = <T>(
-    array: readonly T[],
-    predicate: (value: T, index: number, obj: readonly T[]) => unknown
-): T | undefined => {
-    const index = findLastIndex(array, predicate);
-    if (index === -1) return undefined;
-    return array[index];
 };
 
 export interface ParsedSourceHandle {
@@ -143,20 +134,6 @@ export const sameNumber = (a: number, b: number): boolean =>
 // eslint-disable-next-line no-nested-ternary
 export const binaryCompare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-export type Comparator<T> = (a: T, b: T) => number;
-export const compareSequences = <T>(
-    a: readonly T[],
-    b: readonly T[],
-    compare: Comparator<T>
-): number => {
-    if (a.length !== b.length) return a.length - b.length;
-    for (let i = 0; i < a.length; i += 1) {
-        const r = compare(a[i], b[i]);
-        if (r !== 0) return r;
-    }
-    return 0;
-};
-
 /**
  * Sorts numbers in the order:
  * 1. -Infinity
@@ -179,18 +156,6 @@ export const compareNumber = (a: number, b: number): number => {
     if (Number.isNaN(a)) return +1;
     if (Number.isNaN(b)) return -1;
     return a - b;
-};
-
-type WithType<S, T extends string> = S extends { readonly type: T } ? S : never;
-export type Visitors<State extends { readonly type: string }, R> = {
-    [K in State['type']]: (state: WithType<State, K>) => R;
-};
-export const visitByType = <State extends { readonly type: string }, R>(
-    state: State,
-    visitors: Visitors<State, R>
-): R => {
-    const v = (visitors as Record<string, unknown>)[state.type] as (state: State) => R;
-    return v(state);
 };
 
 /**
@@ -235,10 +200,6 @@ export const topologicalSort = <T>(
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (cyclic) return undefined;
     return result.reverse();
-};
-
-export const isEndingNode = (schema: NodeSchema) => {
-    return !schema.outputs.some((i) => i.hasHandle) && schema.inputs.length > 0;
 };
 
 export const delay = (ms: number): Promise<void> => {

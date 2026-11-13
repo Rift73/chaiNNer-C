@@ -477,7 +477,7 @@ CN_EXPORT cn_status cn_matting_erode_mask_u8(const uint8_t *source, uint8_t *out
 
 /* Row-major pixel grids: pixel i's channel c at i * pixel + c * channel elements,
  * interleaved (channels, 1) or planar (1, plane): upstream's np.dstack((img,
- * trimap)) keeps a planar image's layout (D-16). The trimap is row-major. */
+ * trimap)) keeps a planar image's layout. The trimap is row-major. */
 static inline void trimap_pixel(const float *image, const double *trimap, float *out,
         size_t i, size_t pixel, size_t channel, size_t out_pixel, size_t out_channel) {
     for (size_t c = 0; c < 3; ++c)

@@ -179,10 +179,8 @@ const renderCondition = (
     prefix: JSX.Element | undefined,
     options: RenderOptions
 ): JSX.Element => {
-    // Since we want to construct a natural language sentence, we can't just recursively render
-    // the condition. Instead, we need to do some analysis of the condition to determine how to
-    // render it. We also can't support all possible conditions, but that's okay. Most conditions
-    // are simple.
+    // A sentence cannot be built by rendering the condition recursively, so only the common shapes
+    // of conditions are explained.
 
     if (isPossiblePrimitive(condition)) {
         return (

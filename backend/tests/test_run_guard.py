@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sanic.exceptions import ServerError
 
 SRC = Path(__file__).parent.parent / "src"
 
@@ -25,6 +27,7 @@ SRC = Path(__file__).parent.parent / "src"
 CHECK = """
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import server
@@ -136,3 +139,78 @@ def test_pause_while_waiting_for_previews_is_applied_before_execution(
             await asyncio.gather(pending, return_exceptions=True)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "kill"])
+def test_a_failed_pause_resume_or_kill_is_logged_with_its_traceback(
+    monkeypatch: pytest.MonkeyPatch, action: str
+):
+    monkeypatch.setattr(sys, "argv", ["server.py"])
+    server = importlib.import_module("server")
+    ctx = server.app.ctx
+
+    class Executor:
+        def fail(self):
+            raise RuntimeError(f"{action} failed")
+
+        pause = resume = kill = fail
+
+    records: list[logging.LogRecord] = []
+
+    class Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord):
+            records.append(record)
+
+    handler = Handler()
+    server.logger.addHandler(handler)
+    monkeypatch.setattr(ctx, "executor", Executor())
+    try:
+        reply = asyncio.run(getattr(server, action)(SimpleNamespace(app=server.app)))
+    finally:
+        server.logger.removeHandler(handler)
+    assert reply.status == 500
+    assert [
+        (r.levelno, str(r.exc_info[1])) for r in records if r.exc_info is not None
+    ] == [(logging.ERROR, f"{action} failed")]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ServerError("Response stream was ended, no more response data is allowed."),
+        ConnectionResetError(10054, "An existing connection was forcibly closed"),
+        ConnectionAbortedError(10053, "The connection was aborted"),
+        BrokenPipeError(32, "Broken pipe"),
+        RuntimeError("the stream failed"),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_the_worker_s_event_stream_ends_quietly_only_for_a_closed_client(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: Exception,
+):
+    # A client that has gone (Sanic's RequestCancelled, a CancelledError, aside) ends
+    # the stream without a log line; anything else is the worker's own failure.
+    monkeypatch.setattr(sys, "argv", ["server.py"])
+    server = importlib.import_module("server")
+    queue = server.EventQueue()
+    queue.put({"event": "execution-warning", "data": {"message": "x"}})
+    monkeypatch.setattr(
+        server.AppContext, "get", lambda _app: SimpleNamespace(queue=queue)
+    )
+
+    class Response:
+        async def send(self, _data: str) -> None:
+            raise failure
+
+    async def respond(**_kwargs: object) -> Response:
+        return Response()
+
+    request = SimpleNamespace(app=None, respond=respond)
+    if isinstance(failure, RuntimeError):
+        with pytest.raises(RuntimeError, match="the stream failed"):
+            asyncio.run(server.sse(request))
+    else:
+        asyncio.run(server.sse(request))
+    assert [r for r in caplog.records if r.exc_info] == []

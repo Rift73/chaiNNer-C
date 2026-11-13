@@ -16,6 +16,26 @@ inline bool truth(const O &object) {
     if(result<0)throw py::error_already_set();
     return result!=0;
 }
+// A new reference from the C API; NULL raises the pending exception.
+inline O steal(PyObject *value) {
+    if(!value)throw py::error_already_set();
+    return py::reinterpret_steal<O>(value);
+}
+// a == b as Python evaluates it (no identity shortcut, unlike compare).
+inline bool equal(const O &a,const O &b) { return truth(steal(PyObject_RichCompare(a.ptr(),b.ptr(),Py_EQ))); }
+[[noreturn]] inline void exhausted() {
+    PyErr_SetNone(PyExc_StopIteration);
+    throw py::error_already_set();
+}
+// A generator's re-entrancy guard: "generator already executing" while one call runs.
+struct ActiveIteration {
+    bool &running;
+    explicit ActiveIteration(bool &value) : running(value) {
+        if (running) throw py::value_error("generator already executing");
+        running = true;
+    }
+    ~ActiveIteration() { running = false; }
+};
 inline bool compare(const O &a,const O &b,int comparison) {
     int result=PyObject_RichCompareBool(a.ptr(),b.ptr(),comparison);
     if(result<0)throw py::error_already_set();

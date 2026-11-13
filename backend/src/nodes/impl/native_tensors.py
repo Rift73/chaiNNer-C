@@ -79,15 +79,6 @@ def _api():
         "cn_tensor_scale_typed": [view, view, ct.c_double, ct.c_int, flag],
         "cn_tensor_add_typed": [view, view, view, flag],
         "cn_tensor_cast_typed": [view, view, flag],
-        "cn_tensor_interpolate": [
-            ct.c_void_p,
-            ct.c_void_p,
-            ct.c_void_p,
-            ct.c_size_t,
-            ct.c_int,
-            ct.c_double,
-            ct.c_double,
-        ],
     }.items():
         function = getattr(library, name)
         function.argtypes, function.restype = arguments, ct.c_int

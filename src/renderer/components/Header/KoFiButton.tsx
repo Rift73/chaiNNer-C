@@ -23,8 +23,8 @@ export const KoFiButton = memo(() => {
                 size="md"
                 variant="outline"
                 onClick={() => {
-                    ipcRenderer.invoke('open-url', links.kofi).catch(() => {
-                        log.error('Failed to open Ko-fi url');
+                    ipcRenderer.invoke('open-url', links.kofi).catch((error) => {
+                        log.error('Failed to open Ko-fi url', error);
                     });
                 }}
             >

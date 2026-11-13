@@ -9,10 +9,12 @@ gives one summary, the failures, and each file's duration for the next run's bal
 kept in the git-ignored native/local/test-durations.json. The pinned FFmpeg the video
 tests run is set up in their storage folder first (scratch_storage.py).
 
-usage: python -B native/tools/run_tests.py [--workers N] [PYTEST_ARG ...]
+usage: python -B native/tools/run_tests.py [--workers N] [TEST ...] [PYTEST_ARG ...]
 
-Arguments it does not know go to every shard's pytest. The exit status is 1 when a test
-failed or errored, or a shard could not run its tests (collection or internal error).
+Test files, folders and node ids given run instead of the whole suite, sharded the same
+way. Other arguments go to every shard's pytest. The exit status is 1 when a test failed
+or errored, or a shard could not run its tests (collection or internal error), and 2 when
+a named path selects no test (nothing runs then).
 """
 
 from __future__ import annotations
@@ -40,6 +42,29 @@ WHOLE_MACHINE = (
     "native/tests/test_parallel.py",
     "native/tests/test_parallel_affinity.py",
 )
+# pytest options whose value is the next argument: a path there selects no test
+VALUE_OPTIONS = frozenset(
+    {
+        "--basetemp",
+        "--confcutdir",
+        "--deselect",
+        "--durations",
+        "--ignore",
+        "--ignore-glob",
+        "--junitxml",
+        "--log-file",
+        "--maxfail",
+        "--override-ini",
+        "--rootdir",
+        "--tb",
+        "-W",
+        "-c",
+        "-k",
+        "-m",
+        "-o",
+        "-p",
+    }
+)
 
 
 @dataclass
@@ -60,16 +85,66 @@ def test_files() -> list[str]:
     )
 
 
+def split_arguments(arguments: list[str]) -> tuple[list[str], list[str]]:
+    """The test files and node ids named (relative to ROOT, folders expanded to their
+    test files), and the arguments left for every shard's pytest. A path is looked up
+    from the current folder, then from ROOT, where pytest runs; ValueError when a
+    named path selects no test, so that naming one never runs the whole suite."""
+    tests: list[str] = []
+    others: list[str] = []
+    previous = ""
+    for argument in arguments:
+        if previous in VALUE_OPTIONS or argument.startswith("-"):
+            others.append(argument)
+            previous = argument
+            continue
+        path, _, test = argument.partition("::")
+        target = Path(path).resolve()
+        if not target.exists():
+            target = (ROOT / path).resolve()
+        if not target.exists() or not target.is_relative_to(ROOT):
+            raise ValueError(f"{argument} names no test file or folder under {ROOT}")
+        if target.is_dir():
+            found = sorted(target.glob("test_*.py"))
+            if not found:
+                raise ValueError(f"{argument} holds no test_*.py file")
+            tests.extend(file.relative_to(ROOT).as_posix() for file in found)
+        else:
+            name = target.relative_to(ROOT).as_posix()
+            tests.append(f"{name}::{test}" if test else name)
+        previous = argument
+    return tests, others
+
+
+def placement(
+    tests: list[str], durations: dict[str, float], workers: int
+) -> list[tuple[list[str], list[int] | None]]:
+    """The shards and the logical CPUs of each (None: the whole machine, uncapped)."""
+    whole = [name for name in tests if name.partition("::")[0] in WHOLE_MACHINE]
+    groups = shards([name for name in tests if name not in whole], durations, workers)
+    # Each shard on its own logical CPUs (consecutive, so a core's two hyperthreads)
+    cpus = list(range(os.cpu_count() or 1))
+    per_shard = max(1, len(cpus) // max(1, len(groups)))
+    placed: list[tuple[list[str], list[int] | None]] = [
+        (group, cpus[i * per_shard % len(cpus) :][:per_shard])
+        for i, group in enumerate(groups)
+    ]
+    if whole:
+        placed.append((whole, None))
+    return placed
+
+
 def shards(
     files: list[str], durations: dict[str, float], workers: int
 ) -> list[list[str]]:
     """Longest first, each file to the least loaded shard."""
 
     def cost(name: str) -> float:
-        measured = durations.get(name)
+        file = name.partition("::")[0]
+        measured = durations.get(file)
         if measured is not None:
             return measured
-        return (ROOT / name).stat().st_size * SECONDS_PER_BYTE
+        return (ROOT / file).stat().st_size * SECONDS_PER_BYTE
 
     loads = [0.0] * workers
     groups: list[list[str]] = [[] for _ in range(workers)]
@@ -161,21 +236,17 @@ def main() -> int:
         default=max(1, (os.cpu_count() or 2) // 2),
         help="pytest processes (default: half the logical CPUs)",
     )
-    args, pytest_args = parser.parse_known_args()
+    args, unknown = parser.parse_known_args()
+    try:
+        tests, pytest_args = split_arguments(unknown)
+    except ValueError as error:
+        print(f"run_tests.py: {error}", file=sys.stderr)
+        return 2
     set_up_ffmpeg()
     durations: dict[str, float] = (
         json.loads(DURATIONS.read_text(encoding="utf-8")) if DURATIONS.exists() else {}
     )
-    files = [name for name in test_files() if name not in WHOLE_MACHINE]
-    groups = shards(files, durations, args.workers)
-    # Each shard on its own logical CPUs (consecutive, so a core's two hyperthreads)
-    cpus = list(range(os.cpu_count() or 1))
-    per_shard = max(1, len(cpus) // len(groups))
-    placed: list[tuple[list[str], list[int] | None]] = [
-        (group, cpus[i * per_shard % len(cpus) :][:per_shard])
-        for i, group in enumerate(groups)
-    ]
-    placed.append((list(WHOLE_MACHINE), None))
+    placed = placement(tests or test_files(), durations, args.workers)
     start = time.perf_counter()
     totals = Totals()
     broken: list[str] = []

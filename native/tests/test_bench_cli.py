@@ -393,7 +393,7 @@ CPU_LEGEND = (
 
 def test_compare_alternates_backends_in_balanced_pairs(tmp_path, monkeypatch):
     calls = stub_compare(tmp_path, monkeypatch)
-    # B has the timer, as every tree from Task 4 on; it is not profiled without --profile.
+    # B has the timer, as every current tree does; it is not profiled without --profile.
     run = bench.compare(
         tmp_path / "a", add_timer(tmp_path / "b"), ["gaussian"], 2, False
     )
@@ -2335,7 +2335,7 @@ def test_record_noise_warns_when_its_throughput_floor_exceeds_the_shared_floor(
     message = (
         "gaussian: this launch's throughput floor +25.0% exceeds the shared floor "
         "+0.1% (median background load 2.0%, machine busy before 1.0%); re-basing "
-        "the shared floors is the stand-in's decision"
+        "the shared floors is a reviewer's decision"
     )
     assert only_result(tmp_path)["warnings"] == [message]
     summary = (run / "summary.md").read_text(encoding="utf-8")
@@ -2658,7 +2658,7 @@ def test_final_verdicts_cover_exactly_the_first_run_in_its_order():
         pytest.param(
             "win", "regression", "win", "unconfirmed", id="win-is-not-rescued-2"
         ),
-        # R13: a win that the confirmation run flips to regression needs the third.
+        # A win that the confirmation run flips to regression needs the third.
         pytest.param(
             "win", "regression", "regression", "regression", id="flip-two-of-three"
         ),
@@ -3151,7 +3151,7 @@ def test_regression_between_floors_is_labelled_and_does_not_block(
     warning = (
         f"gaussian: regression {change} is beyond the shared floor +2.0/-2.0% but "
         "within the current floor +6.2/-5.8% of the k1 A/A launches; it does not "
-        "block and goes to the stand-in"
+        "block and goes to review"
     )
     assert result["warnings"] == ([warning] if expected == WITHIN else [])
     summary = (first / "summary.md").read_text(encoding="utf-8")
@@ -3323,6 +3323,28 @@ def test_main_confirms_flagged_cases_with_further_runs(tmp_path, monkeypatch):
     assert "\n## Confirmed verdicts\n" in summary
     for name in ("bench-2", "bench-3"):
         assert sorted(p.name for p in (tmp_path / name).iterdir()) == RUN_FILES
+
+
+@pytest.mark.parametrize(
+    ("second", "status"),
+    [
+        pytest.param({"gaussian": "regression"}, 1, id="blocking-regression"),
+        pytest.param(
+            {"gaussian": bench.bench_stats.WITHIN_CURRENT}, 0, id="within-current-floor"
+        ),
+        pytest.param({"gaussian": "neutral"}, 0, id="unconfirmed"),
+    ],
+)
+def test_main_exits_1_on_a_final_blocking_regression(
+    tmp_path, monkeypatch, second, status
+):
+    fake = FakeCompare(tmp_path, {"gaussian": "regression"}, second, second)
+    monkeypatch.setattr(bench, "compare", fake)
+    monkeypatch.delenv("CHAINNER_C_ITEM_WINDOW", raising=False)
+    monkeypatch.delenv("CHAINNER_C_PROFILE", raising=False)
+    argv = ["bench.py", "--a", str(tmp_path / "a"), "--b", str(tmp_path / "b")]
+    monkeypatch.setattr(sys, "argv", [*argv, "--cases", "gaussian"])
+    assert bench.main() == status
 
 
 def test_main_record_noise_never_runs_a_confirmation(tmp_path, monkeypatch, capsys):

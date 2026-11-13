@@ -17,21 +17,17 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-const { defaultSession, proxySession, fromPartition, request, checkPythonPaths } = vi.hoisted(
-    () => {
-        const createSession = () => ({ setProxy: vi.fn(() => Promise.resolve()) });
-        const proxy = createSession();
-        return {
-            defaultSession: createSession(),
-            proxySession: proxy,
-            fromPartition: vi.fn(() => proxy),
-            request: vi.fn(),
-            checkPythonPaths: vi.fn((paths: string[]) =>
-                Promise.resolve({ python: paths[0], version: '3.14.8' })
-            ),
-        };
-    }
-);
+const { defaultSession, proxySession, fromPartition, request, checkPython } = vi.hoisted(() => {
+    const createSession = () => ({ setProxy: vi.fn(() => Promise.resolve()) });
+    const proxy = createSession();
+    return {
+        defaultSession: createSession(),
+        proxySession: proxy,
+        fromPartition: vi.fn(() => proxy),
+        request: vi.fn(),
+        checkPython: vi.fn((python: string) => Promise.resolve({ python, version: '3.14.8' })),
+    };
+});
 
 vi.mock('electron/main', () => ({
     app: { whenReady: () => Promise.resolve(), getPath: () => '' },
@@ -39,7 +35,7 @@ vi.mock('electron/main', () => ({
     session: { defaultSession, fromPartition },
 }));
 
-vi.mock('../../src/main/python/checkPythonPaths', () => ({ checkPythonPaths }));
+vi.mock('../../src/main/python/version', () => ({ checkPython }));
 
 const incomingMessage = (
     statusCode: number,
@@ -209,12 +205,12 @@ test('the Python version is checked once per build of the executable', async () 
 
     await expect(getIntegratedPython(directory, () => {})).resolves.toEqual(expected);
     await expect(getIntegratedPython(directory, () => {})).resolves.toEqual(expected);
-    expect(checkPythonPaths).toHaveBeenCalledTimes(1);
+    expect(checkPython).toHaveBeenCalledTimes(1);
 
     // a replaced executable (e.g. an update of the runtime) is checked again
     await utimes(executable, new Date(2026, 0, 1), new Date(2026, 0, 1));
     await expect(getIntegratedPython(directory, () => {})).resolves.toEqual(expected);
-    expect(checkPythonPaths).toHaveBeenCalledTimes(2);
+    expect(checkPython).toHaveBeenCalledTimes(2);
 });
 
 test.skipIf(process.platform === 'win32')(

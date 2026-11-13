@@ -17,7 +17,6 @@ from sanic.log import logger as logger
 import image_limits
 from nodes.impl.colour_profile import convert_to_srgb
 from nodes.impl.dds.texconv import read_dds_texconv as read_dds_texconv
-from nodes.impl.image_formats import get_available_image_formats
 from nodes.impl.image_formats import get_opencv_formats as get_opencv_formats
 from nodes.impl.image_formats import get_pil_formats as get_pil_formats
 from nodes.impl.image_tags import ImageMetadata, read_image_tags
@@ -38,8 +37,8 @@ from .. import io_group
 Image = image_limits.pil_image()
 
 # Pillow builds its plugin registry on first use, and an open() racing another thread's
-# init() can fail to identify a valid file. Load Images decodes items in parallel
-# (SP3b U1), so the registry is built here, once, in the order a first open() builds it.
+# init() can fail to identify a valid file. Load Images decodes items in parallel, so
+# the registry is built here, once, in the order a first open() builds it.
 Image.preinit()
 Image.init()
 
@@ -47,7 +46,7 @@ _Decoder = Callable[[Path], Union[np.ndarray, None]]
 """
 An image decoder.
 
-Of the given image is naturally not supported, the decoder may return `None`
+If the given image is naturally not supported, the decoder may return `None`
 instead of raising an exception. E.g. when the file extension indicates an
 unsupported format.
 """
@@ -112,16 +111,15 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     # Other depths and alpha kinds stay with OpenCV, decided from the tags before Pillow
     # opens a file it may not parse (an RGB float TIFF failed here with a logged
     # "Decoder pil-tiff-alpha failed" on every load).
-    if set(tags.get(258, ())) != {8} or tags.get(338) != (2,):
+    if (
+        set(tags.get(258, ())) != {8}  # BitsPerSample
+        or tags.get(338) != (2,)  # ExtraSamples: unassociated alpha
+    ):
         return None
     # The plugin class reads only the header; Image.open's size check would also warn
     # on large TIFFs that this decoder leaves to OpenCV.
     with TiffImagePlugin.TiffImageFile(path) as im:
-        if (
-            im.mode not in ("RGBA", "LA")
-            or set(tags.get(258, ())) != {8}  # BitsPerSample
-            or tags.get(338) != (2,)  # ExtraSamples: unassociated alpha
-        ):
+        if im.mode not in ("RGBA", "LA"):
             return None
     orientation = tags.get(274, 1)
     source: Path | io.BytesIO = path
@@ -160,8 +158,6 @@ _decoders: list[tuple[str, _Decoder]] = [
     ("texconv-dds", _read_dds),
     ("pil", _read_pil),
 ]
-
-valid_formats = get_available_image_formats()
 
 
 def convert_to_srgb_input() -> BaseInput:

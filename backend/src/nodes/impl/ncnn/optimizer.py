@@ -1,7 +1,5 @@
-from .model import BinaryOpTypes as BOT  # noqa
-from .model import EltwiseOpTypes as EOT  # noqa
-from .model import NcnnModel
 from ..native_ncnn_graph import optimize
+from .model import NcnnModel
 
 
 class NcnnOptimizer:

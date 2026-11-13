@@ -1,9 +1,9 @@
-"""chaiNNer-C's default PNG encoder (native/src/png_encode.c, decision 2026-10-21), CPU only.
+"""chaiNNer-C's default PNG encoder (native/src/png_encode.c), CPU only.
 
 Every default 8-bit PNG (grey, grey + alpha, BGR, BGRA) is MinSum-filtered and compressed by libdeflate level 6
 in row bands, one zlib stream. Checked here: exact pixels through OpenCV, Pillow and chaiNNer-C's own decoder;
 the stream (chunks, CRCs, Adler-32, the filtered rows under libpng's MinSum rule, one IDAT per band); the same
-bytes at every ISA level and after the memory kept between calls held other images; the size on the owner's sample
+bytes at every ISA level and after the memory kept between calls held other images; the size on the sample
 frames; dispatch to OpenCV for everything else; layouts, file errors and concurrent callers.
 """
 
@@ -38,7 +38,7 @@ COLOUR_TYPES = {1: 0, 2: 4, 3: 2, 4: 6}
 MAX_BANDS, MIN_BAND_BYTES, MIN_BAND_ROWS = 32, 16 * 1024, 8
 # Six real sample images (machine-specific: the folder CHAINNER_C_PNG_SAMPLES names; the test skips without it)
 # and the size of fpng 1.0.6's default PNG of each, as cv2.imread(IMREAD_COLOR) decodes it: the encoder this one
-# replaced (2026-10-21).
+# replaced.
 SAMPLES_VARIABLE = "CHAINNER_C_PNG_SAMPLES"
 FPNG_DEFAULT_BYTES = {
     "00022_upscaled.png": 13478313,
@@ -120,7 +120,7 @@ def opencv_decode(data: bytes) -> np.ndarray:
 
 
 def decode_all(data: bytes, path: Path) -> dict[str, np.ndarray]:
-    """The file through OpenCV, Pillow (in its PNG channel order) and chaiNNer-C's own decoder (lane I's
+    """The file through OpenCV, Pillow (in its PNG channel order) and chaiNNer-C's own decoder (the native
     libpng decoder behind Load Image, with OpenCV's calls made to raise)."""
     opencv = opencv_decode(data)
     with Image.open(io.BytesIO(data)) as decoded:

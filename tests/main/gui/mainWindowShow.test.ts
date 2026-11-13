@@ -1,15 +1,23 @@
 import { EventEmitter } from 'events';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { Mock, afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { ChainnerSettings } from '../../../src/common/settings/settings';
 import { OpenArguments } from '../../../src/main/arguments';
 import { createMainWindow } from '../../../src/main/gui/main-window';
+import { ipcMain } from '../../../src/main/safeIpc';
 
-const { windows } = vi.hoisted(() => ({ windows: [] as FakeWindow[] }));
+const { windows, backend, protocol } = vi.hoisted(() => ({
+    windows: [] as FakeWindow[],
+    protocol: { handle: vi.fn(), registerSchemesAsPrivileged: vi.fn() },
+    // the backend the window gets, if it comes up
+    backend: { started: new Promise<unknown>(() => {}) },
+}));
 
 interface FakeWindow extends EventEmitter {
     readonly webContents: EventEmitter;
     readonly show: ReturnType<typeof vi.fn>;
     readonly maximize: ReturnType<typeof vi.fn>;
+    readonly loadURL: ReturnType<typeof vi.fn>;
+    readonly options: { webPreferences: Record<string, unknown> };
 }
 
 vi.mock('electron/common', () => ({ shell: {} }));
@@ -27,9 +35,9 @@ vi.mock('electron/main', async () => {
 
             isDestroyed = vi.fn(() => false);
 
-            loadFile = vi.fn(() => new Promise(() => {}));
+            loadURL = vi.fn(() => new Promise(() => {}));
 
-            constructor() {
+            constructor(readonly options: unknown) {
                 super();
                 windows.push(this as unknown as FakeWindow);
             }
@@ -43,7 +51,9 @@ vi.mock('electron/main', async () => {
         dialog: {},
         ipcMain: emitter(),
         nativeTheme: { shouldUseDarkColors: true },
+        net: { fetch: vi.fn() },
         powerSaveBlocker: {},
+        protocol,
     };
 });
 vi.mock('eventsource', () => ({ default: vi.fn() }));
@@ -52,8 +62,8 @@ vi.mock('../../../src/main/backend/process', () => ({
     getBackendPath: () => 'backend/run.py',
     stopBackendOnQuit: vi.fn(),
 }));
-// The backend never comes up: the window's showing does not wait for it.
-vi.mock('../../../src/main/backend/setup', () => ({ setupBackend: () => new Promise(() => {}) }));
+// By default the backend never comes up: the window's showing does not wait for it.
+vi.mock('../../../src/main/backend/setup', () => ({ setupBackend: () => backend.started }));
 vi.mock('../../../src/main/buildInfo', () => ({ buildInfo: {} }));
 vi.mock('../../../src/main/clipboard', () => ({}));
 vi.mock('../../../src/main/clipboardImage', () => ({}));
@@ -62,7 +72,9 @@ vi.mock('../../../src/main/platform', () => ({
     getRootDir: () => 'root',
     installDir: 'install',
 }));
-vi.mock('../../../src/main/SaveFile', () => ({ openSaveFile: vi.fn() }));
+vi.mock('../../../src/main/SaveFile', () => ({
+    openSaveFile: (path: string) => Promise.resolve({ kind: 'Success', path }),
+}));
 vi.mock('../../../src/main/setting-storage', () => ({ SettingsWriter: vi.fn() }));
 vi.mock('../../../src/main/uiCache', () => ({ UiCache: vi.fn(), getUiCacheFile: vi.fn() }));
 vi.mock('../../../src/main/gui/backendFailure', () => ({ exitOnBackendFailure: vi.fn() }));
@@ -140,3 +152,58 @@ test.each<NodeJS.Platform>(['win32', 'darwin'])(
         expect(window.maximize).toHaveBeenCalledOnce();
     }
 );
+
+test('the built renderer loads over its scheme, not from file://, keeping its code cache', () => {
+    protocol.handle.mockClear();
+    const window = openWindow('win32');
+
+    expect(window.loadURL).toHaveBeenCalledWith('chainner-ui://app/index.html');
+    expect(protocol.handle).toHaveBeenCalledOnce();
+    expect(window.options.webPreferences.v8CacheOptions).toBe('bypassHeatCheck');
+});
+
+test('the dev server loads when there is one, and the scheme serves nothing', () => {
+    protocol.handle.mockClear();
+    vi.stubGlobal('MAIN_WINDOW_VITE_DEV_SERVER_URL', 'http://localhost:5173');
+    const window = openWindow('win32');
+
+    expect(window.loadURL).toHaveBeenCalledWith('http://localhost:5173');
+    expect(protocol.handle).not.toHaveBeenCalled();
+});
+
+/** The last handler registered for `channel`. */
+const handlerOf = (channel: string): (() => unknown) => {
+    const mocked = ipcMain as unknown as { handle: Mock<[string, () => unknown]> };
+    const { calls } = mocked.handle.mock;
+    const handler = calls.filter(([name]) => name === channel).at(-1)?.[1];
+    if (!handler) throw new Error(`No handler for `);
+    return handler;
+};
+/** The answer the window's page gets from `channel` (on each start, for the start-up ones). */
+const answer = (channel: string) => handlerOf(channel)();
+
+// View > Reload starts the page again, which asks again: the chain on screen is newer by then.
+test.each([
+    ['the chain the app was opened with', { ...args, file: 'work.chn' }, {}],
+    ['the Startup Template', args, { startupTemplate: 'template.chn' }],
+])('%s opens at the first start of the page only', async (_, openArgs, extra) => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    createMainWindow(openArgs, { ...settings(false), ...extra } as ChainnerSettings).catch(
+        (error) => {
+            throw error;
+        }
+    );
+
+    expect(await answer('get-auto-open')).toMatchObject({ kind: 'Success' });
+    expect(await answer('get-auto-open')).toBeUndefined();
+});
+
+test('an update is refused before its download on a backend the app did not start', async () => {
+    backend.started = Promise.resolve({ owned: false, url: 'http://127.0.0.1:8000', python: {} });
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    createMainWindow(args, settings(false)).catch(() => {});
+    // registered once the backend is up
+    await vi.waitFor(() => expect(() => handlerOf('download-update')).not.toThrow());
+
+    await expect(answer('download-update')).rejects.toThrow('did not start');
+});

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import verify_framework_runtime as runtime
+from package_files import hash_file
 from verify_runtime import PROJECT, edge, make_node, write_json
 
 SCHEMAS = {"chainner:image:load_images", "chainner:image:resize", "chainner:image:save"}
@@ -106,9 +107,7 @@ def provenance(backend: Path) -> dict[str, str]:
     result = runtime.source_hashes(backend)
     for path in sorted(backend.rglob("*")):
         if path.is_file() and path.suffix in {".dll", ".pyd"}:
-            result[path.relative_to(backend).as_posix()] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
+            result[path.relative_to(backend).as_posix()] = hash_file(path)
     return result
 
 
@@ -152,7 +151,8 @@ def run(
     finally:
         runtime.request = original_request
         write_json(root / f"{label}-coarse.json", samples)
-    assert provenance(backend) == before, "Backend changed during validation"
+    if provenance(backend) != before:
+        raise AssertionError("Backend changed during validation")
     write_json(root / f"{label}-result.json", result)
 
 
@@ -164,33 +164,39 @@ def compare(root: Path, before: str, after: str) -> None:
     inventories = []
     for label, directory in ((before, a), (after, b)):
         result = json.loads((root / f"{label}-result.json").read_text())
-        assert result["success"] and result["fixtures"], f"Incomplete run: {label}"
+        if not (result["success"] and result["fixtures"]):
+            raise AssertionError(f"Incomplete run: {label}")
         expected = {
             Path(case["name"]) / name: digest
             for case in result["fixtures"]
             for name, digest in case["contract"]["files"].items()
         }
-        assert expected, f"Empty run: {label}"
+        if not expected:
+            raise AssertionError(f"Empty run: {label}")
         actual = {p.relative_to(directory) for p in directory.rglob("*") if p.is_file()}
-        assert actual == expected.keys(), f"Incomplete files: {label}"
+        if actual != expected.keys():
+            raise AssertionError(f"Incomplete files: {label}")
         for relative, digest in expected.items():
-            assert (
-                hashlib.sha256((directory / relative).read_bytes()).hexdigest()
-                == digest
-            ), str(relative)
+            if hash_file(directory / relative) != digest:
+                raise AssertionError(f"Changed file: {relative}")
         inventories.append(set(expected))
-    assert inventories[0] == inventories[1], "Different workloads"
+    if inventories[0] != inventories[1]:
+        raise AssertionError("Different workloads")
     paths = sorted(p.relative_to(a) for p in a.rglob("*.png"))
-    assert len(paths) == len(inventories[0])
-    assert paths == sorted(p.relative_to(b) for p in b.rglob("*.png"))
+    if len(paths) != len(inventories[0]):
+        raise AssertionError("Different PNG count")
+    if paths != sorted(p.relative_to(b) for p in b.rglob("*.png")):
+        raise AssertionError("Different PNG files")
     byte_differences = 0
     for relative in paths:
         left, right = (a / relative).read_bytes(), (b / relative).read_bytes()
         byte_differences += left != right
         x = cv2.imdecode(np.frombuffer(left, np.uint8), cv2.IMREAD_UNCHANGED)
         y = cv2.imdecode(np.frombuffer(right, np.uint8), cv2.IMREAD_UNCHANGED)
-        assert x is not None and y is not None
-        assert x.dtype == y.dtype, str(relative)
+        if x is None or y is None:
+            raise AssertionError(f"Undecodable PNG: {relative}")
+        if x.dtype != y.dtype:
+            raise AssertionError(f"Different dtype: {relative}")
         np.testing.assert_array_equal(x, y, err_msg=str(relative))
     write_json(
         root / "comparison.json",

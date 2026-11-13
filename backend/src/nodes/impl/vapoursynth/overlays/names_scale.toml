@@ -1,0 +1,344 @@
+# Names, order and start values of the Resize, Anti-alias and Dehalo nodes (wave 2).
+
+[method."vskernels.*.scale"]
+rank = 1
+label = "Resize with a kernel (scale)"
+class_default = "Catrom"
+labels = { linear = "Linear light", sigmoid = "Sigmoid light", sar = "Use the clip's pixel shape", keep_ar = "Keep aspect ratio", border_handling = "Edge padding (0-2)", sample_grid_model = "Edge alignment (0-1)", shift = "Shift (top, left)", blur = "Blur", taps = "Taps", radius = "Radius", antiring = "Antiringing", class = "Kernel" }
+
+[method."std.Crop"]
+rank = 2
+label = "Cut off edges (Crop)"
+defaults = { left = 0, right = 0, top = 0, bottom = 0 }
+
+[method."vskernels.*.descale"]
+rank = 3
+label = "Descale: undo an upscale (descale)"
+class_default = "Catrom"
+simple = ["class", "width", "height"]
+labels = { linear = "Linear light", sigmoid = "Sigmoid light", border_handling = "Edge padding (0-2)", sample_grid_model = "Edge alignment (0-1)", shift = "Shift (top, left)", blur = "Blur", taps = "Taps", field_based = "Field order", ignore_mask = "Areas to leave out", class = "Kernel" }
+defaults = { width = 1280, height = 720 }
+
+[method."std.AddBorders"]
+rank = 4
+label = "Add borders (AddBorders)"
+simple = ["left", "right", "top", "bottom", "color"]
+
+[method."vskernels.*.rescale"]
+label = "Upscale a descaled clip (rescale)"
+class_default = "Catrom"
+simple = ["class", "width", "height"]
+labels = { linear = "Linear light", sigmoid = "Sigmoid light", border_handling = "Edge padding (0-2)", sample_grid_model = "Edge alignment (0-1)", shift = "Shift (top, left)", blur = "Blur", taps = "Taps", field_based = "Field order", ignore_mask = "Areas to leave out", class = "Kernel" }
+defaults = { width = 1920, height = 1080 }
+
+[method."vskernels.*.resample"]
+label = "Convert format with a kernel (resample)"
+class_default = "Catrom"
+labels = { taps = "Taps", class = "Kernel" }
+
+[method."vskernels.*.shift"]
+label = "Shift by part of a pixel (shift)"
+class_default = "Catrom"
+labels = { taps = "Taps", shifts_or_top = "Shift up (or top, left)", shift_left = "Shift left", class = "Kernel" }
+defaults = { shifts_or_top = "0" }
+
+[method."vskernels.*.supersample"]
+label = "Enlarge by a factor (supersample)"
+class_default = "Catrom"
+labels = { shift = "Shift (top, left)", blur = "Blur", taps = "Taps", radius = "Radius", antiring = "Antiringing", rfactor = "Size factor", class = "Kernel" }
+
+[method."vskernels.*.bob"]
+family = "Deinterlace"
+class_default = "Catrom"
+labels = { taps = "Taps" }
+
+[method."vskernels.*.deinterlace"]
+family = "Deinterlace"
+class_default = "Catrom"
+labels = { taps = "Taps" }
+
+[method."vskernels.*.scale_function"]
+label = "Bare plugin scale (scale_function)"
+class_default = "CustomBilinear"
+labels = { taps = "Taps", class = "Kernel" }
+
+[method."vskernels.*.resample_function"]
+label = "Bare plugin resample (resample_function)"
+class_default = "CustomBilinear"
+labels = { taps = "Taps", class = "Kernel" }
+
+[method."vskernels.*.descale_function"]
+label = "Bare plugin descale (descale_function)"
+class_default = "CustomBilinear"
+labels = { taps = "Taps", class = "Kernel" }
+defaults = { width = 1280, height = 720 }
+
+[method."vskernels.*.rescale_function"]
+label = "Bare plugin rescale (rescale_function)"
+class_default = "CustomBilinear"
+labels = { taps = "Taps", class = "Kernel" }
+defaults = { width = 1920, height = 1080 }
+
+[method."vskernels.resample_to"]
+label = "Convert to a format (resample_to)"
+labels = { out_fmt = "Format", resampler = "Kernel" }
+
+[method."vsscale.*.scale"]
+label = "Smart resize: models, shaders (vsscale)"
+labels = { shift = "Shift (top, left)", scaler = "Scaler", max_instances = "Most model copies", tilesize = "Tile size", copy_props = "Keep frame properties", base_scaler = "Scaler to clamp", reference = "Clamp reference", class = "Scaler" }
+
+[method."vsscale.*.supersample"]
+label = "Smart enlarge (vsscale supersample)"
+labels = { shift = "Shift (top, left)", rfactor = "Size factor", scaler = "Scaler", max_instances = "Most model copies", tilesize = "Tile size", base_scaler = "Scaler to clamp", reference = "Clamp reference", class = "Scaler" }
+
+[method."vsscale.Rescale.default_credit_mask"]
+label = "Credits mask (Rescale credit mask)"
+labels = { border_handling = "Edge padding (0-2)", sample_grid_model = "Edge alignment (0-1)", shift = "Shift (top, left)", field_based = "Field order", expand = "Mask width", thr = "Threshold", base_height = "Base height", base_width = "Base width", crop = "Crop before descale", upscaler = "Upscaler", downscaler = "Downscaler" }
+defaults = { height = 720, kernel = "'Bilinear'", upscaler = "'Catrom'" }
+
+[method."vsscale.Rescale.default_line_mask"]
+label = "Line mask (Rescale line mask)"
+labels = { border_handling = "Edge padding (0-2)", sample_grid_model = "Edge alignment (0-1)", shift = "Shift (top, left)", field_based = "Field order", scaler = "Scaler", base_height = "Base height", base_width = "Base width", crop = "Crop before descale", upscaler = "Upscaler", downscaler = "Downscaler" }
+defaults = { height = 720, kernel = "'Bilinear'", upscaler = "'Catrom'" }
+
+[method."vsscale.descale_detail_mask"]
+label = "Full-size detail mask (descale_detail_mask)"
+labels = { xxpand = "Grow (before, after)", thr = "Threshold", inflate = "Soften steps", rescaled = "Rescaled clip" }
+
+[method."vsscale.descale_error_mask"]
+label = "Descale error mask (descale_error_mask)"
+labels = { blur = "Blur", bwbias = "Colour bias", tr = "Temporal radius", thr = "Threshold", expands = "Grow per step", rescaled = "Rescaled clip" }
+
+[method."vsscale.pre_ss"]
+label = "Filter at a larger size (pre_ss)"
+labels = { rfactor = "Size factor", pscale = "Detail restore (0-1)", downscaler = "Downscaler", supersampler = "Supersampler" }
+
+[method."vsscale.pscale_blend"]
+hide = true
+
+[method."vsscale.scale_var_clip"]
+hide = true
+label = "Resize a varying-size clip (scale_var_clip)"
+
+[method."std.CropAbs"]
+label = "Crop to a size (CropAbs)"
+simple = ["width", "height", "left", "top"]
+defaults = { width = 1280, height = 720 }
+
+[method."std.CropRel"]
+hide = true
+
+[method."std.FlipHorizontal"]
+label = "Flip left-right (FlipHorizontal)"
+
+[method."std.FlipVertical"]
+label = "Flip top-bottom (FlipVertical)"
+
+[method."std.Transpose"]
+label = "Swap rows and columns (Transpose)"
+
+[method."std.Turn90"]
+label = "Turn 90° clockwise (Turn90)"
+
+[method."std.Turn180"]
+label = "Turn 180° (Turn180)"
+
+[method."std.Turn270"]
+label = "Turn 90° anticlockwise (Turn270)"
+
+[method."vstools.Padder.mirror"]
+label = "Pad by mirroring (Padder mirror)"
+simple = ["left", "right", "top", "bottom"]
+labels = { input_width = "Width before padding", input_height = "Height before padding" }
+
+[method."vstools.Padder.repeat"]
+label = "Pad by repeating the edge (Padder repeat)"
+simple = ["left", "right", "top", "bottom"]
+labels = { input_width = "Width before padding", input_height = "Height before padding" }
+
+[method."vstools.Padder.color"]
+label = "Pad with a colour (Padder color)"
+simple = ["left", "right", "top", "bottom", "color"]
+labels = { input_width = "Width before padding", input_height = "Height before padding" }
+
+[method."vstools.Padder.crop"]
+label = "Crop padding back off (Padder crop)"
+simple = ["left", "right", "top", "bottom", "crop_scale"]
+labels = { input_width = "Width before padding", input_height = "Height before padding", crop_scale = "Crop scale" }
+defaults = { crop_scale = "1" }
+
+[method."vsaa.NNEDI3.antialias"]
+rank = 1
+label = "Anti-alias (NNEDI3)"
+labels = { tff = "Top field first", double_rate = "Double rate", nsize = "Neighbourhood size (0-6)", nns = "Network size (0-4)", qual = "Quality (1-2)", etype = "Error type (0-1)", pscrn = "Prescreener (0-4)", gpu = "Run on the GPU (Vulkan)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction", direction = "Direction" }
+
+[method."vsaa.EEDI3.antialias"]
+rank = 2
+label = "Anti-alias (EEDI3)"
+labels = { tff = "Top field first", double_rate = "Double rate", nrad = "Neighbourhood radius (0-3)", mdis = "Max connection distance", hp = "Half-pixel search", vcheck = "Reliability check (0-3)", vthresh = "Reliability thresholds", sclip = "Fallback clip", mclip = "Mask", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction", direction = "Direction" }
+
+[method."vsaa.based_aa"]
+rank = 3
+label = "Anti-alias edges at a larger size (based_aa)"
+labels = { rfactor = "Size factor", mask_thr = "Edge threshold", pscale = "Detail restore (0-1)", show_mask = "Show the mask", aa_kwargs = "Anti-aliaser options", downscaler = "Downscaler", supersampler = "Supersampler" }
+defaults = { supersampler = "'Lanczos'" }
+
+[method."vsaa.SangNom.antialias"]
+label = "Anti-alias, fast (SangNom)"
+labels = { tff = "Top field first", double_rate = "Double rate", aa = "Strength (0-128)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction", direction = "Direction" }
+
+[method."vsaa.pre_aa"]
+label = "Light anti-alias (pre_aa)"
+labels = { transpose_first = "Columns first", direction = "Direction" }
+
+[method."vsaa.NNEDI3.scale"]
+label = "Upscale with smooth lines (NNEDI3 scale)"
+labels = { shift = "Shift (top, left)", tff = "Top field first", double_rate = "Double rate", nsize = "Neighbourhood size (0-6)", nns = "Network size (0-4)", qual = "Quality (1-2)", etype = "Error type (0-1)", pscrn = "Prescreener (0-4)", gpu = "Run on the GPU (Vulkan)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.NNEDI3.supersample"]
+label = "Enlarge by a factor (NNEDI3 supersample)"
+labels = { shift = "Shift (top, left)", tff = "Top field first", double_rate = "Double rate", rfactor = "Size factor", nsize = "Neighbourhood size (0-6)", nns = "Network size (0-4)", qual = "Quality (1-2)", etype = "Error type (0-1)", pscrn = "Prescreener (0-4)", gpu = "Run on the GPU (Vulkan)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.NNEDI3.bob"]
+family = "Deinterlace"
+labels = { double_rate = "Double rate", nsize = "Neighbourhood size (0-6)", nns = "Network size (0-4)", qual = "Quality (1-2)", etype = "Error type (0-1)", pscrn = "Prescreener (0-4)", gpu = "Run on the GPU (Vulkan)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.EEDI3.scale"]
+label = "Upscale with smooth lines (EEDI3 scale)"
+labels = { shift = "Shift (top, left)", tff = "Top field first", double_rate = "Double rate", nrad = "Neighbourhood radius (0-3)", mdis = "Max connection distance", hp = "Half-pixel search", vcheck = "Reliability check (0-3)", vthresh = "Reliability thresholds", sclip = "Fallback clip", mclip = "Mask", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.EEDI3.supersample"]
+label = "Enlarge by a factor (EEDI3 supersample)"
+labels = { shift = "Shift (top, left)", tff = "Top field first", double_rate = "Double rate", rfactor = "Size factor", nrad = "Neighbourhood radius (0-3)", mdis = "Max connection distance", hp = "Half-pixel search", vcheck = "Reliability check (0-3)", vthresh = "Reliability thresholds", sclip = "Fallback clip", mclip = "Mask", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.EEDI3.bob"]
+family = "Deinterlace"
+labels = { double_rate = "Double rate", nrad = "Neighbourhood radius (0-3)", mdis = "Max connection distance", hp = "Half-pixel search", vcheck = "Reliability check (0-3)", vthresh = "Reliability thresholds", sclip = "Fallback clip", mclip = "Mask", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.SangNom.scale"]
+label = "Upscale with smooth lines (SangNom scale)"
+labels = { shift = "Shift (top, left)", tff = "Top field first", double_rate = "Double rate", aa = "Strength (0-128)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.SangNom.supersample"]
+label = "Enlarge by a factor (SangNom supersample)"
+labels = { shift = "Shift (top, left)", tff = "Top field first", double_rate = "Double rate", rfactor = "Size factor", aa = "Strength (0-128)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.SangNom.bob"]
+family = "Deinterlace"
+labels = { double_rate = "Double rate", aa = "Strength (0-128)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.EEDI3.deinterlace"]
+family = "Deinterlace"
+labels = { double_rate = "Double rate", nrad = "Neighbourhood radius (0-3)", mdis = "Max connection distance", hp = "Half-pixel search", vcheck = "Reliability check (0-3)", vthresh = "Reliability thresholds", sclip = "Fallback clip", mclip = "Mask", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.SangNom.deinterlace"]
+family = "Deinterlace"
+labels = { double_rate = "Double rate", aa = "Strength (0-128)", transpose_first = "Columns first", scaler = "Scaler", noshift = "Skip shift correction" }
+
+[method."vsaa.BWDIF.deinterlace"]
+family = "Deinterlace"
+labels = { double_rate = "Double rate", edeint = "Spatial guess from" }
+
+[method."vsaa.BWDIF.bob"]
+family = "Deinterlace"
+label = "Deinterlace to double rate (BWDIF bob)"
+
+[method."vsdehalo.fine_dehalo"]
+rank = 1
+label = "Dehalo, lines protected (fine_dehalo)"
+simple = ["brightstr", "darkstr", "rx", "contra"]
+labels = { blur = "Blur", lowsens = "Low sensitivity (0-100)", highsens = "High sensitivity (0-100)", ss = "Supersample factor", darkstr = "Dark halo strength", brightstr = "Bright halo strength", attach_masks = "Store masks as properties", rx = "Halo width", ry = "Halo height", edgemask = "Edge detector", thmi = "Sharp edge minimum", thma = "Sharp edge maximum", thlimi = "Extra edge minimum", thlima = "Extra edge maximum", exclude = "Leave dense lines alone", edgeproc = "Edge processing", contra = "Contra-sharpening", pre_ss = "Pre-supersample (2 or 4)" }
+
+[method."vsdehalo.dehalo_alpha"]
+rank = 2
+label = "Dehalo (dehalo_alpha)"
+simple = ["brightstr", "darkstr", "lowsens", "highsens"]
+labels = { blur = "Blur", lowsens = "Low sensitivity (0-100)", highsens = "High sensitivity (0-100)", ss = "Supersample factor", darkstr = "Dark halo strength", brightstr = "Bright halo strength", attach_masks = "Store masks as properties" }
+
+[method."vsdehalo.edge_cleaner"]
+rank = 3
+label = "Clean edges (edge_cleaner)"
+labels = { edgemask = "Edge detector", rmode = "Repair mode", smode = "Strong mode", hot = "Fix specks" }
+
+[method."vsdehalo.hq_dering"]
+rank = 4
+label = "Dering (hq_dering)"
+labels = { contra = "Contra-sharpening", mrad = "Mask grow", msmooth = "Mask soften", minp = "Mask shrink", mthr = "Edge threshold", incedge = "Include edges", drrep = "Detail repair mode", elast = "Limit softness", dark_thr = "Darkening limit", bright_thr = "Brightening limit", ringmask = "Ringing mask", smooth = "Smoothed clip or prefilter", ref = "Reference clip" }
+
+[method."vsdehalo.smooth_dering"]
+hide = true
+
+[method."vsdehalo.fine_dehalo2"]
+hide = true
+label = "Remove outer halo rings (fine_dehalo2)"
+
+[method."vsdehalo.YAHR"]
+label = "Remove thin halos (YAHR)"
+labels = { shift = "Mask shift", blur = "Warp blur", depth = "Warp depth", expand = "Mask width" }
+
+[method."vsdehalo.vine_dehalo"]
+label = "Dehalo with NL-Means (vine_dehalo)"
+labels = { sharp = "Supersample blend", downscaler = "Downscaler", supersampler = "Supersampler" }
+
+[method."vsdehalo.FixBorderBrightness.process"]
+hide = true
+
+[method."vsscale.ArtCNN.inference"]
+hide = true
+
+[method."vsscale.ArtCNN.preprocess_clip"]
+hide = true
+
+[method."vsscale.ArtCNN.postprocess_clip"]
+hide = true
+
+[method."vsscale.DPIR.inference"]
+hide = true
+
+[method."vsscale.DPIR.preprocess_clip"]
+hide = true
+
+[method."vsscale.DPIR.postprocess_clip"]
+hide = true
+
+[method."vsscale.Waifu2x.inference"]
+hide = true
+
+[method."vsscale.Waifu2x.preprocess_clip"]
+hide = true
+
+[method."vsscale.Waifu2x.postprocess_clip"]
+hide = true
+
+[method."vsscale.GenericOnnxScaler.inference"]
+hide = true
+
+[method."vsscale.GenericOnnxScaler.preprocess_clip"]
+hide = true
+
+[method."vsscale.GenericOnnxScaler.postprocess_clip"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.bob"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.deinterlace"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.descale"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.resample"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.rescale"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.scale"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.shift"]
+hide = true
+
+[method."vsdeband.GrainFactoryBicubic.supersample"]
+hide = true

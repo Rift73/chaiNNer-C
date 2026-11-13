@@ -1,6 +1,6 @@
 /* Port of regex-syntax 0.7.2 (src/ast/mod.rs, src/hir/mod.rs Error), MIT OR Apache-2.0. */
 /* The regex front end's private types: the AST (ast/mod.rs), its arena, and the errors
- * that parse.c and translate.c report and error.c formats. Private to X1's files. */
+ * that parse.c and translate.c report and error.c formats. Private to the front end. */
 #ifndef CHAINNER_REGEX_AST_H
 #define CHAINNER_REGEX_AST_H
 #include "chainner_hir.h"

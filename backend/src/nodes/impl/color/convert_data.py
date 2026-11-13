@@ -100,7 +100,7 @@ def __rgb_to_hsv(img: np.ndarray) -> np.ndarray:
     img = cvt_color(img, cv2.COLOR_BGR2HSV)
     if img.dtype == np.float32:
         return representation(img, 2)
-    img[:, :, 0] /= 360  # type: ignore
+    img[:, :, 0] /= 360
     return __rev3(img)
 
 
@@ -116,10 +116,10 @@ def __rgb_to_hsl(img: np.ndarray) -> np.ndarray:
     img = cvt_color(img, cv2.COLOR_BGR2HLS)
     if img.dtype == np.float32:
         return representation(img, 4)
-    h = img[:, :, 0] / 360  # type: ignore
+    h = img[:, :, 0] / 360
     l = img[:, :, 1]
     s = img[:, :, 2]
-    return merge_channels(l, s, h) if img.dtype == np.float32 else cv2.merge((l, s, h))
+    return cv2.merge((l, s, h))
 
 
 def __hsl_to_rgb(img: np.ndarray) -> np.ndarray:
@@ -178,9 +178,9 @@ def __rgb_to_lab(img: np.ndarray) -> np.ndarray:
     img = cvt_color(img, cv2.COLOR_BGR2LAB)
     if img.dtype == np.float32:
         return representation(img, 6)
-    l = img[:, :, 0] / 100  # type: ignore
-    a = (img[:, :, 1] + 127) / 254  # type: ignore
-    b = (img[:, :, 2] + 127) / 254  # type: ignore
+    l = img[:, :, 0] / 100
+    a = (img[:, :, 1] + 127) / 254
+    b = (img[:, :, 2] + 127) / 254
     return cv2.merge((b, a, l))
 
 

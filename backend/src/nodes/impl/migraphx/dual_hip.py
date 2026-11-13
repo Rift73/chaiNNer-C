@@ -43,6 +43,13 @@ MAX_SHARED = {"hip": 65536, "cuda": 49152}
 # The dynamic exporter's retrieval block (vendor/dual_tensorrt/scripts/dual_tensorrt/
 # dynamic.py, WINDOW)
 RETRIEVAL_BLOCK = 96
+# The exporter's plugins that have no op here (and no HIP kernel), by their name's part
+# before the key: an ONNX with any of them is refused (lower)
+TENSORRT_ONLY = {
+    "DualLocalNA": "local neighborhood attention",
+    "DualXR": "retrieval neighborhood attention",
+    "DualRowSum": "router row sums",
+}
 
 
 @dataclass(frozen=True)
@@ -233,7 +240,8 @@ def lower(model: onnx.ModelProto, key: str, target: Target) -> onnx.ModelProto:
     region (stats, tau, qkv) and apply (qkv, weight, matrices), statistics and
     attention matrices passing between them as tensors; Project (x, weight, residual)
     -> project; NA (qkv, bq, bk; window) -> na; the attention barrier -> barrier.
-    Tile sizes the library's grids depend on travel as attributes too (rows, parts)."""
+    Tile sizes the library's grids depend on travel as attributes too (rows, parts).
+    A plugin the library has no op for (TENSORRT_ONLY) is refused."""
     channels = int(key.partition("_")[0][1:])
     read = {name for node in model.graph.node for name in node.input}
     read |= {output.name for output in model.graph.output}
@@ -313,6 +321,11 @@ def lower(model: onnx.ModelProto, key: str, target: Target) -> onnx.ModelProto:
             )
         elif op == "DualAttentionBarrier_TRT":
             nodes.append(custom_node("barrier", inputs, outputs[0], name))
+        elif (part := op.removesuffix(f"_{key}_TRT")) in TENSORRT_ONLY:
+            raise ValueError(
+                f"DUAL's {TENSORRT_ONLY[part]} ({op}): a TensorRT plugin only, which"
+                " MIGraphX has no operator for. Run this model with PyTorch."
+            )
         elif op.startswith("Dual") and op.endswith("_TRT"):
             raise ValueError(f"Unexpected DUAL plugin node {op}")
         else:
@@ -421,6 +434,7 @@ def name_input(model: onnx.ModelProto, name: str) -> None:
 __all__ = [
     "DOMAIN",
     "OP_PREFIX",
+    "TENSORRT_ONLY",
     "Target",
     "compile_kernel",
     "fix_size",

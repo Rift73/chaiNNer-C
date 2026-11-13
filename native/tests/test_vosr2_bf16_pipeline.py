@@ -531,7 +531,7 @@ def test_a_build_that_outlasts_its_limit_is_stopped(monkeypatch, tmp_path):
 def test_a_set_cached_plain_is_compressed_in_place_without_a_rebuild(
     monkeypatch, tmp_path
 ):
-    # Sets cached before 2026-10-17 hold plain plans; their manifests hash those.
+    # Older cached sets hold plain plans; their manifests hash those.
     context = cast(
         NodeContext,
         SimpleNamespace(storage_dir=tmp_path, node_id="plain", suspend=lambda: None),

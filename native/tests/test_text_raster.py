@@ -67,7 +67,7 @@ assert _spec is not None and _spec.loader is not None
 UTILS = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(UTILS)
 ORIGINAL.__dict__.update(normalize=UTILS.normalize, to_uint8=UTILS.to_uint8)
-# chaiNNer-C's contract (ruling of 2026-10-23), not upstream's: a computed font size
+# chaiNNer-C's contract, not upstream's: a computed font size
 # has a floor of 1, where upstream's Pillow call refuses size 0.
 ORIGINAL.__dict__.update(
     ImageFont=types.SimpleNamespace(

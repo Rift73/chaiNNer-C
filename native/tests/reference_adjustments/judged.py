@@ -1,4 +1,4 @@
-"""Frozen upstream adjustments under chaiNNer-C's contract (2026-10-23), where upstream
+"""Frozen upstream adjustments under chaiNNer-C's contract, where upstream
 divides 0 by 0: unpremultiplying keeps a zero channel of a zero-alpha pixel (NaN in
 every transparent black pixel), and Color Levels with equal input black and white is a
 step, a value at that level taking the output white (NaN there)."""

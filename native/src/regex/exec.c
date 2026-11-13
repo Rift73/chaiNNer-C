@@ -554,7 +554,6 @@ chn_regex_status chn_regex_compile(const char *pattern, size_t pattern_len,
         return st;
     }
     free(perr.ptr);
-    if (ps == CHN_HIR_ERROR_UNIMPLEMENTED) return CHN_REGEX_UNIMPLEMENTED;
     if (ps != CHN_HIR_OK) return CHN_REGEX_ERROR_NOMEM;
 
     const chn_hir_properties *props = &expr.props;

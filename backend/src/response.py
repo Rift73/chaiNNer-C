@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
+from sanic.exceptions import ServerError
+
 from events import ExecutionErrorSource
 
 # A worker's /run or /kill response has this header when the GPU's CUDA context
 # is broken (a sticky error): nothing in it can be freed or run again, so the
 # host restarts the worker (server.cuda_context_broken).
 RESTART_WORKER_HEADER = "X-chaiNNer-Restart-Worker"
+
+# What writing an event stream raises once its client has gone (the app's window closed, a
+# reset connection), the quiet end of the stream: the socket's error, or Sanic's ServerError
+# once it has ended the stream. A closing transport raises RequestCancelled, a
+# CancelledError, which ends the handler by itself.
+CLIENT_GONE = (ConnectionError, ServerError)
 
 
 class SuccessResponse(TypedDict):

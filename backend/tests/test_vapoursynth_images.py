@@ -539,8 +539,9 @@ def test_an_image_clip_is_tagged_as_an_image(
     clip = image_clip(path, NODE, 0, "rgb")
     script = tmp_path / "tags.vpy"
     script.write_text(compile_script([(clip, "x")], cache_mb=256), encoding="utf-8")
-    info, props = clip_props(script, 0)
-    assert props == tags
+    info, props, _ = clip_props(script, 0)
+    # Progressive, as every image is.
+    assert props == {**tags, "_FieldBased": 0}
     assert info.format_name == ("GrayS" if image.ndim == 2 else "RGBS")
     assert info.num_frames == 1
 
@@ -1413,7 +1414,7 @@ def test_a_luma_clip_is_gray_with_no_matrix(vs: Any, tmp_path: Path) -> None:
     clip = image_clip(path, NODE, 0, "luma")
     script = tmp_path / "tags.vpy"
     script.write_text(compile_script([(clip, "x")], cache_mb=256), encoding="utf-8")
-    info, props = clip_props(script, 0)
+    info, props, _ = clip_props(script, 0)
     assert info.format_name == "GrayS"
     assert "_Matrix" not in props
 

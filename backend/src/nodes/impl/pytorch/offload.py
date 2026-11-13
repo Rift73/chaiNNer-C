@@ -172,20 +172,47 @@ class OffloadMode(TorchDispatchMode):
         return out
 
 
+def _cap(device: torch.device) -> int:
+    """The memory PyTorch may use on `device` during a forward: the free memory and its
+    own cache less HEADROOM, within the process's current cap."""
+    free, total = torch.cuda.mem_get_info(device)
+    reserved = torch.cuda.memory_reserved(device)
+    previous = torch.cuda.get_per_process_memory_fraction(device)
+    return min(free + reserved - HEADROOM, int(previous * total))
+
+
+def runs_plain(device: torch.device, pixels: int, bytes_per_pixel: float) -> bool:
+    """Whether a forward of `pixels` input pixels whose peak is `bytes_per_pixel` each runs
+    as is (no dispatch mode) when offloaded is handed that figure."""
+    if device.type != "cuda" or pixels < MIN_PIXELS:
+        return True
+    allocated = torch.cuda.memory_allocated(device)
+    return allocated + bytes_per_pixel * pixels <= _cap(device) - WORKSPACE
+
+
 @contextmanager
-def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
+def offloaded(
+    module: torch.nn.Module,
+    x: torch.Tensor,
+    expected_bytes_per_pixel: float | None = None,
+) -> Iterator[None]:
     """Runs a forward of `module` on `x` (a CUDA batch, NCHW) with its activations moved to
-    RAM when they would not fit in the GPU's free memory; as is otherwise."""
+    RAM when they would not fit in the GPU's free memory; as is otherwise.
+
+    `expected_bytes_per_pixel`, a whole-image estimate of the model's peak, stands in for
+    the learned peak until the first forward has measured one: a forward that fits by it
+    runs as is under the cap (an overrun is an out-of-memory error, which the tiler
+    splits, not a spill), without the offload's dispatch mode, which keeps custom kernels
+    off."""
     pixels = x.shape[-2] * x.shape[-1]
     device = x.device
     if device.type != "cuda" or pixels < MIN_PIXELS:
         yield
         return
-    free, total = torch.cuda.mem_get_info(device)
-    reserved = torch.cuda.memory_reserved(device)
+    total = torch.cuda.mem_get_info(device)[1]
     allocated = torch.cuda.memory_allocated(device)
     previous = torch.cuda.get_per_process_memory_fraction(device)
-    cap = min(free + reserved - HEADROOM, int(previous * total))
+    cap = _cap(device)
     if cap <= WORKSPACE:
         raise torch.OutOfMemoryError(
             "CUDA memory is insufficient for activation offload and its workspace."
@@ -193,17 +220,25 @@ def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
     known = _bytes_per_pixel.get(module)
     torch.cuda.reset_peak_memory_stats(device)
     mode = None
-    if known is None or allocated + known * pixels > cap - WORKSPACE:
+    capped = (
+        known is None
+        and expected_bytes_per_pixel is not None
+        and allocated + expected_bytes_per_pixel * pixels <= cap - WORKSPACE
+    )
+    if not capped and (known is None or allocated + known * pixels > cap - WORKSPACE):
         mode = OffloadMode(device, cap)
     try:
-        if mode is None:
+        if mode is None and not capped:
             yield
         else:
             torch.cuda.set_per_process_memory_fraction(cap / total, device)
-            with mode:
+            if mode is None:
                 yield
+            else:
+                with mode:
+                    yield
     finally:
-        if mode is not None:
+        if mode is not None or capped:
             torch.cuda.set_per_process_memory_fraction(previous, device)
         peak = torch.cuda.max_memory_allocated(device) - allocated
         if mode is None or mode.out_bytes == 0:
@@ -219,8 +254,8 @@ def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
 
 
 def release_pinned_memory() -> None:
-    """Gives the RAM pinned for moved activations back to Windows (2026-10-20: when a
-    run ends, so an idle worker holds no locked RAM; a run's later images reuse it). PyTorch
+    """Gives the RAM pinned for moved activations back to Windows (when a run ends, so
+    an idle worker holds no locked RAM; a run's later images reuse it). PyTorch
     keeps it until the process ends otherwise, and 2.14 frees it only through this internal
     call (the runtime pins torch)."""
     global _pinned

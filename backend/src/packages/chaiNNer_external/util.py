@@ -32,15 +32,14 @@ def decode_base64_image(image_bytes: bytes | str) -> np.ndarray:
 def encode_base64_image(image_nparray: np.ndarray) -> str:
     image_nparray = to_uint8(image_nparray)
     _, _, c = get_h_w_c(image_nparray)
-    if c == 1:
-        # PIL supports grayscale images just fine, so we don't need to do any conversion
-        pass
-    elif c == 3:
+    if c == 3:
         image_nparray = cv2.cvtColor(image_nparray, cv2.COLOR_BGR2RGB)
     elif c == 4:
         image_nparray = cv2.cvtColor(image_nparray, cv2.COLOR_BGRA2RGBA)
-    else:
-        raise RuntimeError
+    elif c != 1:
+        raise RuntimeError(
+            f"A {c}-channel image cannot be sent to the web UI; it takes 1, 3 or 4."
+        )
     with io.BytesIO() as buffer:
         with Image.fromarray(image_nparray) as image:
             image.save(buffer, format="PNG")

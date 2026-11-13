@@ -256,11 +256,11 @@ def test_stop_during_a_long_node(stops, kind, case):
     assert stop["alive"] == [False] * len(stop["alive"]), stop
 
 
-# The delta review of the change above: a run stopped before it started (behind a stopped run's node) leaks nothing
-# (H1); a stopped run's node that fails later is logged with its traceback (M1); a second Stop while a stopped node
+# A run stopped before it started (behind a stopped run's node) leaks nothing; a stopped run's node that fails
+# later is logged with its traceback; a second Stop while a stopped node
 # still runs waits for it, so a node that never returns exceeds the host's /kill timeout and the host restarts the
-# worker, and a run waiting behind it says why (M2); the server's CUDA check and collection wait for that node (M3).
-# Later: a node that stops itself after Stop ends its run as stopped, with nothing logged.
+# worker, and a run waiting behind it says why; the server's CUDA check and collection wait for that node. A
+# node that stops itself after Stop ends its run as stopped, with nothing logged.
 REVIEW = DRIVER.split("results = {}", maxsplit=1)[0] + """
 import native_executor as ne
 from process import Aborted

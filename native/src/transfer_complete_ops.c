@@ -53,7 +53,7 @@ static double read_value(const void *source, size_t i, int f64) {
 }
 
 /* Images are row-major pixel grids: pixel i's channel c at i * pixel + c * channel
- * elements, interleaved (channels, 1) or planar (1, plane), read in place (D-16). */
+ * elements, interleaved (channels, 1) or planar (1, plane), read in place. */
 typedef struct { size_t pixel, channel; } pixel_layout;
 
 static size_t element(pixel_layout layout, size_t i, size_t c) {
@@ -75,7 +75,7 @@ static cn_status covariance(const void *image, pixel_layout layout,
     /* np.cov transposes when `not rowvar and m.ndim != 1`, so one pixel leaves
      * no degrees of freedom: upstream's covariance is 0 * inf = NaN, which eig
      * rejects as non-finite. chaiNNer-C gives one pixel zero covariance, a solid
-     * image's (ruling of 2026-10-23); no pixel at all keeps the error. */
+     * image's; no pixel at all keeps the error. */
     if (count == 0) { *error = 1; return CN_OK; }
     double *data = malloc(count * 3 * sizeof(double));
     if (!data) return CN_ALLOCATION_FAILED;

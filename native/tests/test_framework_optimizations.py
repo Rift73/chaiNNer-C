@@ -2,7 +2,7 @@
 
 No real weights, network, GPU, inference engine, timing or package startup. The
 ncnn fakes are checked against the wheel's classes (Extractor, Option, an empty
-Net), which need no Vulkan device. The D-18 tests import the port's native pixel
+Net), which need no Vulkan device. The layout tests import the port's native pixel
 conversions inside them; the rest of the module runs without the native library.
 """
 
@@ -76,8 +76,9 @@ def functions(path, **bindings):
 
 
 class Context(NodeContext):
-    """A node context with the storage and chain-cleanup surface. Every other member
-    raises AttributeError, as it would on a context without it."""
+    """A node context with a node id of its own and the storage and chain-cleanup
+    surface. Every other member raises AttributeError, as it would on a context without
+    it."""
 
     def __init__(self, storage_dir: Path | None = None):
         self._storage_dir = storage_dir
@@ -91,7 +92,7 @@ class Context(NodeContext):
 
     @property
     def node_id(self) -> NodeId:
-        raise AttributeError("node_id")
+        return NodeId(f"node {id(self)}")
 
     @property
     def settings(self) -> SettingsParser:
@@ -211,8 +212,8 @@ def test_missing_checkpoint_not_retained_and_first_download_key(tmp_path):
         with resources.lease_resource(
             context, lambda: "incomplete", lambda: (object(), False), reuse=True
         ) as value:
-            assert resources._ENTRIES[context].value is value
-        assert resources._ENTRIES[context].value is None
+            assert resources._ENTRIES[context.node_id].value is value
+        assert resources._ENTRIES[context.node_id].value is None
 
 
 def test_failed_use_or_factory_invalidates_and_retries():
@@ -242,7 +243,7 @@ def test_failed_use_or_factory_invalidates_and_retries():
             reuse=True,
         ):
             pytest.fail("factory should fail")
-    assert resources._ENTRIES[context].value is None
+    assert resources._ENTRIES[context.node_id].value is None
     context.finish()
 
 
@@ -259,7 +260,7 @@ def test_reset_failure_does_not_mask_active_error():
         ):
             raise primary
     assert caught.value is primary
-    assert resources._ENTRIES[context].value is None
+    assert resources._ENTRIES[context.node_id].value is None
     context.finish()
 
 
@@ -390,6 +391,32 @@ def test_collection_scales_with_invocation_not_tiles(backend, count, collect_aft
     assert len(calls) == int(collect_after)
 
 
+# Judged differences from the reference: an unmatched file is named as the one without a
+# partner. The reference must still give its own text, so a change there shows.
+JUDGED_PAIRING_ERRORS = {
+    ("a.param",): (
+        lambda d: (
+            "The number of param files and bin files are not the same. Please"
+            " check your directory."
+        ),
+        lambda d: (
+            f"Param file {d / 'a.param'} has no bin file of the same name."
+            " Please check your files."
+        ),
+    ),
+    ("a.param", "b.bin"): (
+        lambda d: (
+            f"Param file {d / 'a'} does not match bin file {d / 'b'}. Please"
+            " check your files."
+        ),
+        lambda d: (
+            f"Param file {d / 'a.param'} has no bin file of the same name."
+            " Please check your files."
+        ),
+    ),
+}
+
+
 @pytest.mark.parametrize(
     "names",
     [
@@ -426,11 +453,17 @@ def test_ncnn_pairing_one_discovery_exact_order_and_errors(tmp_path, names):
         except Exception as error:
             outcomes.append((type(error), str(error)))
         counts.append(len(scans))
-    assert outcomes[0] == outcomes[1]
+    judged = JUDGED_PAIRING_ERRORS.get(tuple(names))
+    if judged is None:
+        assert outcomes[0] == outcomes[1]
+    else:
+        assert outcomes == [(ValueError, text(tmp_path)) for text in judged]
     assert counts == [2, 1]
 
 
-def test_face_reuses_helper_and_releases_frame_state(tmp_path):
+def test_face_reuses_helper_and_releases_frame_state(tmp_path, monkeypatch):
+    from facexlib.utils import face_restoration_helper
+
     settings = SimpleNamespace(
         device=SimpleNamespace(type="cpu"), budget_limit=0, force_cache_wipe=False
     )
@@ -454,7 +487,6 @@ def test_face_reuses_helper_and_releases_frame_state(tmp_path):
         SOURCE / FACE,
         torch=SimpleNamespace(no_grad=nullcontext),
         get_settings=lambda _: settings,
-        FaceRestoreHelper=Helper,
         lease_resource=resources.lease_resource,
         file_identity=file_identity,
         allow_model_reuse=resources.allow_model_reuse,
@@ -463,6 +495,8 @@ def test_face_reuses_helper_and_releases_frame_state(tmp_path):
     module.upscale_face_node.__globals__.update(
         denormalize=lambda i: i, upscale=upscale
     )
+    # The node imports its helper where it makes one
+    monkeypatch.setattr(face_restoration_helper, "FaceRestoreHelper", Helper)
     context = Context(tmp_path)
     for i in range(3):
         image = np.full((2, 2, 3), i, np.float32)
@@ -470,7 +504,7 @@ def test_face_reuses_helper_and_releases_frame_state(tmp_path):
             module.upscale_face_node(context, image, None, None, 2, 0.7), image
         )
     assert len(calls) == 1
-    helper = resources._ENTRIES[context].value
+    helper = resources._ENTRIES[context.node_id].value
     assert helper.frames == [] and not hasattr(helper, "input_img")
     module.upscale_face_node(context, image, None, None, 4, 0.7)
     assert len(calls) == 2
@@ -929,7 +963,7 @@ def test_ncnn_allocators_are_the_cleared_vk_subclasses(acquired):
 
 @pytest.mark.parametrize("channels", [1, 3, 4])
 def test_ncnn_reads_lens_planar_layout_by_logical_index(channels):
-    # Consult 11 D-18: Lens Blur's planar layout and its C copy give the network
+    # Lens Blur's planar layout and its C copy give the network
     # identical planes. Upstream's Mat.from_pixels read the raw buffer instead.
     from nodes.impl.image_utils import to_uint8
     from nodes.impl.native_framework_images import ncnn_input, planar_to_interleaved
@@ -970,11 +1004,11 @@ def test_ncnn_reads_lens_planar_layout_by_logical_index(channels):
 
 @pytest.mark.parametrize("side", ["upstream", "port"])
 def test_ncnn_node_hands_its_network_logical_order(side):
-    # Consult 11 D-18: through Upscale Image (NCNN), upstream's and the port's, no
+    # Through Upscale Image (NCNN), upstream's and the port's, no
     # array that reaches upscale_impl has a memory order other than its logical
     # order. The node's cvtColor copies 3 and 4 channels into a new C array, and one
     # channel has one order, so Lens Blur's planar layout never reached upstream's
-    # raw-buffer read through the node: D-18 changes no node output.
+    # raw-buffer read through the node: the logical-order read changes no node output.
     reached = []
 
     def upscale_impl(settings, img, *args, **kwargs):

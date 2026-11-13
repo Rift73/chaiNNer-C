@@ -30,6 +30,7 @@ from nodes.impl.native_graph import graph
 from nodes.impl.native_onnx_runtime import NativeSession
 from nodes.impl.native_tensors import cast_numpy, interpolate_numpy
 from nodes.impl.onnx import load as current_load
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx import utils as current_utils
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -301,6 +302,7 @@ def functions(path):
         NO_TILING=object(),
         load_onnx_model=current_load.load_onnx_model,
         safely_optimize_onnx_model=lambda value: value,
+        rdual_bundle=rdual_bundle,
     )
     exec(compile(ast.fix_missing_locations(tree), str(path), "exec"), module.__dict__)
     return module

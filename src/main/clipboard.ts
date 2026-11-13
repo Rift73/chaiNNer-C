@@ -22,8 +22,8 @@ export const writeChainToClipboard = async (json: string): Promise<void> => {
 };
 
 /**
- * What a paste finds on the clipboard: a copied chain, else an image (stored in `dir` as a PNG
- * file), else just the clipboard's types.
+ * What a paste finds on the clipboard: a copied chain, else an image that can be decoded (stored
+ * in `dir` as a PNG file), else just the clipboard's types.
  */
 export const readClipboardForPaste = async (dir: string): Promise<ClipboardPaste> => {
     const items = await clipboard.read();
@@ -38,7 +38,10 @@ export const readClipboardForPaste = async (dir: string): Promise<ClipboardPaste
     if (imageItem) {
         const imageType = IMAGE_TYPES.find((type) => imageItem.types.includes(type))!;
         const png = await readClipboardImageAsPng(imageItem, imageType);
-        return { kind: 'image', path: await storeClipboardPng(dir, png) };
+        // an image that cannot be decoded is pasted as nothing, like any other content
+        if (png) {
+            return { kind: 'image', path: await storeClipboardPng(dir, png) };
+        }
     }
 
     return { kind: 'other', types: items.flatMap((item) => item.types) };

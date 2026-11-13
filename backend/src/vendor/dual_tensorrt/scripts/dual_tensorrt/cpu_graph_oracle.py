@@ -65,7 +65,7 @@ class FP32GraphOracle(Graph):
         self.input = input_tensor
         self.output = None
         self.core = arch.RegionalChannelAttention(
-            spec.channels, spec.channels // 32, core_checkpoint=False
+            spec.channels, spec.channels // 32
         ).eval()
 
     def const(self, value, dtype=None):

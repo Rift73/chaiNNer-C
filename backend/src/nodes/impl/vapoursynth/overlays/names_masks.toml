@@ -1,0 +1,380 @@
+# Masks node: plain names, order (rank), Simple tabs and start values.
+# Start values were each run once on a blank or ramp clip (see help-masks-notes.md).
+
+[method."vsmasktools.*.edgemask"]
+rank = 1
+label = "Edge mask (edgemask)"
+class_default = "Sobel"
+simple = ["class", "lthr", "hthr"]
+labels = { class = "Edge detector", lthr = "Low threshold", hthr = "High threshold", multi = "Strength", clamp = "Keep in 0 to 1", use_expr = "Slower exact maths", mag_directions = "Directions", rady = "Luma radius", radc = "Colour radius" }
+
+[method."vsmasktools.detail_mask"]
+rank = 2
+label = "Detail mask (detail_mask)"
+labels = { brz_mm = "Texture threshold", brz_ed = "Line threshold", minmax = "Texture radii", edge = "Edge detector", sigma = "Pre-blur" }
+
+[method."std.Binarize"]
+rank = 3
+label = "Black or white by a threshold (Binarize)"
+labels = { threshold = "Threshold", v0 = "Value below", v1 = "Value above" }
+
+[method."std.Maximum"]
+rank = 4
+label = "Grow bright areas (Maximum)"
+labels = { coordinates = "Neighbours used" }
+
+[method."std.Minimum"]
+rank = 5
+label = "Shrink bright areas (Minimum)"
+labels = { coordinates = "Neighbours used" }
+
+[method."std.Inflate"]
+rank = 6
+label = "Soften and grow edges (Inflate)"
+
+[method."std.Deflate"]
+rank = 7
+label = "Soften and shrink edges (Deflate)"
+
+[method."vsmasktools.range_mask"]
+rank = 8
+label = "Local contrast mask (range_mask)"
+labels = { rad = "Luma radius", radc = "Colour radius" }
+
+[method."vsmasktools.adg_mask"]
+rank = 9
+label = "Dark-area grain mask (adg_mask)"
+labels = { luma_scaling = "Fade strength", relative = "Relative to the frame" }
+
+[method."std.InvertMask"]
+rank = 10
+label = "Invert a mask (InvertMask)"
+
+[method."vsmasktools.get_all_edge_detects"]
+label = "All edge masks (get_all_edge_detects)"
+labels = { lthr = "Low threshold", hthr = "High threshold", multi = "Strength", clamp = "Keep in 0 to 1" }
+
+[method."vsmasktools.get_all_ridge_detect"]
+label = "All ridge masks (get_all_ridge_detect)"
+labels = { lthr = "Low threshold", hthr = "High threshold", multi = "Strength", clamp = "Keep in 0 to 1" }
+
+[method."vsmasktools.CustomMaskFromFolder.apply_mask"]
+label = "Apply folder masks (CustomMaskFromFolder)"
+labels = { folder_path = "Mask folder", processing = "Per-image filter", idx = "Image source filter", _clipb = "Overlay clip", _ref = "Size reference" }
+
+[method."vsmasktools.CustomMaskFromRanges.apply_mask"]
+label = "Apply listed masks (CustomMaskFromRanges)"
+labels = { ranges = "Mask images and frames", processing = "Per-image filter", idx = "Image source filter", _clipb = "Overlay clip", _ref = "Size reference" }
+
+[method."vsmasktools.Morpho.binarize"]
+label = "Black or white by threshold (Morpho.binarize)"
+labels = { midthr = "Threshold", lowval = "Value below", highval = "Value above" }
+
+[method."vsmasktools.squaremask"]
+label = "Box mask (squaremask)"
+labels = { offset_x = "Left", offset_y = "Top", invert = "White outside the box", force_gray = "One grey plane" }
+
+[method."vsmasktools.luma_credit_mask"]
+label = "Bright text mask (luma_credit_mask)"
+labels = { thr = "Brightness threshold", draft = "Skip growing", edgemask = "Edge detector" }
+
+[method."vsmasktools.retinex"]
+label = "Brighten shadows, contrast (retinex)"
+labels = { sigma = "Blur sizes", lower_thr = "Shadow clipping", upper_thr = "Highlight clipping", fast = "Fast approximation" }
+
+[method."vsmasktools.max_planes"]
+label = "Combine masks, brightest (max_planes)"
+labels = { resizer = "Resizer" }
+
+[method."vsmasktools.diff_creditless"]
+label = "Credit mask from NC clip (diff_creditless)"
+labels = { nc_clip = "Creditless clip", thr = "Threshold", start_frame = "Start frame in episode", expand = "Grow by", prefilter = "Pre-blur", edgemask = "Edge detector", ep_clip = "Full episode" }
+
+[method."vsmasktools.flat_mask"]
+label = "Darker-than-around mask (flat_mask)"
+labels = { radius = "Area size", thr = "Threshold", gauss = "Gaussian area" }
+
+[method."deblock.Deblock"]
+family = "Denoise"
+label = "Deblock, H.264 filter (Deblock)"
+labels = { quant = "Strength", aoffset = "Edge detection offset", boffset = "Strength offset", opt = "CPU code path" }
+
+[method."vsmasktools.detail_mask_neo"]
+label = "Detail mask, finer texture (detail_mask_neo)"
+labels = { sigma = "Texture blur", detail_brz = "Texture threshold", lines_brz = "Line threshold", edgemask = "Edge detector", rg_mode = "Clean-up filter" }
+
+[method."vsmasktools.simple_detail_mask"]
+label = "Detail mask, old form (simple_detail_mask)"
+labels = { sigma = "Pre-blur", rad = "Radius", brz_a = "Texture threshold", brz_b = "Line threshold" }
+
+[method."vsmasktools.multi_detail_mask"]
+label = "Detail mask, one knob (multi_detail_mask)"
+labels = { thr = "Threshold" }
+
+[method."vsmasktools.dre_edgemask"]
+label = "Edge mask for dark scenes (dre_edgemask)"
+labels = { class = "Contrast boost", sigma = "Blur", brz = "Threshold", operator = "Edge detector", kwargs = "Contrast boost settings" }
+
+[method."std.Prewitt"]
+label = "Edge mask, built-in (Prewitt)"
+labels = { scale = "Strength" }
+
+[method."std.Sobel"]
+label = "Edge mask, built-in (Sobel)"
+labels = { scale = "Strength" }
+
+[method."vsmasktools.Morpho.closing"]
+label = "Fill small holes (closing)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.rekt_partial"]
+label = "Filter inside a box only (rekt_partial)"
+labels = { func = "Filter", left = "Left margin", right = "Right margin", top = "Top margin", bottom = "Bottom margin" }
+
+[method."vsmasktools.freeze_replace_squaremask"]
+label = "Freeze box patch (freeze_replace_squaremask)"
+labels = { insert = "Patch clip", mask_params = "Box: w, h, left, top", frame = "Still frame", frame_range = "First, last frame" }
+
+[method."hysteresis.Hysteresis"]
+family = "Masks"
+label = "Grow a seed mask into shapes (Hysteresis)"
+labels = { clipb = "Candidate mask" }
+
+[method."vsmasktools.Morpho.maximum"]
+label = "Grow bright areas (Morpho.maximum)"
+labels = { thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.expand"]
+label = "Grow by pixels, shaped (expand)"
+labels = { sw = "Left and right pixels", sh = "Up and down pixels", mode = "Corner shape", thr = "Change limit" }
+defaults = { sw = 2 }
+
+[method."vsmasktools.Morpho.dilation"]
+label = "Grow white areas (dilation)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.ringing_mask"]
+label = "Halo zone around edges (ringing_mask)"
+labels = { rad = "Band width", brz = "Core threshold", thmi = "Strong edge minimum", thma = "Strong edge maximum", thlimi = "Stretch lower limit", thlima = "Stretch upper limit", credit_mask = "Edge detector" }
+
+[method."vsmasktools.region_abs_mask"]
+label = "Keep a box, black outside (region_abs_mask)"
+labels = { replace_in = "Inside value", replace_out = "Outside value", left = "Left", top = "Top" }
+
+[method."vsmasktools.region_rel_mask"]
+label = "Keep inside margins (region_rel_mask)"
+labels = { replace_in = "Inside value", replace_out = "Outside value", left = "Left margin", right = "Right margin", top = "Top margin", bottom = "Bottom margin" }
+
+[method."vsmasktools.tcanny_retinex"]
+label = "Line mask for dark scenes (tcanny_retinex)"
+labels = { thr = "Contrast boost", sigma = "Retinex blur sizes", blur_sigma = "Pre-blur" }
+defaults = { thr = 0.0025 }
+
+[method."vsmasktools.limited_linemask"]
+label = "Line mask, several methods (limited_linemask)"
+labels = { sigmas = "Retinex strengths", detail_sigmas = "Detail thresholds", edgemasks = "Edge detectors" }
+
+[method."vsmasktools.*.ridgemask"]
+label = "Line-centre mask (ridgemask)"
+class_default = "Sobel"
+labels = { class = "Ridge detector", lthr = "Low threshold", hthr = "High threshold", multi = "Strength", clamp = "Keep in 0 to 1" }
+
+[method."vsmasktools.diff_rescale"]
+label = "Mask of non-native detail (diff_rescale)"
+labels = { height = "Native height", kernel = "Upscale kernel", thr = "Threshold", expand = "Grow by" }
+defaults = { height = 720 }
+
+[method."vsmasktools.*.get_mask"]
+label = "Mask only: hardsub or hand-made (get_mask)"
+labels = { filename = "Subtitle file", ranges = "Frame ranges", bound = "Limit to a rectangle", ref = "Clean clip", fontdir = "Font folder", blur = "Soft rectangle edge", refframes = "Mask frames", expand = "Grow by", refframe = "Mask frame position", thr = "Difference threshold", minimum = "Shrink passes", inflate = "Soften passes", expand_mode = "Grow shape", highpass = "Edge threshold", edgemask = "Edge detector", class = "Mask kind", folder_path = "Mask folder", processing = "Per-image filter", idx = "Image source filter" }
+
+[method."std.BinarizeMask"]
+label = "Mask to black or white (BinarizeMask)"
+labels = { threshold = "Threshold", v0 = "Value below", v1 = "Value above" }
+
+[method."vsmasktools.Morpho.binarize_mask"]
+label = "Mask to black or white (Morpho.binarize_mask)"
+labels = { midthr = "Threshold", lowval = "Value below", highval = "Value above" }
+
+[method."vsmasktools.based_diff_mask"]
+label = "Mask where clips differ (based_diff_mask)"
+labels = { ref_or_height = "Other clip", thr = "Threshold", prefilter = "Pre-blur", postfilter = "Speck removal", ampl = "Mask formula", expand = "Grow by" }
+
+[method."vsmasktools.normalize_mask"]
+label = "Match a mask to the clip (normalize_mask)"
+labels = { mask = "Mask or detector", ridge = "Ridge mask", ref = "Second clip" }
+
+[method."vsmasktools.diff_creditless_oped"]
+label = "OP/ED credit mask (diff_creditless_oped)"
+labels = { ncop = "Creditless opening", nced = "Creditless ending", thr = "Threshold", opstart = "Opening first frame", opend = "Opening last frame", edstart = "Ending first frame", edend = "Ending last frame" }
+
+[method."vsmasktools.Morpho.gradient"]
+label = "Outline of shapes (gradient)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.replace_squaremask"]
+label = "Patch a box from a clip (replace_squaremask)"
+labels = { clipb = "Patch clip", mask_params = "Box: w, h, left, top", ranges = "Frame ranges", blur_sigma = "Soft edge", invert = "Replace outside the box", show_mask = "Show the box mask" }
+
+[method."vsmasktools.*.apply_dehardsub"]
+label = "Remove burned-in subtitles (apply_dehardsub)"
+labels = { filename = "Subtitle file", ranges = "Frame ranges", bound = "Limit to a rectangle", ref = "Clean clip", fontdir = "Font folder", blur = "Soft rectangle edge", refframes = "Mask frames", partials = "Other hardsubbed clips", expand = "Grow by", refframe = "Mask frame position", thr = "Difference threshold", minimum = "Shrink passes", inflate = "Soften passes", expand_mode = "Grow shape", highpass = "Edge threshold", edgemask = "Edge detector", class = "Subtitle kind" }
+
+[method."vsmasktools.Morpho.opening"]
+label = "Remove small specks (opening)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.inner_hat"]
+label = "Ring inside shapes (inner_hat)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.outer_hat"]
+label = "Ring outside shapes (outer_hat)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.luma_mask"]
+label = "Shadow or highlight mask (luma_mask)"
+labels = { thr_lo = "Low threshold", thr_hi = "High threshold", invert = "Dark areas white" }
+defaults = { thr_lo = 0.2, thr_hi = 0.4 }
+
+[method."vsmasktools.Morpho.minimum"]
+label = "Shrink bright areas (Morpho.minimum)"
+labels = { thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.inpand"]
+label = "Shrink by pixels, shaped (inpand)"
+labels = { sw = "Left and right pixels", sh = "Up and down pixels", mode = "Corner shape", thr = "Change limit" }
+defaults = { sw = 2 }
+
+[method."vsmasktools.Morpho.erosion"]
+label = "Shrink white areas (erosion)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.top_hat"]
+label = "Small bright details (top_hat)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.bottom_hat"]
+label = "Small dark details (bottom_hat)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.grow_mask"]
+label = "Soft ring around shapes (grow_mask)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.inflate"]
+label = "Soften and grow edges (Morpho.inflate)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.Morpho.deflate"]
+label = "Soften and shrink edges (Morpho.deflate)"
+labels = { radius = "Radius", thr = "Change limit", iterations = "Passes", coords = "Neighbours used", multiply = "Multiply result" }
+
+[method."vsmasktools.stabilize_mask"]
+label = "Steady a flickering mask (stabilize_mask)"
+labels = { radius = "Frames each side", ranges = "Scene-change ranges", scenechanges = "Scene-change frames", kernel = "Averaging", brz = "Strictness" }
+
+[method."vsmasktools.strength_zones_mask"]
+label = "Strength by frame range (strength_zones_mask)"
+labels = { length = "Frame count", zones = "Ranges and strengths", format = "Mask format" }
+
+[method."vsmasktools.diff_hardsub_mask"]
+label = "Subtitle difference (diff_hardsub_mask)"
+labels = { b = "Clean clip" }
+
+[method."vsmasktools.texture_mask"]
+label = "Texture mask (texture_mask)"
+labels = { rady = "Luma radius", radc = "Colour radius", blur = "Final blur" }
+
+[method."mvu.Degrain1"]
+hide = true
+
+[method."mvu.Degrain10"]
+hide = true
+
+[method."mvu.Degrain11"]
+hide = true
+
+[method."mvu.Degrain12"]
+hide = true
+
+[method."mvu.Degrain13"]
+hide = true
+
+[method."mvu.Degrain14"]
+hide = true
+
+[method."mvu.Degrain15"]
+hide = true
+
+[method."mvu.Degrain16"]
+hide = true
+
+[method."mvu.Degrain17"]
+hide = true
+
+[method."mvu.Degrain18"]
+hide = true
+
+[method."mvu.Degrain19"]
+hide = true
+
+[method."mvu.Degrain2"]
+hide = true
+
+[method."mvu.Degrain20"]
+hide = true
+
+[method."mvu.Degrain21"]
+hide = true
+
+[method."mvu.Degrain22"]
+hide = true
+
+[method."mvu.Degrain23"]
+hide = true
+
+[method."mvu.Degrain24"]
+hide = true
+
+[method."mvu.Degrain25"]
+hide = true
+
+[method."mvu.Degrain3"]
+hide = true
+
+[method."mvu.Degrain4"]
+hide = true
+
+[method."mvu.Degrain5"]
+hide = true
+
+[method."mvu.Degrain6"]
+hide = true
+
+[method."mvu.Degrain7"]
+hide = true
+
+[method."mvu.Degrain8"]
+hide = true
+
+[method."mvu.Degrain9"]
+hide = true
+
+[method."std.FrameEval"]
+hide = true
+
+[method."std.ModifyFrame"]
+hide = true
+
+[method."vsmasktools.CustomMaskFromFolder.processing"]
+hide = true
+
+[method."vsmasktools.CustomMaskFromRanges.processing"]
+hide = true
+
+[method."vsmasktools.Morpho.black_hat"]
+hide = true
+
+[method."vsmasktools.Morpho.white_hat"]
+hide = true

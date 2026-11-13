@@ -4,6 +4,7 @@ from sanic.log import logger
 
 from api import GB, MB, Category, Dependency, add_package
 from dependencies.rocm import TRITON_AMD_BUILDS, gpu_architectures, triton_rocm
+from dependencies.triton import triton_windows_nvidia
 from gpu import NvDevice, nvidia
 from system import is_arm_mac, is_linux, is_windows
 
@@ -28,15 +29,7 @@ def get_triton() -> list[Dependency]:
     if is_windows:
         if on_rocm:
             return []
-        return [
-            Dependency(
-                display_name="Triton",
-                pypi_name="triton-windows",
-                version="3.5.1.post22",
-                size_estimate=45 * MB,
-                import_name="triton",
-            )
-        ]
+        return [triton_windows_nvidia()]
     if is_linux and on_rocm:
         return [triton_rocm()]
     # The release PyTorch 2.14.1 pins on Linux, so one Triton serves both packages.

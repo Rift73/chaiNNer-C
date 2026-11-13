@@ -1,8 +1,8 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "blend_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Blend Images' per-element blend, AVX2 unit (/arch:AVX2, spec 4.3): no export,
- * reached only through image_range's dispatch on the call's ISA level (SP4b D13).
+/* Blend Images' per-element blend, AVX2 unit (/arch:AVX2): no export,
+ * reached only through image_range's dispatch on the call's ISA level.
  * NORMAL (mode 0) and MULTIPLY (mode 1) are normalized modes (no clip), so with equal
  * channel counts below 4 each output element is image_pixels' one operation on the
  * same element of both inputs: the overlay's value (moved, every bit kept), or

@@ -1,6 +1,6 @@
 """Copy the pinned upstream nightly's backend into the oracle tree and patch it.
 
-The oracle (spec 3) is the pinned app's resources/src (independent_ui.UPSTREAM_APP),
+The oracle is the pinned app's resources/src (independent_ui.UPSTREAM_APP),
 run on this project's runtime and wheels. Each run copies it afresh, without
 __pycache__, to native/build/oracle/src, applies the one tracked
 native/tests/oracle/compat.diff there with git apply, and adds chaiNNer-C's C

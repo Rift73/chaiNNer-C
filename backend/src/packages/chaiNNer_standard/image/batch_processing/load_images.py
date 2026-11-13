@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from wcmatch import glob as glob
 
-from api import Generator, IteratorOutputInfo
+from api import Generator, IteratorOutputInfo, OutputId
 from nodes.groups import Condition, if_group
 from nodes.impl.image_formats import (
     get_available_image_formats as get_available_image_formats,
@@ -27,9 +27,17 @@ from .. import batch_processing_group
 from ..io.load_image import convert_to_srgb_input
 from ..io.load_image import load_image_node as load_image_node
 
+# The outputs that follow from an item's path, by id, which the check of colliding outputs reads
+# (folder_videos.check_loop_outputs); Directory's position in the generator's other outputs.
+DIRECTORY = OutputId(1)
+SUBDIRECTORY = OutputId(2)
+NAME = OutputId(3)
+INDEX = OutputId(4)
+DIRECTORY_INDEX = 1
+
 
 def extension_filter(lst: list[str]) -> str:
-    """generates a mcmatch.glob expression to filter files with specific extensions
+    """A wcmatch.glob expression that filters files by extension,
     ex. {*,**/*}@(*.png|*.jpg|...)"""
     return graph().file_sequence_extension_filter(lst)
 

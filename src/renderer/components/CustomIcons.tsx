@@ -196,7 +196,7 @@ const packs: Partial<Record<string, () => Promise<Library>>> = {
     im: loadPack(() => import('react-icons/im/index')),
 };
 
-export const PyTorchIcon = createIcon({
+const PyTorchIcon = createIcon({
     displayName: 'PyTorchIcon',
     viewBox: '0 0 20.97 24.99',
     // path can also be an array of elements, if you have multiple paths, lines, shapes, etc.
@@ -214,7 +214,7 @@ export const PyTorchIcon = createIcon({
     ),
 });
 
-export const OnnxIcon = createIcon({
+const OnnxIcon = createIcon({
     displayName: 'OnnxIcon',
     viewBox: '-1.89 2.11 64 64',
     path: (
@@ -225,7 +225,7 @@ export const OnnxIcon = createIcon({
     ),
 });
 
-export const NcnnIcon = createIcon({
+const NcnnIcon = createIcon({
     displayName: 'NcnnIcon',
     viewBox: '0 0 14 14',
     path: (

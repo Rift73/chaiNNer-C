@@ -42,7 +42,7 @@ from gpu import amd, nvidia
 from ..image_op import ImageOp
 from ..onnx.model import FP16_ARCHS_NAVI, converts_in_fp16
 from ..upscale.auto_split_tiles import TileSize
-from .utils import safe_cuda_cache_empty
+from .utils import is_finite, safe_cuda_cache_empty
 
 if TYPE_CHECKING:
     # Annotations only: no import at runtime.
@@ -122,9 +122,10 @@ _PROGRAM_SOURCES = (
 )
 
 _lock = Lock()
-# Per model, the device, GPU and largest size it was asked for, and its engine or the reason it has
-# none. The app keeps a model between runs, so one model sees PyTorch's settings change.
-_Where = tuple[torch.device, int, int]
+# Per model, the device, GPU, largest size and whole-image choice it was asked for, and its engine
+# or the reason it has none. The app keeps a model between runs, so one model sees PyTorch's
+# settings change.
+_Where = tuple[torch.device, int, int, bool]
 _outcomes: WeakKeyDictionary[
     ImageModelDescriptor, tuple[_Where, TensorRTEngine | MIGraphXProgram | str]
 ] = WeakKeyDictionary()
@@ -162,7 +163,7 @@ def migraphx_here() -> bool:
     return disabled_reason() is None
 
 
-def _no_engine_here(device: torch.device) -> str | None:
+def no_engine_here(device: torch.device) -> str | None:
     """Why this machine or this run's settings have no engine or program; None if they may.
     Empty without NVIDIA or MIGraphX: the node hides the setting there, so a saved chain's On
     cannot be turned off, and this is no surprise worth a warning."""
@@ -190,7 +191,7 @@ def _no_engine_here(device: torch.device) -> str | None:
     return None
 
 
-def _weights_digest(model: ImageModelDescriptor) -> bytes:
+def weights_digest(model: ImageModelDescriptor) -> bytes:
     """An ESRGAN's in FP16, as export_copy exports them, so PyTorch's FP16 setting makes no
     second engine of a byte-identical ONNX."""
     digest = hashlib.sha256()
@@ -282,7 +283,7 @@ def _program_key(
 
     settings = get_settings(context)
     routes = {"dual": dual.build_identity, "drft": drft.build_identity}.get(recipe)
-    digest = hashlib.sha256(_weights_digest(model))
+    digest = hashlib.sha256(weights_digest(model))
     digest.update(
         repr(
             (
@@ -323,7 +324,7 @@ def _engine_key(
         "dual": build_cache.dual_plugin_identity,
         "drft": build_cache.drft_plugin_identity,
     }.get(recipe)
-    digest = hashlib.sha256(_weights_digest(model))
+    digest = hashlib.sha256(weights_digest(model))
     digest.update(
         repr(
             (
@@ -519,7 +520,7 @@ def _no_engine(
     return reason
 
 
-def _cache_folder(
+def cache_folder(
     context: NodeContext, package: str, setting: str, directory: str
 ) -> Path:
     """A package's cache folder, its setting on or off: the one the app sets, or where the
@@ -552,17 +553,23 @@ class _TensorRT:
     def folder(context: NodeContext) -> Path:
         from packages.chaiNNer_tensorrt.settings import ENGINE_CACHE_DIRECTORY
 
-        return _cache_folder(
+        return cache_folder(
             context, "chaiNNer_tensorrt", "engine_cache", ENGINE_CACHE_DIRECTORY
         )
 
     @staticmethod
     def cached(
-        key: str, build: Callable[[], TensorRTEngine], folder: str
+        key: str, build: Callable[[], TensorRTEngine | MIGraphXProgram], folder: str
     ) -> TensorRTEngine:
         from ..tensorrt.build_cache import cached_engine
+        from ..tensorrt.model import TensorRTEngine
 
-        return cached_engine(key, build, folder)
+        def built() -> TensorRTEngine:
+            engine = build()
+            assert isinstance(engine, TensorRTEngine)
+            return engine
+
+        return cached_engine(key, built, folder)
 
     @staticmethod
     def forget(key: str, folder: str) -> None:
@@ -580,9 +587,12 @@ class _TensorRT:
     def op(
         context: NodeContext,
         model: ImageModelDescriptor,
-        engine: TensorRTEngine,
+        engine: TensorRTEngine | MIGraphXProgram,
         report: TileReport | None,
     ) -> ImageOp:
+        from ..tensorrt.model import TensorRTEngine
+
+        assert isinstance(engine, TensorRTEngine)
         return _engine_op(context, model, engine, report)
 
     @staticmethod
@@ -615,17 +625,23 @@ class _MIGraphX:
     def folder(context: NodeContext) -> Path:
         from packages.chaiNNer_migraphx.settings import PROGRAM_CACHE_DIRECTORY
 
-        return _cache_folder(
+        return cache_folder(
             context, "chaiNNer_migraphx", "program_cache", PROGRAM_CACHE_DIRECTORY
         )
 
     @staticmethod
     def cached(
-        key: str, build: Callable[[], MIGraphXProgram], folder: str
+        key: str, build: Callable[[], TensorRTEngine | MIGraphXProgram], folder: str
     ) -> MIGraphXProgram:
         from ..migraphx.build_cache import cached_program
+        from ..migraphx.model import MIGraphXProgram
 
-        return cached_program(key, build, folder)
+        def built() -> MIGraphXProgram:
+            program = build()
+            assert isinstance(program, MIGraphXProgram)
+            return program
+
+        return cached_program(key, built, folder)
 
     @staticmethod
     def forget(key: str, folder: str) -> None:
@@ -643,9 +659,12 @@ class _MIGraphX:
     def op(
         context: NodeContext,
         model: ImageModelDescriptor,
-        program: MIGraphXProgram,
+        program: TensorRTEngine | MIGraphXProgram,
         report: TileReport | None,
     ) -> ImageOp:
+        from ..migraphx.model import MIGraphXProgram
+
+        assert isinstance(program, MIGraphXProgram)
         return _program_op(context, model, program, report)
 
     @staticmethod
@@ -697,9 +716,16 @@ def _engine_of(
             " its memory can fill the GPU."
         )
     try:
-        reason = _no_engine_here(device)
+        reason = no_engine_here(device)
         if reason is not None:
             return _no_engine(context, model, where, reason)
+        if route is _MIGraphX and recipe == "dual":
+            from ..migraphx import dual as dual_program
+
+            # Known before exporting: Build Program refuses every such ONNX.
+            keys = dual_program.exported_tensorrt_only_keys()
+            if keys:
+                return _no_engine(context, model, where, dual_program.refusal(keys))
         folder = route.folder(context)
         folder.mkdir(parents=True, exist_ok=True)
         # What PyTorch keeps cached on the GPU is the build's and the session's now.
@@ -746,6 +772,13 @@ def _engine_of(
     return engine
 
 
+def hold_engine(node_id: NodeId) -> None:
+    """Note that this node holds a session on an automatic engine, which release_engine
+    frees."""
+    with _lock:
+        _engine_nodes.add(node_id)
+
+
 def release_engine(node_id: NodeId) -> None:
     """Free a session this node holds on an automatic engine or program, if any: its GPU
     memory is PyTorch's again. release_node goes through every session cache, MIGraphX's
@@ -759,18 +792,13 @@ def release_engine(node_id: NodeId) -> None:
         release_node(node_id)
 
 
-def _is_finite(img: np.ndarray) -> bool:
-    # NaN propagates through min and max: two passes and no temporary array
-    return math.isfinite(img.min()) and math.isfinite(img.max())
-
-
 def _checked(
     model: ImageModelDescriptor, made: str, img: np.ndarray
 ) -> Callable[[np.ndarray], None]:
     """What raises where PyTorch would on invalid values from the finite `img`."""
 
     def check(raw: np.ndarray) -> None:
-        if not _is_finite(raw) and _is_finite(img):
+        if not is_finite(raw) and is_finite(img):
             raise RuntimeError(
                 f"The {made} of this {model.architecture.name} model returned invalid"
                 " values (NaN or infinity), which would be saved as black or white"
@@ -865,8 +893,7 @@ def upscale_through_engine(
     if isinstance(engine, str):
         release_engine(context.node_id)
         return upscale_with(pytorch)
-    with _lock:
-        _engine_nodes.add(context.node_id)
+    hold_engine(context.node_id)
     try:
         output = upscale_with(route.op(context, model, engine, report))
     except Aborted:

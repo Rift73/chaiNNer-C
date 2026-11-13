@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ncnn import ncnn
+from sanic.log import logger
 
 from api import DropdownSetting, NodeContext, NumberSetting, ToggleSetting
 from api.settings import DropdownOption
@@ -54,7 +55,9 @@ if not is_arm_mac and use_gpu:
             )
         )
     except Exception:
-        pass
+        logger.exception(
+            "NCNN could not list its Vulkan GPUs; the GPU setting is left out."
+        )
 
 default_net_opt = ncnn.Net().opt
 

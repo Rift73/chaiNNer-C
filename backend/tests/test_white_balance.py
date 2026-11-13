@@ -35,7 +35,7 @@ def balance(
     mode: WhiteBalanceMode = M.GRAY_WORLD,
     percent: float = 1.0,
     color: Color = GRAY,
-    temperature: float = 6500,
+    temperature: int = 6500,
     tint: float = 0,
     linear_light: bool = True,
     transfer: LightTransfer = LightTransfer.SRGB,
@@ -365,9 +365,10 @@ def test_a_permuted_image_gives_the_same_pixels(mode: WhiteBalanceMode):
     ).astype(np.float32)
     permuted = np.moveaxis(scene, 2, 0).copy().transpose(1, 2, 0)
     assert not permuted.flags.c_contiguous
-    options = {"temperature": 4000} if mode is M.TEMPERATURE else {}
+    temperature = 4000 if mode is M.TEMPERATURE else 6500
     assert np.array_equal(
-        balance(permuted, mode, **options), balance(scene, mode, **options)
+        balance(permuted, mode, temperature=temperature),
+        balance(scene, mode, temperature=temperature),
     )
 
 
@@ -406,3 +407,15 @@ def test_scale_channels_is_the_in_place_product(shape: tuple[int, int], channels
     expected[:, :, :3] *= gains
     scale_channels(image, gains)
     assert image.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize(
+    "gains",
+    [np.ones(2, np.float32), np.ones((3, 3), np.float32), np.ones(3, np.float64)],
+)
+def test_scale_channels_takes_three_float32_gains_only(gains: np.ndarray):
+    # The C kernel reads three floats.
+    image = np.ones((2, 2, 3), np.float32)
+    with pytest.raises((ValueError, TypeError)):
+        scale_channels(image, gains)
+    assert np.array_equal(image, np.ones((2, 2, 3), np.float32))

@@ -1,4 +1,4 @@
-"""Item window (SP3): read-ahead safety, window sizing and the precompute engine."""
+"""Item window: read-ahead safety, window sizing and the precompute engine."""
 
 import ast
 import asyncio
@@ -990,8 +990,8 @@ def item_segments(events):
     ],
 )
 def test_diamond_graph_events_match_k1(monkeypatch, tmp_path, new_pool):
-    # How a and b, gathered in parallel, interleave is pool timing at any K (SP2;
-    # ARCHITECTURE section 7); upstream awaits them in turn. FinishedFirst forces
+    # How a and b, gathered in parallel, interleave is pool timing at any K
+    # (ARCHITECTURE section 7); upstream awaits them in turn. FinishedFirst forces
     # upstream's order at K = 1.
     runs = {}
     for window in ("1", "3"):
@@ -1160,9 +1160,9 @@ def test_engine_runs_at_most_p_jobs(monkeypatch, tmp_path):
 def test_waited_for_advance_starts_while_p_jobs_run(monkeypatch, tmp_path):
     """A resumed batch: save skips every item after item 0, so the commit path never
     pulls the map the engine computed ahead. The advance it waits for is its own work
-    (spec 4.2) and must not wait for such a job's P slot.
+    and must not wait for such a job's P slot.
 
-    Rationale, the final review's 30-item probe (in-memory generator, 300 ms pure map,
+    Rationale, a 30-item probe (in-memory generator, 300 ms pure map,
     a save that skips every item, pool 8): K = 1 0.01 s, K = 6 1.21 s; 0.31 s with the
     waited-for advance exempt from P (close() draining the jobs in flight).
     """
@@ -1309,7 +1309,7 @@ def test_engine_jobs_leave_two_pool_threads(pool, expected):
 
 
 def test_output_nbytes_counts_arrays_and_bytes():
-    # A prepared encoding (SP3-P9) counts by its length.
+    # A prepared encoding counts by its length.
     values = [np.zeros(4, np.float32), 7, "x", None, np.zeros((2, 3), np.uint8)]
     assert output_nbytes([*values, b"12345"]) == 27
 
@@ -1327,7 +1327,7 @@ def test_not_speculated_node_and_its_dependents_never_run_ahead(monkeypatch, tmp
         pipeline = Pipeline(
             monkeypatch, tmp_path, 6, window=window, nodes=("into_directory", "map")
         )
-        # A stand-in for Into Directory: the exclusion is by schema id (audit section 5).
+        # A stand-in for Into Directory: the exclusion is by schema id.
         set_schema(
             pipeline.chain.nodes[NodeId("into_directory")],
             "chainner:utility:into_directory",
@@ -1639,10 +1639,9 @@ def test_dependents_of_a_stored_error_meet_it_at_the_nesting_point(
 
 
 # The 125 schema ids admitted by pure_cpu_dependency's per-node conditions, each
-# audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4; the locked device
-# node, 2026-10-08; Descale, 2026-10-16; Planes to RGB and RGB to Planes, 2026-10-18;
-# MIGraphX's Upscale Image, the TensorRT runner's counterpart, 2026-10-29; the small image
-# operation nodes, Is Grayscale and Math Expression, 2026-11-06).
+# audited for thread safety (the locked device node, Descale, Planes to RGB and RGB to
+# Planes, MIGraphX's Upscale Image, the TensorRT runner's counterpart, the small image
+# operation nodes, Is Grayscale and Math Expression among them).
 AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
     [
         f"chainner:image:{name}"
@@ -2083,7 +2082,7 @@ def test_context_slots_compute_only_context_nodes_ahead():
     drive(body)
 
 
-# The two-phase producer (SP3b, spec 4.2-4.4): a serial describe, then each slot's
+# The two-phase producer: a serial describe, then each slot's
 # materialize as an engine job.
 
 
@@ -2214,7 +2213,7 @@ async def close_finishing(window, pool):
 def test_two_phase_takes_values_in_slot_order_when_materializations_finish_out_of_order():
     # P = 3: slots 1-3 materialize at once and finish in reverse. Each slot's node job
     # starts once its own materialize finished, and the commit path takes the values
-    # in slot order (spec 4.2).
+    # in slot order.
     async def body():
         source = PhasedSource([10, 11, 12, 13])
         pool = HeldPool(source.log)
@@ -2295,7 +2294,7 @@ def test_two_phase_error_is_the_same_object_at_its_slot():
 def test_fail_fast_later_slot_failing_first_commits_earlier_slot_then_raises():
     # P = 2: slots 1 and 2 materialize at once, and slot 2's fails (fail-fast) before
     # slot 1's finishes. The commit path still takes slot 1's value, then slot 2's
-    # error (the same object); nothing is described after slot 2 (spec 4.3).
+    # error (the same object); nothing is described after slot 2.
     failure = ValueError("decode failed 2")
 
     async def body():
@@ -2338,7 +2337,7 @@ def test_fail_fast_later_slot_failing_first_commits_earlier_slot_then_raises():
 
 def test_base_exception_from_materialize_ends_the_sequence_at_its_slot():
     # Fail-fast off: a BaseException from slot 1's materialize is still its outcome, as
-    # the same object, and nothing is described after it (spec 4.3). P = 1, so slot 2's
+    # the same object, and nothing is described after it. P = 1, so slot 2's
     # describe could start only once slot 1's materialize finished.
     interrupt = Interrupted()
 
@@ -2380,7 +2379,7 @@ def test_describe_error_and_exhaustion_are_the_slot_outcome_without_materialize(
 ):
     # Slot 1's describe raises, and slot 3's finds the end. Each is its slot's outcome
     # (the error as the same object) and the slot has no materialize. Fail-fast,
-    # nothing is described after the error (spec 4.3).
+    # nothing is described after the error.
     failure = ValueError("describe failed 1")
 
     async def body():
@@ -2419,7 +2418,7 @@ def test_described_slot_queued_behind_p_is_still_produced_after_a_later_failure(
     # slot 1 and before it takes it, so its materialize waits for the take while slot
     # 2's describe holds P (P = 1). Slot 2's describe fails (fail-fast), which ends
     # describing; slot 1 is still materialized when taken, and then slot 2's error is
-    # raised (spec 4.3: every described slot is materialized unless Stop or close).
+    # raised (every described slot is materialized unless Stop or close).
     failure = ValueError("describe failed 2")
 
     async def body():
@@ -2453,8 +2452,8 @@ def test_described_slot_queued_behind_p_is_still_produced_after_a_later_failure(
 
 def test_wanted_slot_describe_and_materialize_bypass_p_and_pause():
     # The slot the commit path waits for is described and then materialized while a
-    # node job holds P (P = 1), and again while paused (spec 4.2; the resumed-batch
-    # regression). A later slot described while paused keeps its token queued until
+    # node job holds P (P = 1), and again while paused (a resumed batch).
+    # A later slot described while paused keeps its token queued until
     # admission continues after the resume.
     async def body():
         source = PhasedSource([10, 11, 12, 13, 14])
@@ -2516,7 +2515,7 @@ def test_wanted_slot_describe_and_materialize_bypass_p_and_pause():
 
 def test_describes_stay_within_commit_plus_k_minus_1():
     # K = 3, P = 8; describes finish at once, materializations when taken: the producer
-    # describes up to commit + K - 1, never further (spec 4.2).
+    # describes up to commit + K - 1, never further.
     async def body():
         source = PhasedSource(list(range(10, 18)))
         pool = HeldPool(source.log, held={"materialize"})
@@ -2559,7 +2558,7 @@ def test_two_phase_memory_counts_2e_until_resolved(
     # E = 10, B = 50, every item 4 bytes; describes finish at once, materializations
     # when the test finishes them. Split, a slot counts 2E from its describe until its
     # outcome is resolved, then max(its bytes, E), and a describe is admitted within
-    # B - 2E: two slots, a third once slot 0 is resolved (spec 4.4). A slot ended at
+    # B - 2E: two slots, a third once slot 0 is resolved. A slot ended at
     # describe is resolved there and counts E. Without split a slot counts E: B / E.
     async def body():
         source = PhasedSource([4] * 8, describe_errors=describe_errors)
@@ -2592,7 +2591,7 @@ def test_two_phase_memory_counts_2e_until_resolved(
 
 @pytest.mark.parametrize("waiting", ["materialize", "describe"])
 def test_stop_abandons_queued_materializations_and_close_drains_running(waiting):
-    # Stop lands while the commit path waits for slot 1 (spec 4.3). "materialize"
+    # Stop lands while the commit path waits for slot 1. "materialize"
     # (P = 3): slots 1 and 2 materialize and slot 3 is being described; slot 1's take
     # resolves, slot 3's materialize is abandoned though P has room, and close() waits
     # for slot 2's. "describe" (P = 1): slot 1 is being described; its materialize
@@ -2700,7 +2699,7 @@ def test_take_once_closing_with_the_slot_in_flight(producer, order):
 @pytest.mark.parametrize("case", ["zipped", "inline", "plain"])
 def test_zipped_inline_or_plain_generators_keep_the_serial_producer(case):
     # Only a group of one generator, not inline, that carries describe and materialize
-    # has the two-phase producer (P3); the others advance as today (spec 4.2, D3).
+    # has the two-phase producer; the others advance as today.
     async def body():
         sources = [PhasedSource([10, 11]), PhasedSource([20, 21])]
         if case == "zipped":
@@ -2751,7 +2750,7 @@ def test_serial_producer_variable_parses_only_one(monkeypatch):
         assert serial_producer() is expected, value
 
 
-# Two-phase side-effect nodes (SP3-P9): a prepare runs ahead, the commit in order.
+# Two-phase side-effect nodes: a prepare runs ahead, the commit in order.
 
 
 @pytest.fixture
@@ -3426,8 +3425,8 @@ def test_save_modules_register_their_phases(module, prepare, commit):
     assert {prepare, commit} <= functions
 
 
-# SP3b in the executor: the group's single generator is described serially and
-# materialized as engine jobs (spec 4.2). Load Images names each item in describe() and
+# The two-phase producer in the executor: the group's single generator is described serially and
+# materialized as engine jobs. Load Images names each item in describe() and
 # decodes it in materialize(token); any other generator's describe is its read, and its
 # materialize the item's output enforce (an image's normalize).
 
@@ -3642,7 +3641,7 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
 def test_load_images_two_phase_equals_k1_with_out_of_order_finishes(
     monkeypatch, tmp_path, fail_fast
 ):
-    # Review Focus 1: two corrupt images among good ones. At K = 3, item 1's decode waits
+    # Two corrupt images among good ones. At K = 3, item 1's decode waits
     # (at most 10 s) until item 2's has finished, so a later decode finishes first: slot
     # 2 is described and materialized while slot 1's decode waits, which the serial
     # producer cannot do. Files, events and the error equal K = 1's. Deferred, the
@@ -3749,7 +3748,7 @@ def test_load_image_node_runs_once_per_item_never_before_its_describe(
     # Spec 5: Load Images' decode (load_image_node) runs once per item, in the
     # materialize of a slot already described (item 0's too, as the engine takes it:
     # never through __next__), and describes stay within K - 1 slots of the committing
-    # one (SP3 4.3).
+    # one.
     monkeypatch.delenv(SERIAL_PRODUCER_VARIABLE, raising=False)
     image_files(tmp_path / "in", 7)
     log, ahead = [], []
@@ -3824,7 +3823,7 @@ def test_video_normalize_leaves_the_producer_and_outputs_are_unchanged(
     monkeypatch, tmp_path
 ):
     # Load Video has no describe(): its describe is the FFmpeg read (serial, in frame
-    # order) and its materialize the frame's normalize (spec 4.2). At K = 3 each window
+    # order) and its materialize the frame's normalize. At K = 3 each window
     # item's normalize waits until the next frame (or the end) was read: the read goes
     # on while a normalize runs, which the serial producer's advance, holding both,
     # does not allow. The frames and events equal K = 1's.
@@ -3881,7 +3880,7 @@ def test_serial_producer_variable_never_changes_output(monkeypatch, tmp_path, va
     assert stripped(three.events) == stripped(one.events)
 
 
-# A fresh interpreter (U1): the system C++ runtime first (conftest), then Pillow and its
+# A fresh interpreter: the system C++ runtime first (conftest), then Pillow and its
 # AVIF plugin, as load_image.py imports them, and nothing else. argv: repository root,
 # case, folder of a.tga, b.ico and serial.bin. "serial" opens serial.bin (TGA bytes)
 # alone: Pillow 12 imports only an extension's own plugin, and .bin has none, so that
@@ -3949,13 +3948,12 @@ print(json.dumps(result))
 
 
 def test_load_image_import_builds_the_pillow_registry_before_parallel_opens(tmp_path):
-    # U1: Pillow builds its plugin registry on first use. Under Pillow 9.2 an open()
+    # Pillow builds its plugin registry on first use. Under Pillow 9.2 an open()
     # whose first pass missed failed when another thread's init() finished first: its
     # own init() returned 0, and it made no second pass. load_image.py's import builds
     # the registry before any decode, in the order a first serial open builds it.
-    # Pillow 12 builds its registry differently and no longer shows that race from a
-    # cold start (P4, 2026-10-06: the "cold" demonstration is retired); the fix's own
-    # assertions stay.
+    # Pillow 12 does not show that race from a cold start; the fix's own assertions
+    # stay.
     for name in ("a.tga", "b.ico"):
         Image.new("RGB", (16, 16), (10, 20, 30)).save(tmp_path / name)
     Image.new("RGB", (16, 16), (10, 20, 30)).save(tmp_path / "serial.bin", format="TGA")
@@ -3982,7 +3980,7 @@ def test_load_image_import_builds_the_pillow_registry_before_parallel_opens(tmp_
 
 
 def test_load_image_builds_the_pillow_registry_after_its_imports():
-    # U1: load_image.py's only module-level calls are Image.preinit(), then
+    # load_image.py's only module-level calls are Image.preinit(), then
     # Image.init(), after its last import, so pillow_avif has registered AVIF first, as
     # in a serial first open(). The child test above runs them after its own imports,
     # so it would not see them moved above one.

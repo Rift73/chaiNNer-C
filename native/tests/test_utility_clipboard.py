@@ -186,7 +186,7 @@ def test_image_validation_priority_and_exact_errors(value, pixel_format):
 
 
 def conversion_rule(result):
-    """Consult 3's rule against chaiNNer-C's chainner_ext: pyo3's argument-conversion
+    """The rule against chaiNNer-C's chainner_ext: pyo3's argument-conversion
     TypeError, OverflowError and UnicodeEncodeError match by type only (the node path
     keeps pyo3's texts); every other outcome, a conversion ValueError included, matches
     in full."""
@@ -216,7 +216,7 @@ def test_failures_keep_diagnostics_but_free_untransferred_memory(image, failure)
     )
     # arboard leaked the image HGLOBAL after Lock/Set failures (and called DeleteObject
     # on it). The node path's RAII owns it until transfer, and chaiNNer-C's chainner_ext
-    # frees it the same way (Consult 6 D-1), so the calls and the leak count match.
+    # frees it the same way, so the calls and the leak count match.
     assert actual == expected
     assert actual[3] == 0
     if failure == "open":

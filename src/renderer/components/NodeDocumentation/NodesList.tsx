@@ -58,10 +58,8 @@ export const NodesList = memo(
             setSelectScrollTrigger((prev) => !prev);
         }, [isOpen, selectedSchemaId]);
 
-        // This is a hack. Sometimes, I hate react.
-        // Basically, if you use the menu way of opening the modal, the above useEffect will trigger
-        // before the ref actually gets set, so it won't scroll to the selected element.
-        // This forces it to scroll in the render after the ref is set.
+        // If the modal is opened from the menu, the effect above runs before the ref is set; this
+        // one scrolls in the render after it is set.
         useEffect(() => {
             if (selectedElement.current) {
                 selectedElement.current.scrollIntoView({

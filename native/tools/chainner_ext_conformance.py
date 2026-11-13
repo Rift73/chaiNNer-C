@@ -1,4 +1,4 @@
-"""Conformance of chainner_ext_c against the real chainner_ext 0.3.10 (spec 2 and 4).
+"""Conformance of chainner_ext_c against the real chainner_ext 0.3.10.
 
 Usage (native/.venv-py311, -B, PYTHONDONTWRITEBYTECODE=1, CUDA_VISIBLE_DEVICES=-1;
 the tool pins itself and its children to --affinity, default 0xFF00 = CPUs 8-15, so
@@ -43,7 +43,7 @@ its bulk load panics); "tie" (upstream's AHashSet order decides: palette colours
 with equal sort keys, or grid queries on the R-tree), counted, not compared;
 "corrected" (the 300+-colour grayscale palette upstream's R-tree panics on;
 non-finite queries on the R-tree, which its traversal decides and chaiNNer-C
-answers by the sub-300 linear rule, Consult 8 D-5; the image clipboard failures
+answers by the sub-300 linear rule; the image clipboard failures
 upstream leaks memory on), each with upstream's recorded outcome as its evidence.
 Clipboard cases run under ClipboardCapture (the import table of
 the binary that calls the Win32 clipboard is redirected; the live clipboard is never
@@ -106,7 +106,7 @@ PROBES = (
 )
 MODES = ("default", "nfa", "backtrack", "dfa")
 PREFILTERS = ("on", "off")
-# Exceptions compared by type only (spec 2: pyo3's argument-conversion errors).
+# Exceptions compared by type only (pyo3's argument-conversion errors).
 TYPE_ONLY = frozenset(
     {"builtins.TypeError", "builtins.OverflowError", "builtins.UnicodeEncodeError"}
 )
@@ -590,7 +590,7 @@ def find_probe() -> Path:
 
 
 POS_CLASSES = ("boundary", "midchar", "past")
-# Consult 4 (binding): the position classes each mode is compared with the real
+# The position classes each mode is compared with the real
 # module on; nfa == backtrack is asserted on every class (pair_splits()).
 COMPARED_CLASSES = {
     "default": POS_CLASSES,
@@ -600,7 +600,7 @@ COMPARED_CLASSES = {
 }
 
 
-# The controller's refinement of Consult 4: boundary cases where regex 1.8.4's own
+# Boundary cases where regex 1.8.4's own
 # PikeVM and backtracker disagree with its default DFA path (mechanisms A and B in
 # the file). Excluded from the nfa and backtrack cells' comparison with the real
 # module only; default and dfa compare them, and nfa == backtrack still holds.
@@ -725,7 +725,7 @@ def pair_splits(
 def run_probe_cell(
     probe: Path, mode: str, prefilter: str, payload: bytes
 ) -> tuple[dict[str, list[Json]] | None, float, str]:
-    """One mode cell: (results by id, or None when the probe failed; wall; note)."""
+    """One mode cell: (results by id, or None when the probe failed; wall; the failure)."""
     start = time.perf_counter()
     proc = subprocess.run(
         [str(probe), "--mode", mode, "--prefilter", prefilter],
@@ -734,9 +734,8 @@ def run_probe_cell(
         check=False,
     )
     wall = time.perf_counter() - start
-    # 0: ran; 3: ran with a stub compile ("unimplemented: ..."), still diffed;
-    # 2: malformed input; anything else: a crash.
-    if proc.returncode not in (0, 3):
+    # 0: ran; 2: malformed input; anything else: a crash.
+    if proc.returncode:
         tail = proc.stderr.decode("utf-8", "replace")[-4000:]
         return None, wall, f"probe exit {proc.returncode}\n{tail}"
     got: dict[str, list[Json]] = {}
@@ -746,7 +745,7 @@ def run_probe_cell(
         if raw.strip():
             row = json.loads(raw)
             got[row["id"]] = row["results"]
-    return got, wall, "probe exit 3: a stub compile ran" if proc.returncode == 3 else ""
+    return got, wall, ""
 
 
 def regex_probe(
@@ -932,7 +931,7 @@ PIXEL_ART = (
     ("super_eagle", 2), ("sai", 2), ("super_sai", 2), ("hqx", 2), ("hqx", 3),
     ("hqx", 4),
 )  # fmt: skip
-NEW, COVERED = 50, 10  # spec 4's floors: new paths, paths the 14,960 cases cover
+NEW, COVERED = 50, 10  # the floors: new paths, paths the 14,960 cases cover
 REJECTED = 2  # a channel count the item rejects with one fixed message
 
 
@@ -1776,7 +1775,7 @@ INF_BITS = ("0x7f800000", "0xff800000")
 
 
 def nonfinite_tree_cells(cases: list[ImageCase], floors: dict[str, int]) -> None:
-    """Consult 8 D-5: +-inf palette colours, NaN or +-inf pixels, or both, with 300+
+    """+-inf palette colours, NaN or +-inf pixels, or both, with 300+
     colours that reach upstream's R-tree (3 or 4 channels, a 1- or 3-channel palette
     expanded included). Upstream returns traversal-decided colours for those queries;
     chaiNNer-C applies the sub-300 linear rule ("corrected")."""
@@ -1865,7 +1864,7 @@ def classify(case: ImageCase) -> tuple[str, str]:
             (
                 "upstream leaks the image's HGLOBAL after a failed GlobalLock or "
                 "SetClipboardData (and calls DeleteObject on it); chaiNNer-C frees it "
-                "with GlobalFree (Consult 6 D-1)"
+                "with GlobalFree"
             ),
         )
     palettes = [
@@ -1904,7 +1903,7 @@ def classify(case: ImageCase) -> tuple[str, str]:
                 "corrected",
                 (
                     "upstream's R-tree traversal decides non-finite queries; chaiNNer-C "
-                    "applies the sub-300 linear rule (Consult 8 D-5)"
+                    "applies the sub-300 linear rule"
                 ),
             )
         if image_recipe["mapping"] == "grid" or palettes[0]["mapping"] == "grid":
@@ -2370,7 +2369,7 @@ def check_candidate_case(
 
 
 def corrected_clipboard(outcome: Json) -> Json:
-    """Consult 6 D-1: upstream's recorded failed image transfer with the corrected
+    """Upstream's recorded failed image transfer with the corrected
     tail: no DeleteObject on the HGLOBAL, GlobalFree before CloseClipboard, nothing
     leaked."""
     calls = [call for call in outcome["clipboard"]["calls"] if call != ["DeleteObject"]]

@@ -54,6 +54,14 @@ ENTRY_POINTS = [
         "onnx",
         id="dual_engine_worker",
     ),
+    pytest.param(
+        [
+            *"-m nodes.impl.tensorrt.rdual_engine_worker".split(),
+            *"export engines 0 8 3 0 0 none".split(),
+        ],
+        "onnx",
+        id="rdual_engine_worker",
+    ),
 ]
 
 

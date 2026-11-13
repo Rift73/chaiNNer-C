@@ -1110,7 +1110,7 @@ def test_concurrent_larger_alpha_scan(dtype, opaque, kind, shape):
 
 
 # OpenCV decodes these through a temp file whose name concurrent decodes could
-# share (SP3b decoder audit U2); read_cv runs their imdecode calls one at a time.
+# share; read_cv runs their imdecode calls one at a time.
 TEMP_FILE_DECODES = [".sr", ".ras", ".hdr", ".pic", ".exr", ".HDR"]
 
 
@@ -1229,7 +1229,7 @@ def test_concurrent_temp_file_decodes_equal_serial_decodes(tmp_path, named):
     assert recorder.peak == 1 and recorder.calls == 4 * len(paths)
 
 
-# Save Image's prepare phase (SP3-P9) per format family: chaiNNer-C's PNG encoder
+# Save Image's prepare phase per format family: chaiNNer-C's PNG encoder
 # (8-bit PNG); OpenCV imencode with today's parameters (16-bit PNG, JPG, WEBP, TIFF,
 # BMP); Pillow into a buffer with the format's own options (GIF, TGA, AVIF).
 PREPARED_FORMATS = [

@@ -40,14 +40,28 @@ def compressed_name(name: str, compress: bool) -> str:
     return name
 
 
+def compress(data: bytes, compression: Compression | None) -> bytes:
+    """The bytes a file written with `compression` holds (None: as they are)."""
+    if compression is Compression.LZMA:
+        return lzma.compress(data)
+    if compression is Compression.ZSTD:
+        return zstd.compress(data, ZSTD_LEVEL)
+    return data
+
+
+def decompress(data: bytes) -> bytes | None:
+    """Compressed bytes (by their header) decompressed; None for plain ones."""
+    if data.startswith(XZ_HEADER):
+        return lzma.decompress(data)
+    if data.startswith(ZSTD_HEADER):
+        return zstd.decompress(data)
+    return None
+
+
 def write_file(path: Path, data: bytes, *, compression: Compression | None) -> None:
     """Writes the file through a temporary file in its folder (native/include/atomic_file.hpp):
     no partial file, and a file that already holds these bytes is left untouched."""
-    if compression is Compression.LZMA:
-        data = lzma.compress(data)
-    elif compression is Compression.ZSTD:
-        data = zstd.compress(data, ZSTD_LEVEL)
-    graph().atomic_write(path, data)
+    graph().atomic_write(path, compress(data, compression))
 
 
 def decompressed(path: Path | str) -> bytes | None:
@@ -56,10 +70,7 @@ def decompressed(path: Path | str) -> bytes | None:
         header = file.read(len(XZ_HEADER))
         if not header.startswith((XZ_HEADER, ZSTD_HEADER)):
             return None
-        data = header + file.read()
-    return (
-        lzma.decompress(data) if data.startswith(XZ_HEADER) else zstd.decompress(data)
-    )
+        return decompress(header + file.read())
 
 
 def read_file(path: Path | str) -> bytes:

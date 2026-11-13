@@ -29,7 +29,7 @@ from nodes.impl.onnx.model import (
 from nodes.impl.onnx.session import create_inference_session
 from nodes.impl.tensorrt.dual import METADATA_KEY
 from nodes.properties.outputs import OnnxModelOutput
-from packages.chaiNNer_onnx.onnx.io.load_model import load_model_node
+from packages.chaiNNer_onnx.onnx.io.load_model import read_model
 from packages.chaiNNer_onnx.onnx.io.save_model import save_model_node
 
 # Runs native code, which GitHub's checks do not build.
@@ -79,7 +79,7 @@ def test_a_model_keeps_its_file_bytes(tmp_path: Path):
     path = tmp_path / "model.onnx"
     data = non_canonical(gain_model())
     path.write_bytes(data)
-    loaded, _, _ = load_model_node(path)
+    loaded, _, _ = read_model(path)
     assert loaded.bytes == data
     assert onnx.load_model_from_string(loaded.bytes) == onnx.load_model(str(path))
     assert loaded.info.scale_width == 1 and loaded.info.dtype == "fp32"
@@ -99,7 +99,7 @@ def test_a_compressed_model_keeps_its_decompressed_bytes(tmp_path: Path):
     data = non_canonical(gain_model())
     model = OnnxGeneric(data, OnnxInfo(17, "fp32"))
     save_model_node(model, tmp_path, "model", True, Compression.ZSTD)
-    loaded, _, _ = load_model_node(tmp_path / "model_compressed.onnx")
+    loaded, _, _ = read_model(tmp_path / "model_compressed.onnx")
     assert loaded.bytes == data
 
 
@@ -113,7 +113,7 @@ def test_a_model_with_external_data_loads_as_before(tmp_path: Path):
         size_threshold=0,
     )
     assert b"location" in path.read_bytes()
-    loaded, _, _ = load_model_node(path)
+    loaded, _, _ = read_model(path)
     assert loaded.bytes == onnx.load_model(str(path)).SerializeToString()
     assert b"location" not in loaded.bytes  # its weights are inside now
 
@@ -125,7 +125,7 @@ def test_a_corrupt_file_raises_what_it_raised(tmp_path: Path):
     with pytest.raises(DecodeError) as expected:
         onnx.load_model(str(path))
     with pytest.raises(ValueError) as actual:
-        load_model_node(path)
+        read_model(path)
     assert isinstance(actual.value.__cause__, DecodeError)
     assert str(actual.value.__cause__) == str(expected.value)
 

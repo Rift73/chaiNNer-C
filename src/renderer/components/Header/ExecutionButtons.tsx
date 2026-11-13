@@ -3,6 +3,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IoPause, IoPlay, IoStop } from 'react-icons/io5';
 import { useContext } from 'use-context-selector';
+import { log } from '../../../common/log';
 import { BackendContext } from '../../contexts/BackendContext';
 import { ExecutionContext, ExecutionStatus } from '../../contexts/ExecutionContext';
 
@@ -37,8 +38,7 @@ export const ExecutionButtons = memo(() => {
                     size="md"
                     variant="outline"
                     onClick={() => {
-                        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                        run();
+                        run().catch(log.error);
                     }}
                 />
             </Tooltip>
@@ -58,8 +58,7 @@ export const ExecutionButtons = memo(() => {
                     size="md"
                     variant="outline"
                     onClick={() => {
-                        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                        pause();
+                        pause().catch(log.error);
                     }}
                 />
             </Tooltip>
@@ -80,8 +79,7 @@ export const ExecutionButtons = memo(() => {
                     size="md"
                     variant="outline"
                     onClick={() => {
-                        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                        kill();
+                        kill().catch(log.error);
                     }}
                 />
             </Tooltip>

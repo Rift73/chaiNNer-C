@@ -8,7 +8,7 @@ import {
     powerSaveBlocker,
 } from 'electron/main';
 import EventSource from 'eventsource';
-import fs, { constants } from 'fs/promises';
+import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { BackendEventMap } from '../../common/Backend';
@@ -26,7 +26,7 @@ import { buildInfo } from '../buildInfo';
 import { readClipboardForPaste, writeChainToClipboard } from '../clipboard';
 import { writePngDataUrlToClipboard } from '../clipboardImage';
 import { isArmMac, isMac } from '../env';
-import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
+import { addBrowserWindow, addFiles, removeFiles } from '../fileWatcher';
 import { getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
@@ -39,9 +39,11 @@ import {
     startInstaller,
     takeUpdateResult,
 } from '../updater';
+import { checkFileExists, isInFolder } from '../util';
 import { exitOnBackendFailure } from './backendFailure';
 import { showOpenDialog } from './dialogs';
 import { MenuData, setMainMenu } from './menu';
+import { serveRenderer } from './rendererProtocol';
 
 const version = app.getVersion() as Version;
 const documentsDir = app.getPath('documents');
@@ -57,7 +59,7 @@ const initiateSaveDialog = async (
         defaultPath: defaultPath ?? documentsDir,
     });
     if (!canceled && filePath) {
-        if (filePath.startsWith(installDir)) {
+        if (isInFolder(filePath, installDir)) {
             await dialog.showMessageBox(mainWindow, {
                 type: 'error',
                 title: 'Cannot save in install directory',
@@ -171,11 +173,6 @@ const registerEventHandlerPreSetup = (
         }
     });
 
-    ipcMain.handle('quit-application', async () => {
-        await settingsWriter.flush();
-        app.exit();
-    });
-
     // sleep
     let blockerId: number | undefined;
     ipcMain.on('start-sleep-blocker', () => {
@@ -217,18 +214,19 @@ const registerEventHandlerPreSetup = (
         mainWindow.webContents.send('window-blur');
     });
 
+    // the chain the app was opened with (macOS hands it over in main.ts), else the Startup Template
+    const startupChain = (isMac ? globalThis.startupFile : args.file) || settings.startupTemplate;
+    globalThis.startupFile = null;
+    // The page asks at every start, View > Reload included, when the chain on screen is newer than
+    // the file: only its first start opens it.
+    let autoOpen = startupChain ? openSaveFile(startupChain) : undefined;
+    ipcMain.handle('get-auto-open', () => {
+        const result = autoOpen;
+        autoOpen = undefined;
+        return result;
+    });
+
     if (isMac) {
-        if (globalThis.startupFile) {
-            // Open file with chaiNNer on other platforms
-            const result = openSaveFile(globalThis.startupFile);
-            ipcMain.handle('get-auto-open', () => result);
-            globalThis.startupFile = null;
-        } else if (settings.startupTemplate) {
-            const result = openSaveFile(settings.startupTemplate);
-            ipcMain.handle('get-auto-open', () => result);
-        } else {
-            ipcMain.handle('get-auto-open', () => undefined);
-        }
         // We remove the event we created in main.ts earlier on
         app.removeAllListeners('open-file');
 
@@ -241,17 +239,6 @@ const registerEventHandlerPreSetup = (
             })().catch(log.error);
         });
     } else {
-        if (args.file) {
-            // Open file with chaiNNer on other platforms
-            const result = openSaveFile(args.file);
-            ipcMain.handle('get-auto-open', () => result);
-        } else if (settings.startupTemplate) {
-            const result = openSaveFile(settings.startupTemplate);
-            ipcMain.handle('get-auto-open', () => result);
-        } else {
-            ipcMain.handle('get-auto-open', () => undefined);
-        }
-
         app.on('second-instance', (_event, commandLine) => {
             (async () => {
                 const { file } = parseArgs(commandLine.slice(app.isPackaged ? 2 : 3));
@@ -267,18 +254,7 @@ const registerEventHandlerPreSetup = (
     }
 
     // Handle filesystem
-    ipcMain.handle('fs-read-file', async (event, p, options) => fs.readFile(p, options));
-    ipcMain.handle('fs-write-file', async (event, p, content, options) =>
-        fs.writeFile(p, content, options)
-    );
-    ipcMain.handle('fs-exists', async (event, p) => {
-        try {
-            await fs.access(p, constants.F_OK);
-            return true;
-        } catch {
-            return false;
-        }
-    });
+    ipcMain.handle('fs-exists', (event, p) => checkFileExists(p));
     ipcMain.handle('fs-mkdir', async (event, p, options) => fs.mkdir(p, options));
     ipcMain.handle('fs-readdir', async (event, p) => fs.readdir(p));
     ipcMain.handle('fs-rm', async (event, p, options) => fs.rm(p, options));
@@ -294,9 +270,7 @@ const registerEventHandlerPreSetup = (
 
     // File watching
     addBrowserWindow(mainWindow);
-    ipcMain.handle('watch-file', (event, p) => addFile(p));
     ipcMain.handle('watch-files', (event, ps) => addFiles(ps));
-    ipcMain.handle('unwatch-file', (event, p) => removeFile(p));
     ipcMain.handle('unwatch-files', (event, ps) => removeFiles(ps));
 };
 
@@ -395,16 +369,13 @@ const registerEventHandlerPostSetup = (
             normalizeAccessKeys: true,
         });
         if (choice === 1) {
-            // Don't save
             if (onDontSave) {
-                onDontSave(); // Restart the application
+                onDontSave();
             }
         } else if (choice === 2) {
-            // Cancel
             event.preventDefault();
             return true;
         } else {
-            // Save
             event.preventDefault();
             onSave();
         }
@@ -429,6 +400,10 @@ const registerEventHandlerPostSetup = (
 
     // update: download, check and unpack the latest release, then install it on a restart
     ipcMain.handle('download-update', async () => {
+        // checked before the download: installing restarts the app, which only an owned backend can
+        if (!backend.owned) {
+            throw new Error('chaiNNer-C runs on a backend it did not start, so it cannot restart.');
+        }
         if (stagedUpdate) {
             await discardUpdate(stagedUpdate);
             stagedUpdate = undefined;
@@ -572,7 +547,6 @@ const setupProgressListeners = (
 };
 
 export const createMainWindow = async (args: OpenArguments, settings: ChainnerSettings) => {
-    // Create the browser window.
     const mainWindow = new BrowserWindow({
         width: settings.lastWindowSize.width,
         height: settings.lastWindowSize.height,
@@ -586,6 +560,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
             nodeIntegration: false,
             nodeIntegrationInWorker: false,
             contextIsolation: true,
+            v8CacheOptions: 'bypassHeatCheck',
             preload: path.join(__dirname, '/preload.js'),
         },
         icon: `${__dirname}/../public/icons/cross_platform/icon`,
@@ -635,12 +610,10 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
             mainWindow.webContents.once('did-finish-load', showWindow);
         }
 
-        // and load the index.html of the app.
-        const loading = MAIN_WINDOW_VITE_DEV_SERVER_URL
-            ? mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
-            : mainWindow.loadFile(
-                  path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
-              );
+        const loading = mainWindow.loadURL(
+            MAIN_WINDOW_VITE_DEV_SERVER_URL ||
+                serveRenderer(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`))
+        );
 
         const backend = await backendPromise;
         registerEventHandlerPostSetup(mainWindow, backend, settingsWriter);
@@ -651,10 +624,6 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
         sse.onopen = () => {
             log.info('Successfully connected to setup SSE.');
         };
-
-        sse.addEventListener('backend-started', () => {
-            mainWindow.webContents.send('backend-started');
-        });
 
         const backendStatusProgressSlice = SubProgress.slice(progressController, 0.25, 0.95);
         sse.addEventListener('backend-status', (e: MessageEvent<string>) => {
@@ -676,14 +645,13 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
             log.error(error);
             await progressController.submitInterrupt({
                 type: 'critical error',
-                message: 'Unable to setup backend due to unknown.',
+                message: `Unable to set up the backend: ${String(error)}`,
             });
         }
 
         return;
     }
 
-    // Open the DevTools.
     if (args.devtools && !mainWindow.isDestroyed()) {
         mainWindow.webContents.openDevTools();
     }

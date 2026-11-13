@@ -1,6 +1,6 @@
 """cn_plane_resample_axis, cn_yuv_to_bgr and cn_bgr_to_yuv: plane_resample.py's
 resampler and yuv_rgb.py's matrix step in C. At every level this CPU has, they give
-the frozen NumPy forms (reference_yuv_planes, lane B's modules before the port) bit
+the frozen NumPy forms (reference_yuv_planes, the Python modules before the port) bit
 for bit, NaN positions included (LLVM leaves a NaN's payload unspecified), for every
 kernel, geometry, matrix, subsampling and siting, in every layout the bridge takes."""
 
@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from test_isa_dispatch import isa_get, isa_set
+from test_isa_dispatch import isa_set
 
 from nodes.impl import plane_resample, yuv_rgb
 from nodes.impl.colour_info import ChromaLocation, Matrix, chroma_size_for
@@ -41,7 +41,7 @@ reference_yuv.__dict__.update(
     resample_plane=reference_resample.resample_plane, Kernel=reference_resample.Kernel
 )
 
-# (input width, input height, resample_plane's keyword arguments): lane B's zimg cases,
+# (input width, input height, resample_plane's keyword arguments): the zimg cases,
 # then widths with 16-, 8- and scalar column groups, one-pixel planes and far
 # downscales whose kernels span many taps.
 CASES: dict[str, tuple[int, int, dict[str, Any]]] = {
@@ -75,16 +75,6 @@ CASES: dict[str, tuple[int, int, dict[str, Any]]] = {
     "one_column": (1, 40, {"width": 1, "height": 17}),
     "far": (300, 90, {"width": 13, "height": 7, "src_left": 1.5}),
 }
-
-
-@pytest.fixture
-def levels():
-    """Every level this CPU has, scalar first; the original level afterwards."""
-    effective, _, cpu = isa_get()
-    try:
-        yield range(cpu + 1)
-    finally:
-        assert isa_set(effective) == effective
 
 
 def random_plane(width: int, height: int, specials: bool = True) -> np.ndarray:
@@ -332,3 +322,19 @@ def test_refusals():
         )
         != 0
     )
+
+
+@pytest.mark.parametrize(
+    "shape, matrix",
+    [((2, 3, 1), (3, 3)), ((2, 3, 4), (3, 3)), ((2, 3), (3, 3)), ((2, 3, 3), (2, 3))],
+)
+def test_bgr_to_yuv_refuses_what_the_kernel_would_read_past(shape, matrix):
+    # The C kernel reads three floats a pixel and a 3 x 3 matrix.
+    with pytest.raises(ValueError):
+        bgr_to_yuv(np.ones(shape, np.float32), np.ones(matrix), 0)
+
+
+def test_yuv_to_bgr_refuses_a_matrix_that_is_not_3_by_3():
+    plane = np.ones((2, 3), np.float32)
+    with pytest.raises(ValueError):
+        yuv_to_bgr(plane, plane, plane, np.ones((2, 3)), 0)

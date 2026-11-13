@@ -9,7 +9,7 @@ notice for the C adaptation is in `backend/src/nodes/impl/chainner_native.LICENS
 foreground starts from the mean colours of the alpha > 0.9 and alpha < 0.1 pixels,
 so it is deterministic. 1.1.10 read two uninitialized `np.empty` buffers instead
 (`native/reports/matting-idempotency.json`), and its frozen copies with those
-buffers zeroed were retired (Consult 11 D-17.3). `test_matting_complete.py` and
+buffers zeroed were retired. `test_matting_complete.py` and
 `test_transparency.py` compare alpha, foreground and background with the live
 `pymatting.estimate_alpha_cf` and `pymatting.estimate_foreground_ml` bit for bit.
 

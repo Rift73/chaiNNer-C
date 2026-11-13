@@ -1,4 +1,4 @@
-import { ComponentProps, ReactElement, SetStateAction } from 'react';
+import { ComponentProps, ReactElement, RefObject, SetStateAction } from 'react';
 import { Edge, Node } from 'reactflow';
 import { Mock, afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { EdgeData, InputId, NodeData, SchemaId } from '../../src/common/common-types';
@@ -7,6 +7,7 @@ import { AdvancedNumberInput } from '../../src/renderer/components/inputs/elemen
 import { AlertBoxContext } from '../../src/renderer/contexts/AlertBoxContext';
 import { BackendContext } from '../../src/renderer/contexts/BackendContext';
 import { GlobalContext, GlobalProvider } from '../../src/renderer/contexts/GlobalNodeState';
+import { takeScreenshot } from '../../src/renderer/helpers/nodeScreenshot';
 import type { SaveData } from '../../src/main/SaveFile';
 import type { NumberInputProps } from '@chakra-ui/react';
 
@@ -24,6 +25,7 @@ const harness = vi.hoisted(() => {
         listeners: new Map<string, (...args: unknown[]) => unknown>(),
         nodes: [] as Node<NodeData>[],
         edges: [] as Edge<EdgeData>[],
+        recent: [] as string[],
         invoke: vi.fn<unknown[], Promise<unknown>>(),
         send: vi.fn(),
     };
@@ -126,12 +128,17 @@ vi.mock('../../src/renderer/contexts/BackendContext', () => ({
 }));
 vi.mock('../../src/renderer/hooks/useSettings', () => ({ useSettings: () => ({}) }));
 vi.mock('../../src/renderer/hooks/useOpenRecent', () => ({
-    useOpenRecent: () => [[], vi.fn(), vi.fn()],
+    useOpenRecent: () => [harness.state.recent, vi.fn(), vi.fn()],
 }));
 vi.mock('../../src/renderer/hooks/useInputHashes', () => ({
     useInputHashes: () => [new Map(), { current: new Map() }],
 }));
 vi.mock('../../src/renderer/hooks/useAsyncEffect', () => ({ useAsyncEffect: () => {} }));
+vi.mock('../../src/renderer/helpers/nodeScreenshot', () => ({
+    takeScreenshot: vi.fn(() => Promise.resolve('data:image/png;base64,')),
+    saveDataUrlAsFile: vi.fn(),
+    writeDataUrlToClipboard: vi.fn(),
+}));
 vi.mock('../../src/renderer/hooks/useHotkeys', () => ({ useHotkeys: () => {} }));
 vi.mock('../../src/renderer/hooks/useIpcRendererListener', () => ({
     useIpcRendererListener: (channel: string, listener: (...args: unknown[]) => unknown) => {
@@ -148,11 +155,11 @@ const emit = async (channel: string, ...args: unknown[]): Promise<void> => {
     await listener!(undefined, ...args);
 };
 
-const renderProvider = () => {
+const renderProvider = (reactFlowWrapper: RefObject<HTMLDivElement> = { current: null }) => {
     harness.state.slots = harness.providerSlots;
     harness.state.cursor = 0;
     harness.state.runEffects = false;
-    const tree = GlobalProvider({ reactFlowWrapper: { current: null } }) as ReactElement<{
+    const tree = GlobalProvider({ reactFlowWrapper }) as ReactElement<{
         children: ReactElement<{ value: ComponentProps<typeof GlobalContext.Provider>['value'] }>[];
     }>;
     const global = tree.props.children[0].props.value;
@@ -180,6 +187,7 @@ beforeEach(() => {
         },
     ];
     harness.state.edges = [];
+    harness.state.recent = [];
     vi.stubGlobal('sessionStorage', {
         getItem: (key: string) =>
             key === 'save-path' ? JSON.stringify('C:/chains/current.chn') : null,
@@ -357,4 +365,32 @@ test('an edit during Save keeps the snapshot of the data that was actually sent'
     await save;
     expect(harness.stateWrites).toHaveBeenLastCalledWith(snapshot);
     expect(chainSnapshot(harness.state.nodes, harness.state.edges)).not.toBe(snapshot);
+});
+
+test('Save As of an untitled chain starts in the folder of the chain opened last', async () => {
+    vi.stubGlobal('sessionStorage', { getItem: () => null, setItem: vi.fn() });
+    // the recent list is oldest first, as the Open Recent menu reverses it
+    harness.state.recent = ['C:/old/first.chn', 'C:/new/last.chn'];
+    harness.state.invoke.mockResolvedValueOnce({ kind: 'Canceled' });
+    renderProvider();
+
+    await emit('file-save-as');
+
+    const [channel, , defaultPath] = harness.state.invoke.mock.calls[0];
+    expect(channel).toBe('file-save-as-json');
+    expect(defaultPath).toBe('C:/new');
+});
+
+test('exporting the viewport of an empty chain warns and exports nothing', async () => {
+    const { sendToast } = (AlertBoxContext as unknown as { value: { sendToast: Mock } }).value;
+    sendToast.mockClear();
+    vi.stubGlobal('HTMLElement', class {});
+    harness.state.nodes = [];
+    renderProvider({ current: new HTMLElement() as HTMLDivElement });
+
+    await emit('export-viewport', 'clipboard');
+
+    expect(sendToast).toHaveBeenCalledOnce();
+    expect(sendToast).toHaveBeenCalledWith(expect.objectContaining({ status: 'warning' }));
+    expect(takeScreenshot).not.toHaveBeenCalled();
 });

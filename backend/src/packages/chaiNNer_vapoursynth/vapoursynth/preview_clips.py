@@ -14,12 +14,20 @@ from . import clips_group
     schema_id="chainner:vapoursynth:preview_clips",
     name="Preview Clips",
     description=[
-        "Shows up to 16 clips in vsview, each as an output under its name.",
         (
-            "The first run opens a vsview window. While the window stays open, a run"
-            " rewrites its script without opening another window: press Reload Script"
-            " (Ctrl+R) in vsview to see the changes. After you close the window, the next"
-            " run opens a new one."
+            "Shows up to 16 clips in vsview, a separate viewer window, each as an"
+            " output under its name."
+        ),
+        (
+            "Run does not render the clips: it writes the script, checks that it loads"
+            " and opens vsview, which computes each frame when you scrub to it. The"
+            " first Run on a new video can take a while, as BestSource reads the whole"
+            " file once to index it; later opens are quick."
+        ),
+        (
+            "While the window stays open, Run again and the open viewer reloads by"
+            " itself; if it does not, press Reload Script (Ctrl+R). After you close the"
+            " window, the next Run opens a new one."
         ),
         (
             "Each run first checks the script in VapourSynth: an error shows on the node"
@@ -28,7 +36,13 @@ from . import clips_group
         ),
     ],
     icon="BsEyeFill",
-    inputs=named_clip_inputs(),
+    inputs=named_clip_inputs(
+        "A clip to show in vsview, as a tab under its name. vsview computes each frame"
+        " when you scrub to it. Run again and the open viewer reloads by itself; if it"
+        " does not, press Reload Script (Ctrl+R).",
+        by_method=True,
+    ),
+    keywords=["Preview", "Viewer", "Scrub", "vsview"],
     outputs=[],
     side_effects=True,
     node_context=True,
@@ -37,7 +51,7 @@ def preview_clips_node(context: NodeContext, *clips: VideoClip | str | None) -> 
     unavailable = vsview_unavailable_reason(glibc_version())
     if unavailable is not None:
         raise VSScriptError(unavailable)
-    outputs = named_clips(clips)
+    outputs = named_clips(clips, by_method=True)
     folder = chain_dir(context)
     # vspipe evaluates the whole script: a failing statement raises its node's error
     # here, in chaiNNer, instead of only inside vsview. A copy is checked, so that an
@@ -48,4 +62,5 @@ def preview_clips_node(context: NodeContext, *clips: VideoClip | str | None) -> 
     finally:
         check.unlink(missing_ok=True)
     script = write_script(context, outputs, folder / "preview.vpy")
-    launch_preview(script, context.node_id)
+    title = f"{', '.join(name for _, name in outputs)} - chaiNNer-C"
+    launch_preview(script, context.node_id, title)

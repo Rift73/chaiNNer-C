@@ -16,6 +16,7 @@ from .native import (
     checked_f32,
     empty_ordered,
     f32,
+    image_f32,
     lib,
     memory_order,
     numpy_order,
@@ -49,15 +50,8 @@ for _name, _args in _signatures.items():
     _function.restype = ct.c_int
 
 
-def _image(image: np.ndarray) -> tuple[np.ndarray, int]:
-    source = f32(image)
-    if source.ndim not in (2, 3) or any(size == 0 for size in source.shape):
-        raise ValueError(f"Invalid image shape {source.shape}")
-    return source, source.shape[2] if source.ndim == 3 else 1
-
-
 def statistics(image: np.ndarray, percentile: float) -> tuple[float, ...]:
-    quantile_source, _ = _image(image)
+    quantile_source, _ = image_f32(image)
     # NumPy's scalar reduction follows physical order for transposed dense arrays.
     source = f32(np.ravel(image, order="K"))
     # minimum and maximum share loops_minmax's dispatch; a strided inner stream
@@ -130,8 +124,8 @@ def binary(
 
 
 def calculate_ssim(image: np.ndarray, other: np.ndarray) -> float:
-    source, channels = _image(image)
-    second, second_channels = _image(other)
+    source, channels = image_f32(image)
+    second, second_channels = image_f32(other)
     if channels != 1 or second_channels != 1 or source.shape != second.shape:
         raise ValueError("SSIM requires equally shaped grayscale images")
     from .native_convolution import convolve
@@ -156,8 +150,8 @@ def calculate_ssim(image: np.ndarray, other: np.ndarray) -> float:
 
 
 def apply_palette(image: np.ndarray, palette: np.ndarray) -> np.ndarray:
-    source, channels = _image(image)
-    lookup, palette_channels = _image(palette)
+    source, channels = image_f32(image)
+    lookup, palette_channels = image_f32(palette)
     if channels != 1:
         raise ValueError("Apply Palette requires a grayscale image")
     assert lookup.shape[1] <= 2**24, (
@@ -182,7 +176,7 @@ def apply_palette(image: np.ndarray, palette: np.ndarray) -> np.ndarray:
 
 
 def distinct_colors(image: np.ndarray) -> np.ndarray:
-    source, channels = _image(image)
+    source, channels = image_f32(image)
     result = np.empty((source.size // channels, channels), dtype=np.float32)
     count = _n()
     check(
@@ -222,8 +216,8 @@ def cas_mask(low: np.ndarray, high: np.ndarray, bias: float) -> np.ndarray:
 
 
 def cas_mix(image: np.ndarray, sharpened: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    source, channels = _image(image)
-    second, _ = _image(sharpened)
+    source, channels = image_f32(image)
+    second, _ = image_f32(sharpened)
     if source.shape != second.shape or mask.shape != source.shape[:2]:
         raise ValueError("Invalid CAS image/mask shapes")
     if mask.dtype not in (np.dtype(np.float32), np.dtype(np.float64)):
@@ -255,8 +249,8 @@ def correction(
     *,
     add: bool,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    source, channels = _image(image)
-    second, second_channels = _image(reference)
+    source, channels = image_f32(image)
+    second, second_channels = image_f32(reference)
     if channels != 3 or second_channels != 3 or source.shape != second.shape:
         raise ValueError("Correction requires equally shaped three-channel images")
     alphas = []
@@ -264,7 +258,7 @@ def correction(
         if value is None:
             alphas.append(None)
         else:
-            converted, depth = _image(value)
+            converted, depth = image_f32(value)
             if depth != 1 or converted.shape[:2] != source.shape[:2]:
                 raise ValueError("Correction alpha does not match the image")
             alphas.append(converted)
@@ -327,7 +321,12 @@ def channel_sums(image: np.ndarray) -> np.ndarray:
 
 def scale_channels(image: np.ndarray, gains: np.ndarray) -> None:
     """image[:, :, :3] *= gains (three float32 factors) in place."""
-    check(_lib.cn_analysis_scale_channels(ptr(f32(image)), *_raster(image), ptr(gains)))
+    factors = f32(gains)
+    if factors.shape != (3,):
+        raise ValueError("Channel gains must be three float32 factors")
+    check(
+        _lib.cn_analysis_scale_channels(ptr(f32(image)), *_raster(image), ptr(factors))
+    )
 
 
 def color_transfer(
@@ -340,8 +339,8 @@ def color_transfer(
     reciprocal: bool,
     scale: bool,
 ) -> np.ndarray:
-    source, channels = _image(image)
-    second, second_channels = _image(reference)
+    source, channels = image_f32(image)
+    second, second_channels = image_f32(reference)
     if channels != 3 or second_channels != 3:
         raise ValueError("Color transfer requires three-channel images")
     for mask, value in ((valid, source), (reference_valid, second)):

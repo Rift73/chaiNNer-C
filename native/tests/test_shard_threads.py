@@ -1,4 +1,5 @@
-"""run_tests.py holds a shard's libraries to its thread cap, also those that read no variable."""
+"""run_tests.py: what its shards run, and each shard's thread cap, also on libraries that
+read no variable."""
 
 from __future__ import annotations
 
@@ -119,3 +120,61 @@ def test_a_shard_s_own_process_is_capped(tmp_path: Path):
         timeout=120,
     )
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_named_tests_run_alone_and_option_values_stay_options(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(run_tests.ROOT)
+    tests, others = run_tests.split_arguments(
+        [
+            "native/tests/test_shard_threads.py::test_x",
+            "-x",
+            "--deselect",
+            "native/tests/test_parallel.py",
+            "native/tests/test_parallel.py",
+            "-k",
+            "cap",
+        ]
+    )
+    assert tests == [
+        "native/tests/test_shard_threads.py::test_x",
+        "native/tests/test_parallel.py",
+    ]
+    assert others == ["-x", "--deselect", "native/tests/test_parallel.py", "-k", "cap"]
+    placed = run_tests.placement(tests, {}, 8)
+    assert sorted(name for group, _ in placed for name in group) == sorted(tests)
+    assert placed[-1] == (["native/tests/test_parallel.py"], None)
+
+
+def test_a_named_folder_runs_its_test_files(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.chdir(run_tests.ROOT)
+    tests, others = run_tests.split_arguments(["backend/tests"])
+    assert others == []
+    assert tests == [
+        name for name in run_tests.test_files() if name.startswith("backend/")
+    ]
+    assert tests
+
+
+def test_a_repository_path_named_from_another_folder_runs_alone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(run_tests.ROOT / "native")
+    tests, others = run_tests.split_arguments(["native/tests/test_shard_threads.py"])
+    assert (tests, others) == (["native/tests/test_shard_threads.py"], [])
+
+
+@pytest.mark.parametrize("named", ["native/tests/fuzz", "native/tests/no_such_test.py"])
+def test_a_named_argument_that_selects_no_test_stops_the_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], named: str
+):
+    def started(*_args: object, **_options: object) -> None:
+        raise AssertionError("a shard was started")
+
+    monkeypatch.chdir(run_tests.ROOT)
+    monkeypatch.setattr(run_tests.subprocess, "Popen", started)
+    monkeypatch.setattr(run_tests.subprocess, "run", started)
+    monkeypatch.setattr(sys, "argv", ["run_tests.py", named])
+    assert run_tests.main() == 2
+    assert named in capsys.readouterr().err

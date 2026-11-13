@@ -119,9 +119,11 @@ def test_run_proxies_without_recycling_the_worker():
     )
     # The VRAM line shows AMD GPUs on a machine without an NVIDIA GPU (test_amd_gpu.py).
     upstream[upstream.index("from gpu import nvidia")] = "from gpu import amd, nvidia"
+    # The worker and the host share the SSE access log filter.
     upstream[upstream.index("from server_config import ServerConfig")] = (
-        "from server_config import LOG_CONFIG, ServerConfig"
+        "from server_config import LOG_CONFIG, ServerConfig, SSEFilter"
     )
+    upstream.remove("import logging")
     # /kill leaves the worker running when it had no run to kill (see below), and
     # restart_if_broken reads the worker's restart header from an HTTPResponse.
     upstream[upstream.index("from sanic.response import json")] = (
@@ -130,9 +132,11 @@ def test_run_proxies_without_recycling_the_worker():
     upstream[
         upstream.index("from response import error_response, success_response")
     ] = (
-        "from response import RESTART_WORKER_HEADER, error_response, "
+        "from response import CLIENT_GONE, RESTART_WORKER_HEADER, error_response, "
         "no_executor_response, success_response"
     )
+    # The event streams end quietly when the app's client or the worker has gone.
+    upstream.insert(upstream.index("import psutil"), "import aiohttp")
     # Dependency changes run as a task of their own (WorkerServer.run_pip_job).
     upstream[upstream.index("from typing import Final")] = (
         "from typing import Any, Coroutine, Final"
@@ -190,6 +194,8 @@ def test_run_proxies_without_recycling_the_worker():
     functions[0].remove("shared_distributions")
     # /installed-dependencies leaves out an installed build a dependency replaces.
     functions[0].remove("installed_versions")
+    # Install and uninstall check the requested packages alike.
+    functions[0].remove("selected_packages")
     assert functions[0] == functions[1]
 
 
@@ -217,6 +223,22 @@ def test_kill_and_status_proxy_to_the_worker():
             raised = "\n            raise Exception(response.body.decode())"
             upstream = replace_once(
                 upstream, raised, raised + "\n        killed = response"
+            )
+            # A failed Stop and a failed restart are logged with their errors.
+            upstream = replace_once(
+                upstream,
+                "\n        try:"
+                "\n            logger.debug('Regular kill failed, attempting to restart"
+                " executor process...')",
+                "\n        logger.warning('Stop failed; restarting the worker.',"
+                " exc_info=True)\n        try:",
+            )
+            caught = "\n        except Exception as exception:"
+            upstream = replace_once(
+                upstream,
+                caught,
+                caught + "\n            logger.error('Restarting the worker failed.',"
+                " exc_info=True)",
             )
             done = "\n    return json(success_response(), status=200)"
             upstream = replace_once(
@@ -259,6 +281,20 @@ def test_host_and_worker_close_as_upstream():
                 + "\n    if sys.platform == 'linux':"
                 "\n        signal.signal(signal.SIGTERM, signal.SIG_DFL)",
             )
+            failed = "logger.error(f'Error waiting for server to start: {ex}'"
+            upstream = replace_once(upstream, failed, failed + ", exc_info=True")
+            # The worker's run is stopped before the worker ends, so its Stop cleans up.
+            ended = "\n    await worker.stop()"
+            upstream = replace_once(
+                upstream, ended, "\n    await worker.stop_run()" + ended
+            )
+        if path == ("WorkerServer", "get_sse"):
+            # A stream still open when the worker stops ends instead of raising KeyError.
+            upstream = replace_once(
+                upstream,
+                "self._manually_close.remove(resp)",
+                "self._manually_close.discard(resp)",
+            )
         assert here == upstream, path
 
 
@@ -269,6 +305,13 @@ def test_event_stream_sends_without_acknowledgments():
         upstream,
         "f\"event: {message['event']}\\ndata: {stringify(message['data'])}\\n\\n\"",
         "event_text(message)",
+    )
+    # A client that has gone ends the stream without an error (response.CLIENT_GONE).
+    upstream = replace_once(
+        upstream,
+        "\n        await response.send(event_text(message))",
+        "\n        try:\n            await response.send(event_text(message))"
+        "\n        except CLIENT_GONE:\n            return",
     )
     assert here == upstream
     methods = [

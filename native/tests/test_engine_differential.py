@@ -7,7 +7,6 @@ synthetic inputs."""
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import re
@@ -26,7 +25,6 @@ from engine_differential import (
     LAYOUT_DIFFERENCES,
     execute,
     fatal_load_errors,
-    load_registry_errors,
     mismatches,
     order_violations,
 )
@@ -40,7 +38,6 @@ from chain.optimize import optimize
 from nodes.impl.ffmpeg import get_executable_path
 from nodes.impl.native_graph import graph
 
-BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 IMAGE_CASES = [
     case
     for case in bench_cases.CASES
@@ -48,26 +45,6 @@ IMAGE_CASES = [
 ]
 VIDEO_CASES = [case for case in bench_cases.CASES if case.startswith("video-")]
 SAVE_VIDEO = "chainner:image:save_video"
-
-
-@pytest.fixture(scope="module")
-def schemas():
-    """The standard package's nodes, registered as the worker registers them; their schemas as /nodes gives them."""
-    main = sys.modules["__main__"]
-    previous = getattr(main, "__file__", None)
-    # Caption loads its font from beside __main__'s file, the app's run.py.
-    main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
-    errors = load_registry_errors(BACKEND / "server.py")
-    assert not errors, [e.module for e in errors]
-    yield {
-        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
-        for schema, (data, _) in api.registry.nodes.items()
-    }
-    if previous is None:
-        del main.__file__
-    else:
-        main.__file__ = previous
 
 
 @pytest.fixture(scope="module")
@@ -502,7 +479,7 @@ def test_a_collector_input_error_reports_its_iterated_inputs(
 
 
 def test_a_generator_error_at_its_first_item_names_its_node(schemas, assets):
-    # Load Video's Range with In after Out fails at its first item, as an error of Load Video.
+    # Load Video's Range with Start after End fails at its first item, as an error of Load Video.
     if not (assets / "moving.mkv").exists():
         pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
     errors = []
@@ -521,7 +498,7 @@ def test_a_generator_error_at_its_first_item_names_its_node(schemas, assets):
         error = execute(kind, chain, storage=assets / "storage").error
         assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
         errors.append((error.node_id, str(error), type(error.__cause__).__name__))
-    expected = ("load", "In (frame 12) is after Out (frame 5).", "ValueError")
+    expected = ("load", "Start (frame 12) is after End (frame 5).", "ValueError")
     assert errors[0] == errors[1] == expected
 
 
@@ -708,6 +685,40 @@ def test_a_wrong_input_type_names_the_input(
         error = execute(kind, chain, storage=assets / "storage").error
         assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
         assert (error.node_id, str(error)) == (node_id, message), kind
+
+
+@pytest.mark.parametrize(
+    ("schema", "overrides"),
+    [
+        ("chainner:image:flip", {1: 0}),  # an edge input
+        ("chainner:image:save", {2: None, 3: "x", 4: "png"}),  # Save Image's lazy input
+    ],
+)
+def test_an_input_whose_enforce_fails_is_no_decline(
+    schemas, tmp_path, schema, overrides
+):
+    # A text value into a native node's image input: the node's Python body enforces it and raises, as
+    # process.Executor's does; that is not a decline of the entry point, on an edge or a lazy input alike.
+    if schema == "chainner:image:save":
+        overrides = {**overrides, 1: str(tmp_path / "out")}
+    results = []
+    for kind in ("python", "native"):
+        nodes = [
+            make_node(schemas, "text", "chainner:utility:text", {0: "not an image"}),
+            make_node(schemas, "node", schema, {0: edge("text"), **overrides}),
+        ]
+        if schema == "chainner:image:flip":
+            nodes.append(
+                make_node(schemas, "view", "chainner:image:view", {0: edge("node")})
+            )
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        declines = graph().native_declines()
+        error = execute(kind, chain, storage=tmp_path / "storage").error
+        assert graph().native_declines() == declines, kind
+        assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
+        results.append((error.node_id, str(error)))
+    assert results[0] == results[1]
 
 
 @pytest.mark.parametrize("case", [*VIDEO_CASES, "video-frames"])
@@ -1072,7 +1083,7 @@ def test_layout_chains_match_the_compact_reference(
     schemas, layout_images, tmp_path, case
 ):
     # The engine's statistics equal NumPy's on a C-contiguous copy (signed zeros included), and the oracle differs
-    # from the engine exactly as recorded (ruling P7).
+    # from the engine exactly as recorded.
     output = tmp_path / "out"
     results = []
     for kind in ("python", "native"):

@@ -57,8 +57,6 @@ const BreakPointInner = memo(({ id }: NodeProps) => {
     const menu = useBreakPointMenu(id);
 
     const [leftEdge, rightEdge] = useMemo(() => {
-        // I'm making an assumption here that a single filter is faster than two finds
-        // The subsequent two finds will just be over the filtered array, and therefore fast
         const edges = getEdges().filter((edge) => edge.source === id || edge.target === id);
         const left = edges.find((edge) => edge.source === id);
         const right = edges.find((edge) => edge.target === id);

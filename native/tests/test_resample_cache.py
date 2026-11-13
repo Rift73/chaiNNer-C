@@ -176,7 +176,7 @@ def test_concurrent_identical_and_changing_keys_have_private_scratch():
 
 
 # Output hashes under the nearest/down/up/toward-zero FP controls: the real
-# chainner_ext 0.3.10's resize (upstream, checked once on 2026-10-06 in each mode).
+# chainner_ext 0.3.10's resize (upstream, checked once in each mode).
 # They were frozen from the MSVC-built pre-cache C DLL (SHA256 0cce2b50...12f8,
 # native/reports/resize-pipeline-20260921/before-src/nodes/impl/), which equals
 # upstream except Mitchell (6) and Gauss (11) under the three directed modes: that

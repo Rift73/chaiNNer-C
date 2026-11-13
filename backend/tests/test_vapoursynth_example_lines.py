@@ -176,7 +176,7 @@ def test_split_planes_compose_with_the_families(
     back."""
     c = Chain(real_nodes, tmp_path)
     src = c.props(source("n_pal_0", PAL), "16", "15")
-    src = c("Clip Properties", "std.AssumeFPS", src, fpsnum="25", fpsden="1")
+    src = c("Clip Properties", "std.AssumeFPS", src, fpsnum=25, fpsden=1)
     src = c("Cut and Splice", "std.Trim", src, first="3")
     src = c("Clip Properties", "vstools.change_fps", src, fps="24000/1001")
     src2 = c.props(source("n_ntsc_0", NTSC), "8", "9")
@@ -272,7 +272,7 @@ def test_scene_replacement_composes(
     clip_a1 = source("n_clip_a1_0", CLIP_A1)
     sharp = source("n_sharp_0", SHARP)
     minus1 = c("Cut and Splice", "std.DeleteFrames", clip_a, frames="0")
-    plus1 = c("Cut and Splice", "std.BlankClip", clip_a, length="1")
+    plus1 = c("Cut and Splice", "std.BlankClip", clip_a, length=1)
     plus1 = c("Cut and Splice", "std.Splice", plus1, **{"clips#2": clip_a})
 
     def decen(base: VideoClip) -> VideoClip:

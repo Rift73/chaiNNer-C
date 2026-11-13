@@ -13,8 +13,13 @@ Shape at run time:
 - context neighborhood attention: every site is the plugin node (DualNA_c128_TRT), which
   reads the trunk's size at run time; where the trunk fits the window its neighborhoods
   are the whole trunk, the source's whole-window attention;
-- retrieval: per axis, 96-px blocks and a leftover strip, so four window classes; an
-  absent strip is zero windows of a nonzero extent (Myelin rejects zero extents);
+- local neighborhood attention: every dense-RPB local site is the plugin node
+  (DualLocalNA_c128_TRT); where the trunk fits 16 per axis its neighborhood is the whole
+  trunk, the source's one clamped window;
+- retrieval: every size is the plugin node (DualXR_c128_TRT) with K = min(48, coarse
+  length) per axis read at run time; a coarse grid that fits 48 per axis is one 96 px
+  block, the source's single-block attention; an NHWC router mean is
+  DualRowSum_c128_TRT's FP32 row sums, divided by the run-time H * W;
 - depthwise shifted sums slice with negative ends; pixel (un)shuffles read their sizes.
 The rest (convolutions, plugin nodes, tail) is graph.py unchanged. Plugin nodes carry a
 width-only key (DualCore_c128_TRT), which chaiNNer-C lowers to its dynamic plugins.
@@ -33,9 +38,8 @@ from onnx import TensorProto as T
 
 from .export import make_model, read_state, save_onnx
 from .graph import Graph
-from .spec import CONTEXT, FACTORIES, SCHEMA, SOURCE_SHA256, sha256
+from .spec import CONTEXT, FACTORIES, LOCAL, RETRIEVAL, SCHEMA, SOURCE_SHA256, sha256
 
-WINDOW = 96  # retrieval block
 END = np.iinfo(np.int64).max
 
 
@@ -49,6 +53,9 @@ class DynamicGraph(Graph):
             SimpleNamespace(
                 channels=channels, trunk=(0, 0), plugin_key=key, height=0, width=0
             ),
+            local_na=True,
+            retrieval_na=True,
+            row_sums=True,
         )
         self.alignment = alignment
         # The tail's current scale against the network input, while in the tail.
@@ -278,80 +285,33 @@ class DynamicGraph(Graph):
             [self.i(1), self.i(channels * scale * scale), rows, cols],
         )
 
-    def spans(self, length):
-        """(start, stop, window count, window extent) of the full blocks and the leftover."""
-        count = self.div(length, self.i(WINDOW))
-        full = self.mul(count, self.i(WINDOW))
-        rest = self.sub(length, full)
-        return [
-            (self.i(0), full, count, self.i(WINDOW)),
-            (
-                full,
-                length,
-                self.op("Min", [rest, self.i(1)]),
-                self.op("Max", [rest, self.i(2)]),
-            ),
-        ]
+    def inverse_positions(self, x):
+        positions = self.cast(self.mul(self.dim(x, 1), self.dim(x, 2)), T.FLOAT)
+        return self.op("Reciprocal", [positions])
 
-    def pack_region(self, x, y0, y1, x0, x1, nr, eh, nc, ew):
-        axes = self.const(np.array([1, 2], np.int64), T.INT64)
-        region = self.op(
-            "Slice",
+    def retrieval_window(self, k):
+        """K = min(48, coarse length) per axis at run time. Every engine size takes the
+        neighborhoods: where the coarse grid fits 48 per axis (the fine trunk then fits
+        96, its sizes being multiples of 4, so one block) they are the whole grid, the
+        source's single-block attention."""
+        hc, wc = (
+            self.op("Min", [self.dim(k, axis), self.i(48)]) for axis in (1, 2)
+        )
+        return hc, wc
+
+    def retrieval_scale(self, ky, kx):
+        keys = self.cast(self.mul(ky, kx), T.FLOAT)
+        scale = self.op(
+            "Div",
             [
-                x,
-                self.op("Concat", [y0, x0], axis=0),
-                self.op("Concat", [y1, x1], axis=0),
-                axes,
+                self.op("Log", [keys]),
+                self.const(np.array([math.log(1024) * math.sqrt(32)]), T.FLOAT),
             ],
         )
-        t = self.trans(
-            self.shape(region, [self.i(1), nr, eh, nc, ew, self.i(self.c)]),
-            [0, 1, 3, 2, 4, 5],
-        )
-        t = self.shape(
-            t, [self.mul(nr, nc), self.mul(eh, ew), self.i(self.c // 32), self.i(32)]
-        )
-        return self.trans(t, [0, 2, 1, 3])
-
-    def halves(self, *values):
-        return [self.div(v, self.i(2)) for v in values]
+        return self.cast(scale, T.BFLOAT16)
 
     def retrieval_descriptors(self, q, k):
-        classes = []
-        for y0, y1, nr, eh in self.spans(self.dim(q, 1)):
-            for x0, x1, nc, ew in self.spans(self.dim(q, 2)):
-                geometry = (y0, y1, x0, x1, nr, eh, nc, ew)
-                hy0, hy1, hx0, hx1, heh, hew = self.halves(y0, y1, x0, x1, eh, ew)
-                qq = self.pack_region(q, *geometry)
-                kk = self.pack_region(k, hy0, hy1, hx0, hx1, nr, heh, nc, hew)
-                classes.append((geometry, qq, kk))
-        return classes
-
-    def retrieve(self, packed, v, log_tau):
-        tau = self.const(log_tau.exp().clamp(0.1, 10).reshape(1, -1, 1, 1), T.BFLOAT16)
-        outputs = []
-        for (y0, y1, x0, x1, nr, eh, nc, ew), q, k in packed:
-            hy0, hy1, hx0, hx1, heh, hew = self.halves(y0, y1, x0, x1, eh, ew)
-            vv = self.pack_region(v, hy0, hy1, hx0, hx1, nr, heh, nc, hew)
-            keys = self.op("Max", [self.mul(heh, hew), self.i(1)])
-            scale = self.op(
-                "Div",
-                [
-                    self.op("Log", [self.cast(keys, T.FLOAT)]),
-                    self.const(np.array([math.log(1024) * math.sqrt(32)]), T.FLOAT),
-                ],
-            )
-            q = self.op("Mul", [self.op("Mul", [q, tau]), self.cast(scale, T.BFLOAT16)])
-            out = self.trans(self.mha(q, k, vv, barrier=True), [0, 2, 1, 3])
-            out = self.shape(out, [self.i(1), nr, nc, eh, ew, self.i(self.c)])
-            out = self.trans(out, [0, 1, 3, 2, 4, 5])
-            outputs.append(
-                self.shape(
-                    out, [self.i(1), self.mul(nr, eh), self.mul(nc, ew), self.i(self.c)]
-                )
-            )
-        rows = [self.op("Concat", outputs[i : i + 2], axis=2) for i in (0, 2)]
-        return self.op("Concat", rows, axis=1)
+        return ("na", q, k)
 
     def exact(self, x, channels, scale):
         """x reshaped to the size it has, [1, channels, scale*H, scale*W] of the network
@@ -449,13 +409,18 @@ def export_dynamic(
             "plugin_key": key,
         },
         "context": CONTEXT,
+        "local": LOCAL,
+        "retrieval": RETRIEVAL,
         "precision": "FP32_IO_BF16_FP32_BODY",
         "dynamic_sites": graph.dynamic_sites,
         "plugin_names": [
             f"Dual{part}_{key}_TRT" for part in ("Norm", "Core", "Project")
         ]
-        + ["DualAttentionBarrier_TRT"]
-        + ([f"DualNA_{key}_TRT"] if graph.na_sites else []),
+        + (["DualAttentionBarrier_TRT"] if graph.barrier_sites else [])
+        + ([f"DualNA_{key}_TRT"] if graph.na_sites else [])
+        + ([f"DualLocalNA_{key}_TRT"] if graph.local_sites else [])
+        + ([f"DualXR_{key}_TRT"] if graph.retrieval_sites else [])
+        + ([f"DualRowSum_{key}_TRT"] if graph.row_sum_sites else []),
         "files": {
             p.name: sha256(p)
             for p in (output / "model.onnx", output / "weights.bin")

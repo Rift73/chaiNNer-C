@@ -4,6 +4,8 @@ const nodeFs = require('fs');
 const fs = require('fs/promises');
 const path = require('path');
 const packageJson = require('./package.json');
+// the install's entries the app and Chromium keep data in, which no release may name (updater.ts)
+const installDataNames = require('./src/main/install-data-names.json');
 
 // cross-zip, which @electron-forge/maker-zip uses (4.0.1 is its latest), clears its output with
 // fs.rmdir(path, { recursive: true }), an option Node 25 removed. In this build process such a
@@ -273,6 +275,29 @@ const config = {
                     default:
                         break;
                 }
+                // The top-level entries the release owns, which an update replaces (updater.ts):
+                // all but the portable marker, whose presence the install keeps
+                const top = process.platform === 'linux' ? 1 : 0;
+                const owned = new Set(['release-files.txt']);
+                zip.getEntries().forEach((entry) => {
+                    const name = entry.entryName.split(/[\\/]/)[top];
+                    if (name && name !== 'portable') {
+                        owned.add(name);
+                    }
+                });
+                // an update replaces what the release lists: never the install's data
+                // without case: Windows' names do not differ by it
+                const dataNames = installDataNames.map((name) => name.toLowerCase());
+                const data = [...owned].filter((name) => dataNames.includes(name.toLowerCase()));
+                if (data.length > 0) {
+                    throw new Error(
+                        `The release has entries the app keeps its data in: ${data.join(', ')}`
+                    );
+                }
+                zip.addFile(
+                    `${top ? 'chaiNNer-linux-x64/' : ''}release-files.txt`,
+                    Buffer.from(`${[...owned].sort().join('\n')}\n`)
+                );
                 zip.writeZip(zipArtifact);
             }
         },

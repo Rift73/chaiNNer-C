@@ -8,7 +8,7 @@
 
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { RENDERER, loadBundles, region, runChecks } = require('./bundle_verify_common.cjs');
+const { RENDERER, element, firstElement, loadBundles, region, runChecks } = require('./bundle_verify_common.cjs');
 
 const defaultFolder = 'C:\\fixtures\\folder';
 const onlyOne = 'Only one directory is accepted by Directory.';
@@ -39,16 +39,6 @@ function transfer(options = {}) {
     };
 }
 
-function element(type, props = {}) { return { type, props }; }
-function first(tree, type) {
-    if (!tree || typeof tree !== 'object') return undefined;
-    if (tree.type === type) return tree;
-    for (const value of Object.values(tree)) {
-        const found = Array.isArray(value) ? value.map((x) => first(x, type)).find(Boolean) : first(value, type);
-        if (found) return found;
-    }
-    return undefined;
-}
 function canonical(value) {
     if (typeof value === 'function') return '[function]';
     if (Array.isArray(value)) return Array.from(value, canonical);
@@ -78,7 +68,7 @@ function render(component, changes = {}) {
         inputKey: 'directory', inputType: { kind: 'directory', fields: { path: { kind: 'literal', value: 'C:\\connected' } } },
         nodeId: 'node', ...changes };
     const tree = sandbox.component(props);
-    return { tree, events, group: first(tree, 'InputGroup'), input: first(tree, 'Input'),
+    return { tree, events, group: firstElement(tree, 'InputGroup'), input: firstElement(tree, 'Input'),
         setSelection: (value) => { selection = value; } };
 }
 function event(dataTransfer) {

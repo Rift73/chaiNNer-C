@@ -648,9 +648,9 @@ def onnxruntime_migraphx() -> Dependency:
 def triton_windows() -> Dependency:
     """Triton for Windows on AMD GPUs, which compiles DUAL's kernels for a gfx target with
     no GPU (Build Program, in a child process). 3.8.0.post29 is the floor: 3.5.1.post22,
-    which the TensorRT package pins for NVIDIA GPUs, fails on its temporary files there.
-    It replaces nothing: no other Triton has a Windows wheel, and pip upgrades the older
-    copy of a folder that ran on an NVIDIA GPU."""
+    which the TensorRT package pinned for NVIDIA GPUs before 3.9.0.post30, fails on its
+    temporary files there. It replaces nothing: no other Triton has a Windows wheel, and
+    pip upgrades an older copy in a folder that ran on an NVIDIA GPU."""
     return Dependency(
         display_name="Triton",
         pypi_name="triton-windows",

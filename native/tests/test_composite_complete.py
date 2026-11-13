@@ -74,7 +74,7 @@ def compare(base, overlay, mode, position, xy, crop):
         actual = current.blend_images_node(*args)
         expected = reference.blend_images_node(*reference_args)
     assert actual.shape == expected.shape and actual.dtype == expected.dtype
-    # Bits, so the sign of a zero counts (Consult 11 D-17.1: np.clip keeps -0).
+    # Bits, so the sign of a zero counts (np.clip keeps -0).
     np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
     return actual
 

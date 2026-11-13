@@ -1,10 +1,9 @@
 from enum import Enum
-from functools import partial
 
 import numpy as np
 
 from ..utils.utils import get_h_w_c
-from .native_blend import composite, raw_blend
+from .native_blend import composite
 
 
 class BlendMode(Enum):
@@ -33,54 +32,6 @@ class BlendMode(Enum):
     XOR = 13
     COLOR = 23
     LUMINOSITY = 24
-
-
-__normalized = {
-    BlendMode.NORMAL: True,
-    BlendMode.MULTIPLY: True,
-    BlendMode.DARKEN: True,
-    BlendMode.LIGHTEN: True,
-    BlendMode.ADD: False,
-    BlendMode.COLOR_BURN: False,
-    BlendMode.COLOR_DODGE: False,
-    BlendMode.REFLECT: False,
-    BlendMode.GLOW: False,
-    BlendMode.OVERLAY: True,
-    BlendMode.DIFFERENCE: True,
-    BlendMode.NEGATION: True,
-    BlendMode.SCREEN: True,
-    BlendMode.XOR: True,
-    BlendMode.SUBTRACT: False,
-    BlendMode.DIVIDE: False,
-    BlendMode.EXCLUSION: True,
-    BlendMode.SOFT_LIGHT: True,
-    BlendMode.HARD_LIGHT: True,
-    BlendMode.VIVID_LIGHT: False,
-    BlendMode.LINEAR_LIGHT: False,
-    BlendMode.PIN_LIGHT: True,
-    BlendMode.LINEAR_BURN: False,
-    BlendMode.COLOR: False,
-    BlendMode.LUMINOSITY: False,
-}
-
-
-def blend_mode_normalized(blend_mode: BlendMode) -> bool:
-    """
-    Returns whether the given blend mode is guaranteed to produce normalized results (value between 0 and 1).
-    """
-    return __normalized.get(blend_mode, False)
-
-
-class ImageBlender:
-    """Class for compositing images using different blending modes."""
-
-    def __init__(self):
-        self.modes = {mode: partial(raw_blend, mode=mode.value) for mode in BlendMode}
-
-    def apply_blend(
-        self, a: np.ndarray, b: np.ndarray, blend_mode: BlendMode
-    ) -> np.ndarray:
-        return self.modes[blend_mode](a, b)
 
 
 def blend_images(overlay: np.ndarray, base: np.ndarray, blend_mode: BlendMode):

@@ -91,7 +91,6 @@ def split_spritesheet_node(
         ]
         return sprite, index
 
-    # We just need the index, so we can pass in a list of None's
     generator = Generator.from_range(rows * columns, get_sprite)
     generator.source_paths = ()
     return generator

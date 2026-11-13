@@ -67,6 +67,48 @@ print(answered == [], calls)
 """
 
 
+# A cleared or removed node lets go of what it holds open: Load Video's Preview reader.
+PREVIEW = """
+import asyncio
+from types import SimpleNamespace
+
+import server
+from nodes.impl import video
+
+closed = []
+video.close_preview = closed.append
+request = SimpleNamespace(app=server.app, json={"id": "load-video-1"})
+asyncio.run(server.clear_cache_individual(request))
+print(closed)
+"""
+
+
+# A reader that fails to close: the clear still drops the node's output and returns its
+# memory, then answers with the close's error.
+PREVIEW_FAILS = """
+import asyncio
+import json
+from types import SimpleNamespace
+
+import server
+from nodes.impl import video
+
+
+def fail(node_id):
+    raise OSError("the reader did not close")
+
+
+video.close_preview = fail
+returned = []
+server.return_device_memory_after_burst = returned.append
+ctx = server.AppContext.get(server.app)
+ctx.cache["load-video-1"] = object()
+request = SimpleNamespace(app=server.app, json={"id": "load-video-1"})
+response = asyncio.run(server.clear_cache_individual(request))
+print("load-video-1" in ctx.cache, returned == [ctx], json.loads(response.body))
+"""
+
+
 # The app's Stop: /run's handler is cancelled while its executor runs.
 STOPPED = """
 import asyncio
@@ -188,3 +230,12 @@ def test_a_stopped_run_returns_device_memory():
 
 def test_a_broken_cuda_context_asks_the_host_to_restart_the_worker():
     assert run("loaded", BROKEN) == "True True"
+
+
+def test_clearing_a_node_closes_its_preview_reader():
+    assert run("absent", PREVIEW) == "['load-video-1']"
+
+
+def test_a_reader_that_fails_to_close_still_clears_the_node():
+    error = "{'success': False, 'error': 'the reader did not close'}"
+    assert run("absent", PREVIEW_FAILS) == f"False True {error}"

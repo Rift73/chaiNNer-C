@@ -1,19 +1,22 @@
 """Process setup shared by every test in this directory."""
 
 import ctypes as ct
+import importlib
 import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# Hides every Vulkan driver from ncnn, as CUDA_VISIBLE_DEVICES=-1 hides CUDA
-# (Consult 8 sweep item 6): the port's ncnn modules call ncnn.get_gpu_count() on
+# Hides every Vulkan driver from ncnn, as CUDA_VISIBLE_DEVICES=-1 hides CUDA:
+# the port's ncnn modules call ncnn.get_gpu_count() on
 # import, which would otherwise create a Vulkan instance that crashes the test
 # process at exit and can leave a clone holding DLLs. Set before any test module
 # loads; the backend hosts tests start inherit it. Only the test environment and
 # the runtime verifiers' hosts set it, never the package, the bench or a launch.
 os.environ["VK_LOADER_DRIVERS_DISABLE"] = "*"
+
+BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 
 
 def system_cpp_runtime():
@@ -54,3 +57,39 @@ def pytest_collection_modifyitems(items):
         import linux_differences
 
         linux_differences.skip_listed(items)
+
+
+@pytest.fixture(scope="module")
+def schemas():
+    """The standard package's nodes, registered as the worker registers them; their schemas as /nodes gives them."""
+    from engine_differential import load_registry_errors
+
+    import api
+
+    main = sys.modules["__main__"]
+    previous = getattr(main, "__file__", None)
+    # Caption loads its font from beside __main__'s file, the app's run.py.
+    main.__file__ = str(BACKEND / "run.py")
+    importlib.import_module("packages.chaiNNer_standard")
+    errors = load_registry_errors(BACKEND / "server.py")
+    assert not errors, [e.module for e in errors]
+    yield {
+        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
+        for schema, (data, _) in api.registry.nodes.items()
+    }
+    if previous is None:
+        del main.__file__
+    else:
+        main.__file__ = previous
+
+
+@pytest.fixture
+def levels():
+    """Every level this CPU has, scalar first; the original level afterwards."""
+    from test_isa_dispatch import isa_get, isa_set
+
+    effective, _, cpu = isa_get()
+    try:
+        yield range(cpu + 1)
+    finally:
+        assert isa_set(effective) == effective

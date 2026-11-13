@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "denoise_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Non-local means rows, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only through nlm's dispatch on the call's
+/* Non-local means rows, AVX2 unit (/arch:AVX2): no export, reached only through nlm's dispatch on the call's
  * ISA level, for one and two channels. denoise_shared.h has the rounding rule. An independent implementation of the
  * integer contract in denoise_ops.cpp, no OpenCV source code incorporated. */
 #include "denoise_shared.h"

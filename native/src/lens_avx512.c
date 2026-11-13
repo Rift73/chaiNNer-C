@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "lens_avx512.c is an x86-64 /arch:AVX512 unit"
 #endif
-/* Lens Blur's tap fold, AVX-512 unit (/arch:AVX512, spec 4.3): no export, reached only through the fold's dispatch on
+/* Lens Blur's tap fold, AVX-512 unit (/arch:AVX512): no export, reached only through the fold's dispatch on
  * the call's ISA level. Every lane runs its output's sequence, the taps in order, each one vfmadd. */
 #include "lens_fold_shared.h"
 #include <immintrin.h>

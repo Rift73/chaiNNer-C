@@ -1,11 +1,11 @@
-"""One backend tree's side of the layout gate (test_layout_gate.py, D-7 condition 4).
+"""One backend tree's side of the layout gate (test_layout_gate.py).
 
 Run as ``python -B layout_gate_worker.py ROOT OUT [--layouts L,...] [--schemas S,...]
 [--trace FILE ...] [--mixed] [--chains [--producers S,...]]``. ROOT is a backend
 source tree: chaiNNer-C's backend/src, or the oracle's src (make_oracle.py). Both
 trees use the same package names, so each runs in its own process.
 The oracle uses --approved-image-outputs for the reviewed High Pass RGBA and
-PSNR decibel corrections and the 2026-10-23 rulings (Premultiplied Alpha's
+PSNR decibel corrections and the approved corrections (Premultiplied Alpha's
 transparent black, Color Transfer's transparent inputs, Chroma Key's trimap without
 background or foreground); its source files remain unchanged.
 
@@ -25,7 +25,7 @@ of ImageOutput.enforce on the image in one of two layouts.
 - "c": the same values, C-contiguous.
 With --mixed, a case with more than one image (a collector's iterated images
 included) also runs on two mixed layouts (MIXED), where NumPy's fallback decides
-its result's layout (Consult 11 D-16).
+its result's layout.
 
 OUT receives results.json (and the files Save nodes write). For each run it holds
 either the error, or:
@@ -40,7 +40,7 @@ With --chains, it also runs the UI chain of Lens followed by each of CHAIN_TARGE
 with the Lens output as the target's first image; with --producers, also Lens
 followed by each first-seed case of those nodes, the Lens output as the case's
 first image, followed by each first-seed case of CHAIN_TARGETS for the producer's
-channel count, the producer's output as the target's first image (D-16).
+channel count, the producer's output as the target's first image.
 """
 
 from __future__ import annotations
@@ -181,7 +181,7 @@ FILLED = {
 # Nodes whose images are rounded to this many steps per unit, -0 kept. So the
 # "All colors" palette sees at most 6**4 values (+0 and -0 apart), within its 4096
 # colours, and signed-zero ties: np.unique keeps whichever of +0 and -0 its unstable
-# sort puts first, which the port mirrors (Consult 11 D-17.2).
+# sort puts first, which the port mirrors.
 LEVELS = {"chainner:image:palette_from_image": 4}
 # The one case of a LEVELS node whose images stay unrounded: noise has more distinct
 # colours than "All colors" allows (MAX_COLORS, 4096), so its ValueError, type and
@@ -323,8 +323,7 @@ def noise(
     """A planar (c, h, w) float32 image seeded by the case and input.
 
     A tenth of the values are +0, a tenth -0 and a twentieth 1: the extremes'
-    signed-zero ties are what a reduction's visiting order shows (g-report,
-    "Held for Consult 9"), so they must be present for the layout to matter.
+    signed-zero ties are what a reduction's visiting order shows, so they must be present for the layout to matter.
     """
     rng = np.random.default_rng(zlib.crc32(f"{case_id}#{index}".encode()))
     image = rng.random(shape, dtype=np.float32)
@@ -447,7 +446,7 @@ def broadcast_data(node: Any, outputs: list[object]) -> list[object]:
 def approved_result(
     tree: Tree, schema: str, node: Any, values: list[object]
 ) -> np.ndarray | None:
-    """The raw result of an approved 2026-10-23 correction the old body cannot give:
+    """The raw result of an approved correction the old body cannot give:
     Color Transfer returns its image when the image or the reference has no opaque
     pixel; Chroma Key's Trimap Matting returns the frame unkeyed (alpha 1) when its
     trimap has no background, or keyed whole (alpha 0) when it has no foreground."""
@@ -533,7 +532,7 @@ def execute(
         and values[1] == "Premultiplied -> Straight"
     ):
         # Transparent black stays black where the old body divides 0 by 0 (NaN),
-        # approved 2026-10-23; the result keeps its layout.
+        # an approved correction; the result keeps its layout.
         source = np.asarray(values[0])
         kept = (source[..., :3] == 0) & (source[..., 3:] == 0)
         fixed = np.array(outputs[0], order="K")
@@ -659,7 +658,7 @@ def main() -> int:
     args = parse_arguments()
     # Torch before the registry: chaiNNer_standard imports Pillow before its
     # Torch-typed inputs, and Pillow's bundled msvcp140.dll breaks a later Torch
-    # import in the same process (the owner's import-order rule).
+    # import in the same process.
     importlib.import_module("torch")
     root = args.root.resolve()
     # Caption loads its font from beside __main__'s file, the app's run.py.

@@ -1,4 +1,4 @@
-"""CHAINNER_C_PROFILE timer (SP4a): per-name times at the native boundary.
+"""CHAINNER_C_PROFILE timer: per-name times at the native boundary.
 
 Off, native.lib() is a plain ctypes.CDLL and native_graph.graph() is untouched.
 On, every DLL export and eight pyd entries record calls, inclusive, exclusive and
@@ -261,7 +261,7 @@ def test_a_call_on_another_thread_is_not_subtracted():
 
 
 def test_record_adds_elapsed_without_nesting(monkeypatch):
-    # SP3b Task 7: an await on the loop thread interleaves with the other timed calls
+    # An await on the loop thread interleaves with the other timed calls
     # there, so record() adds one call of the time it is given (inclusive = exclusive)
     # and nests nothing: the timed call it is made in keeps its exclusive time. It reads
     # no clock: perf_counter_ns yields only outer's 0 and 100.
@@ -324,7 +324,7 @@ class Items:
 
 
 class SplitItems(Items):
-    """Items that are also produced in two phases (SP3b): describe() names the next
+    """Items that are also produced in two phases: describe() names the next
     one as a 1-tuple, and materialize(token) gives it."""
 
     def describe(self):
@@ -363,7 +363,7 @@ def test_instrument_graph_wraps_the_named_entries():
         "video_writer_frame",
     )
     assert native_profile.PYD_ITERATORS == ("_FileSequenceIterator", "_VideoFrames")
-    # SP3b P8: Load Images' iterator also times its two phases; video keeps __next__.
+    # Load Images' iterator also times its two phases; video keeps __next__.
     assert native_profile.PYD_SPLIT_ITERATORS == ("_FileSequenceIterator",)
     module, entries, classes = fake_graph()
     native_profile.instrument_graph(module)
@@ -558,7 +558,7 @@ class LibraryWithoutWakes:
 
 
 def test_attach_pool_names_the_dll_when_a_counter_export_is_missing(monkeypatch):
-    # Start detached, whatever an earlier lib() in this process attached (review M4).
+    # Start detached, whatever an earlier lib() in this process attached.
     monkeypatch.setattr(native_profile, "_pool", None)
     monkeypatch.setattr(native_profile, "_pool_base", ())
     # native_profile opens the library as ctypes.CDLL(path).
@@ -596,7 +596,7 @@ def test_run_handler_resets_before_and_logs_after_the_executor():
         and any(ast.unparse(s) == "await executor.run()" for s in node.body)
     )
     assert ast.unparse(block.body[0]) == "native_profile.reset()"
-    # SP4c: the NumPy pool's idle blocks are released before the line, so its
+    # The NumPy pool's idle blocks are released before the line, so its
     # "numpy_pool" entry carries the bytes released.
     assert [ast.unparse(s) for s in block.finalbody] == [
         "ctx.executor = None",
@@ -610,7 +610,7 @@ def test_run_handler_resets_before_and_logs_after_the_executor():
 
 @pytest.mark.parametrize("value", [None, "0"])
 def test_profile_off_adds_no_timers(monkeypatch, tmp_path, caplog, value):
-    # SP3b Task 7: off (unset, or any value but "1"), the commit path's sites add no
+    # Off (unset, or any value but "1"), the commit path's sites add no
     # record, no clock reading and no line. The K = 3 split Load Images -> lazy Save
     # stand-in passes the two run-time sites (the loop's take_advance, the reading
     # thread's lazy wait), run as the worker's /run runs it; /run's start of the loop

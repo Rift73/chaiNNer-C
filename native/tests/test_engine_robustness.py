@@ -191,7 +191,7 @@ print(type(result.error).__name__, whole)
 
 
 def test_pause_then_stop_ends_the_run(tmp_path):
-    # H1: the driver waits for a sink's prepare queued behind a long materialize on a single worker; Pause, then
+    # The driver waits for a sink's prepare queued behind a long materialize on a single worker; Pause, then
     # Stop: the run ends with Aborted (the subprocess's timeout catches a hang), and the sink whose prepare Stop
     # dropped does not run whole either.
     assert run_script(PAUSE_THEN_STOP, 1, tmp_path) == "Aborted [0]"
@@ -411,7 +411,7 @@ def registry():
 
 
 def test_a_value_a_native_node_cannot_take_runs_its_python_body(registry, tmp_path):
-    # H2: a 2-channel image (ImageInput.enforce takes it) into native Flip, run on a worker: the engine cannot hold
+    # A 2-channel image (ImageInput.enforce takes it) into native Flip, run on a worker: the engine cannot hold
     # it, so the node's Python body runs, as process.Executor runs it (no process exit).
     def two_channels(trace: list[object]) -> Chain:
         b = Builder()
@@ -444,8 +444,32 @@ def test_a_value_a_native_node_cannot_take_runs_its_python_body(registry, tmp_pa
     assert engine.error is None
 
 
+def test_a_loop_whose_begin_fails_still_ends(monkeypatch, tmp_path):
+    # The loop's begin hook raising is an exit of the loop like any other: its end runs (views detached, window
+    # closed), and the run fails with the hook's error.
+    ended: list[bool] = []
+    end_loop = native_executor._Hooks.end_loop
+
+    def failing_begin(self, *arguments):
+        raise RuntimeError("the loop cannot begin")
+
+    def recorded_end(self):
+        ended.append(True)
+        end_loop(self)
+
+    monkeypatch.setattr(native_executor._Hooks, "begin_loop", failing_begin)
+    monkeypatch.setattr(native_executor._Hooks, "end_loop", recorded_end)
+    b = Builder()
+    b.node("numbers", lambda: items([1, 2, 3]), kind="generator", inputs=0)
+    b.node("sink", lambda x: None, outputs=0, side_effects=True)
+    b.edge("numbers", 0, "sink", 0)
+    result = execute("native", b.chain, storage=tmp_path / "storage")
+    assert "the loop cannot begin" in str(result.error)
+    assert ended == [True]
+
+
 def test_static_sinks_prefetch_only_the_next_sink(tmp_path):
-    # H3: sinks outside loops run one after another; the engine computes the pure upstream of the running sink and
+    # Sinks outside loops run one after another; the engine computes the pure upstream of the running sink and
     # of the next one only (not every branch's outputs at once).
     made: list[int] = []
     seen: dict[str, list[list[int]]] = {"python": [], "native": []}
@@ -478,7 +502,7 @@ def test_static_sinks_prefetch_only_the_next_sink(tmp_path):
 
 
 def test_into_directory_is_never_computed_ahead(tmp_path):
-    # M3: Into Directory names a folder earlier items' saves may create: as process.Executor (_NOT_SPECULATED), the
+    # Into Directory names a folder earlier items' saves may create: as process.Executor (_NOT_SPECULATED), the
     # window never computes it ahead of its item, so it runs once every earlier item committed.
     def folders(trace: list[object]) -> Chain:
         b = Builder()
@@ -613,7 +637,7 @@ def test_a_lazy_input_read_after_its_run_fails_cleanly(tmp_path):
 
 
 def test_loop_previews_are_rate_limited(registry, tmp_path):
-    # ruling R4: a loop's LargeImage previews (View Image of a 1080p image per item, an item every 80 ms) start at most
+    # A loop's LargeImage previews (View Image of a 1080p image per item, an item every 80 ms) start at most
     # once per 250 ms per node, the first at once, the newest kept; the loop's end sends the last item's.
     def paced(trace: list[object]) -> Chain:
         b = Builder()

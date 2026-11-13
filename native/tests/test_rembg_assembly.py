@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import cast
 
@@ -89,3 +90,26 @@ def test_rembg_non_float32_mask_keeps_fallback(monkeypatch):
     with pytest.raises(TypeError, match="float32"):
         bg.remove_bg(image, session)
     assert len(calls) == 1 and calls[0] is mask
+
+
+def test_rembg_failed_alpha_matting_warns_and_cuts_out_naively(monkeypatch, caplog):
+    image = np.arange(18, dtype=np.float32).reshape(2, 3, 3) / 16
+    mask = np.array([[0, 0.25, 0.5], [0.5, 0.75, 1]], np.float32)
+    rgb = bg.cvt_color(image, cv2.COLOR_BGR2RGB)
+    expected = bg.cvt_color(bg.naive_cutout(rgb, mask), cv2.COLOR_RGBA2BGRA)
+
+    def failing_matting(*args, **kwargs):
+        raise ValueError("matting failed")
+
+    monkeypatch.setattr(
+        bg, "new_session", lambda _: SimpleNamespace(predict=lambda _: [mask])
+    )
+    monkeypatch.setattr(bg, "alpha_matting_cutout", failing_matting)
+    session = cast(OnnxSession, object())
+    with caplog.at_level(logging.WARNING):
+        actual, _ = bg.remove_bg(image, session, alpha_matting=True)
+    np.testing.assert_array_equal(actual, expected)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is not None
+    assert "matting failed" in str(warnings[0].exc_info[1])

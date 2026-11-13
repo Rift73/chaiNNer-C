@@ -1,4 +1,4 @@
-/* chaiNNer-C: regex_probe, the JSON-lines driver for chainner_regex that X4's harness runs.
+/* chaiNNer-C: regex_probe, the JSON-lines driver for chainner_regex that the conformance tool runs.
  * The I/O format is fixed in chainner_regex.h's header comment; this file composes the
  * engine exactly as regex-py does (to_byte_pos, captures_at, PosTranslator). */
 #include "chainner_regex.h"
@@ -10,7 +10,7 @@
 #include <io.h>
 #endif
 
-enum { PROBE_EXIT_FAILURE = 1, PROBE_EXIT_MALFORMED = 2, PROBE_EXIT_STUB = 3 };
+enum { PROBE_EXIT_FAILURE = 1, PROBE_EXIT_MALFORMED = 2 };
 
 /* A growable byte buffer, kept NUL-terminated. */
 typedef struct probe_buf {
@@ -451,11 +451,10 @@ typedef struct probe_state {
     size_t captures_len;
     size_t *slots;           /* 2 * captures_len byte positions */
     size_t *chars;           /* 2 * captures_len char positions */
-    bool stub_hit;
 } probe_state;
 
 /* A result for a non-OK status: null, {"panic": ...}, or the end of the run. */
-static void put_status(probe_buf *res, chn_regex_status status, chn_regex_string *panic, probe_state *s) {
+static void put_status(probe_buf *res, chn_regex_status status, chn_regex_string *panic) {
     buf_clear(res);
     switch (status) {
     case CHN_REGEX_NO_MATCH:
@@ -466,10 +465,6 @@ static void put_status(probe_buf *res, chn_regex_status status, chn_regex_string
         buf_put_json_string(res, panic->ptr ? panic->ptr : "", panic->len);
         buf_putc(res, '}');
         chn_regex_string_drop(panic);
-        break;
-    case CHN_REGEX_UNIMPLEMENTED:
-        s->stub_hit = true;
-        buf_puts(res, "null");
         break;
     case CHN_REGEX_ERROR_NOMEM:
         probe_fail("the engine ran out of memory");
@@ -568,7 +563,7 @@ static void run_compile(probe_buf *res, probe_state *s) {
         buf_put_json_string(res, s->compile_error.ptr ? s->compile_error.ptr : "", s->compile_error.len);
         buf_putc(res, '}');
     } else {
-        buf_puts(res, "{\"ok\":false,\"error\":\"unimplemented: chn_regex_compile\"}");
+        probe_fail("the engine returned an unexpected status");
     }
 }
 
@@ -584,7 +579,7 @@ static void run_search(probe_buf *res, probe_state *s, const probe_op *op) {
         status = put_match(res, s, &t, &panic);
         chn_regex_pos_translator_drop(&t);
     }
-    if (status != CHN_REGEX_OK) put_status(res, status, &panic, s);
+    if (status != CHN_REGEX_OK) put_status(res, status, &panic);
 }
 
 static void run_findall(probe_buf *res, probe_state *s, const probe_op *op) {
@@ -607,7 +602,7 @@ static void run_findall(probe_buf *res, probe_state *s, const probe_op *op) {
     }
     chn_regex_pos_translator_drop(&t);
     if (status == CHN_REGEX_NO_MATCH) buf_putc(res, ']');
-    else put_status(res, status, &panic, s);
+    else put_status(res, status, &panic);
 }
 
 static void run_split(probe_buf *res, probe_state *s, const probe_op *op) {
@@ -617,7 +612,7 @@ static void run_split(probe_buf *res, probe_state *s, const probe_op *op) {
         : chn_regex_split_without_captures(s->re, op->text.ptr, op->text.len, &spans);
     if (status != CHN_REGEX_OK) {
         chn_regex_string none = {0};
-        put_status(res, status, &none, s);
+        put_status(res, status, &none);
         return;
     }
     buf_clear(res);
@@ -631,11 +626,10 @@ static void run_split(probe_buf *res, probe_state *s, const probe_op *op) {
 }
 
 static void run_case(const probe_case *pc, const chn_regex_options *options, probe_buf *out,
-    probe_buf *res, bool *stub_hit) {
+    probe_buf *res) {
     probe_state s = {0};
     s.compile_status = chn_regex_compile(pc->pattern.ptr, pc->pattern.len, options, &s.re, &s.compile_error);
     if (s.compile_status == CHN_REGEX_ERROR_NOMEM) probe_fail("the engine ran out of memory");
-    if (s.compile_status == CHN_REGEX_UNIMPLEMENTED) s.stub_hit = true;
     if (s.re) {
         s.captures_len = chn_regex_captures_len(s.re);
         s.slots = (size_t *)malloc(2 * s.captures_len * sizeof(size_t));
@@ -663,7 +657,6 @@ static void run_case(const probe_case *pc, const chn_regex_options *options, pro
     free(s.chars);
     chn_regex_string_drop(&s.compile_error);
     chn_regex_free(s.re);
-    if (s.stub_hit) *stub_hit = true;
 }
 
 static _Noreturn void usage(void) {
@@ -699,14 +692,13 @@ int main(int argc, char **argv) {
     reader.file = stdin;
     probe_buf line = {0}, out = {0}, res = {0};
     probe_case pc = {0};
-    bool stub_hit = false;
     while (read_line(&reader, &line)) {
         ++probe_line_number;
         json_in in = {line.ptr, line.ptr + line.len};
         skip_ws(&in);
         if (in.p == in.end) continue;
         parse_case(&in, &pc);
-        run_case(&pc, &options, &out, &res, &stub_hit);
+        run_case(&pc, &options, &out, &res);
         if (fwrite(out.ptr, 1, out.len, stdout) != out.len) probe_fail("cannot write stdout");
     }
     if (fflush(stdout) != 0) probe_fail("cannot write stdout");
@@ -717,9 +709,5 @@ int main(int argc, char **argv) {
     free(line.ptr);
     free(out.ptr);
     free(res.ptr);
-    if (stub_hit) {
-        fputs("regex_probe: a scaffold stub was hit (CHN_REGEX_UNIMPLEMENTED)\n", stderr);
-        return PROBE_EXIT_STUB;
-    }
     return 0;
 }

@@ -36,7 +36,7 @@ VERSION_PROBE = (
     "import json, platform, sys; "
     "print(json.dumps([platform.python_version(), *sys.version_info[:2]]))"
 )
-# The runtime's bytecode (Consult 10 D-9). The source runtime's __pycache__ is never
+# The runtime's bytecode. The source runtime's __pycache__ is never
 # copied: its .pyc are timestamp-based and incidental, and numba's .nbi/.nbc caches
 # there are machine code for the build CPU. A fresh build compiles the copy's whole
 # Lib, stdlib and site-packages, into .pyc that depend on the source bytes alone, so

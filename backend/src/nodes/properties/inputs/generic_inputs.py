@@ -43,6 +43,8 @@ class DropDownOption(TypedDict):
     value: str | int
     type: NotRequired[navi.ExpressionJson]
     condition: NotRequired[ConditionJson | None]
+    # Markdown shown when the pointer rests on the option.
+    description: NotRequired[str]
 
 
 DropDownStyle = Literal["dropdown", "checkbox", "tabs", "icons", "anchor"]

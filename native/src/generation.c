@@ -7,7 +7,6 @@
 #include "run_kernels.h"
 #include "procedural.h"
 #include <math.h>
-#include <limits.h>
 
 typedef struct {
     float *out;
@@ -45,53 +44,6 @@ CN_EXPORT cn_status cn_image_fill(float *out, size_t height, size_t width,
         return CN_SIZE_OVERFLOW;
     fill_job job = {out, a, b, gradient, width, height, channels, square, mode};
     return cn_parallel_for(height * width, 65536, fill_range, &job);
-}
-
-typedef struct {
-    const float *image;
-    const void *noise, *salt;
-    float *out;
-    size_t channels, noise_channels, output_channels;
-    int operation, bytes;
-} noise_job;
-
-static float sample_noise(const void *data, size_t index, int bytes) {
-    return bytes ? (float)((const uint8_t *)data)[index] : ((const float *)data)[index];
-}
-
-static void noise_range(void *opaque, size_t begin, size_t end) {
-    noise_job *j = opaque;
-    for (size_t p = begin; p < end; ++p) {
-        for (size_t c = 0; c < j->output_channels; ++c) {
-            float value = j->image[p * j->channels + (j->channels == 1 ? 0 : c)];
-            if (c < 3) {
-                size_t ni = p * j->noise_channels + (j->noise_channels == 1 ? 0 : c);
-                float n = sample_noise(j->noise, ni, j->bytes);
-                if (j->operation == 0) value += n;
-                else if (j->operation == 1) {
-                    float product = value * n;
-                    value += product;
-                } else {
-                    float salt = sample_noise(j->salt, ni, j->bytes);
-                    value = salt == 1 ? 1 : n == 0 ? 0 : value;
-                }
-            }
-            /* Comparisons preserve NaNs like numpy.clip. */
-            j->out[p * j->output_channels + c] = value < 0 ? 0 : value > 1 ? 1 : value;
-        }
-    }
-}
-
-CN_EXPORT cn_status cn_noise_combine(const float *image, size_t pixels, size_t channels,
-        const void *noise, const void *salt, size_t noise_channels, int bytes,
-        int operation, float *out) {
-    if (!image || !noise || !out || !channels || channels == 2
-        || (noise_channels != 1 && noise_channels != 3) || bytes < 0 || bytes > 1
-        || operation < 0 || operation > 2 || (operation == 2 && !salt)) return CN_INVALID_ARGUMENT;
-    size_t output_channels = channels > noise_channels ? channels : noise_channels;
-    if (pixels > SIZE_MAX / output_channels / sizeof(float)) return CN_SIZE_OVERFLOW;
-    noise_job job = {image, noise, salt, out, channels, noise_channels, output_channels, operation, bytes};
-    return cn_parallel_for(pixels, 65536, noise_range, &job);
 }
 
 static size_t modulo(int64_t value, size_t divisor) {
@@ -199,35 +151,4 @@ static double simplex_at(const procedural_job *j, const double *point) {
 
 double cn_procedural_sample(const procedural_job *j, const double *point) {
     return j->simplex ? simplex_at(j, point) : value_at(j, point);
-}
-
-static void procedural_range(void *opaque, size_t begin, size_t end) {
-    procedural_job *j = opaque;
-    for (size_t i = begin; i < end; ++i) {
-        const double *point = j->points + i * (size_t)j->dimensions;
-        j->out[i] = cn_procedural_sample(j, point);
-    }
-}
-
-CN_EXPORT cn_status cn_procedural_noise(const double *points, size_t count, int dimensions,
-        const int32_t *table, size_t table_size, const float *values, size_t value_count,
-        const double *gradients, size_t gradient_count, int smooth, int simplex,
-        double f, double g, double r2, double scale, double *out) {
-    if (!points || !table || !out || dimensions < 1 || dimensions > 6 || !table_size
-        || table_size > INT32_MAX || smooth < 0 || smooth > 1 || simplex < 0 || simplex > 1
-        || (simplex && (!gradients || !gradient_count || dimensions < 2))
-        || (!simplex && (!values || !value_count))
-        || value_count > INT32_MAX || gradient_count > INT32_MAX
-        || !isfinite(f) || !isfinite(g) || !isfinite(r2) || !isfinite(scale)) return CN_INVALID_ARGUMENT;
-    if (count > SIZE_MAX / (size_t)dimensions / sizeof(double)) return CN_SIZE_OVERFLOW;
-    /* Validate before workers start: integer conversion must never see NaN or
-     * out-of-range coordinates, even from a direct non-Python ABI caller. */
-    for (size_t i = 0; i < count * (size_t)dimensions; ++i)
-        if (!isfinite(points[i]) || fabs(points[i]) > 100000000.0) return CN_INVALID_ARGUMENT;
-    if (simplex && (fabs(f) > 1 || fabs(g) > 1)) return CN_INVALID_ARGUMENT;
-    for (size_t i = 0; i < table_size; ++i)
-        if (table[i] < 0 || (size_t)table[i] >= table_size) return CN_INVALID_ARGUMENT;
-    procedural_job job = {points, gradients, values, table, out, table_size, gradient_count,
-                          value_count, dimensions, smooth, simplex, f, g, r2, scale};
-    return cn_parallel_for(count, 8192, procedural_range, &job);
 }

@@ -530,3 +530,74 @@ def test_a_load_video_range_gives_the_outputs_of_a_full_run(
     assert [index for index, _ in ranged] == [6, 7, 8, 9]
     for (_, got), (_, want) in zip(ranged, full[6:10], strict=True):
         np.testing.assert_array_equal(got, want)
+
+
+# PixTransform takes a square guide
+SQUARE = (32, 32)
+
+
+@pytest.mark.parametrize("kind", ["native", "python"])
+def test_a_training_node_before_it_runs_in_the_default_torch_mode(
+    monkeypatch, tmp_path, kind
+):
+    # Guided Upscale (PixTransform) trains a network. The native engine computes it
+    # ahead for this node's look-ahead on the same thread, so the node must not be in
+    # inference mode while it reads ahead.
+    from nodes.impl.pytorch.pix_transform.pix_transform import Params, pix_transform
+
+    monkeypatch.setattr(
+        node,
+        "get_settings",
+        lambda _: SimpleNamespace(
+            device=torch.device("cpu"), budget_limit=0, force_cache_wipe=False
+        ),
+    )
+    monkeypatch.setattr(
+        node, "load_state", lambda _folder, _strength: random_model(SQUARE)
+    )
+    monkeypatch.setattr(
+        api.registry, "get_package", lambda _: SimpleNamespace(id="test")
+    )
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "6")
+    modes: list[bool] = []
+
+    def guided(context: NodeContext, seed: int) -> np.ndarray:
+        modes.append(torch.is_inference_mode_enabled())
+        rng = np.random.default_rng(seed)
+        source = rng.random((SQUARE[0] // 2, SQUARE[1] // 2), np.float32)
+        guide = rng.random((3, *SQUARE), np.float32)
+        out = pix_transform(
+            source,
+            guide,
+            torch.device("cpu"),
+            Params(iteration=32, batch_size=16),
+            context,
+        )
+        return np.ascontiguousarray(np.stack([out] * 3, axis=2), np.float32)
+
+    b = Builder()
+    set_schema(
+        b.node(
+            "frames",
+            lambda: Generator(lambda: iter(range(6)), 6, source_paths=()),
+            kind="generator",
+            inputs=0,
+        ),
+        "chainner:image:load_video",
+    )
+    b.node("guided", guided, context=True)
+    fix = b.node(
+        "fix",
+        lambda context, image: node.temporal_fix_node(context, image, 2.0),
+        context=True,
+        temporal=registered().temporal_context,
+    )
+    object.__setattr__(fix.data, "inputs", [ImageInput(channels=3).with_id(0)])
+    set_schema(fix, "chainner:pytorch:temporal_fix")
+    b.node("save", lambda image: None, outputs=0, side_effects=True)
+    b.edge("frames", 0, "guided", 0)
+    b.edge("guided", 0, "fix", 0)
+    b.edge("fix", 0, "save", 0)
+    result = execute(kind, b.chain, storage=tmp_path / "storage")
+    assert result.error is None, result.error
+    assert len(modes) == 6 and not any(modes)

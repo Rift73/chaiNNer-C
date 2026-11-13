@@ -19,6 +19,6 @@ from .. import adjustments_group
     outputs=[ImageOutput(shape_as=0, assume_normalized=True)],
 )
 def invert_color_node(img: np.ndarray) -> np.ndarray:
-    # Upstream returns 1 - img (np.clip's order K) up to three channels, and inverts
-    # a copy (C order) beyond.
+    # The result keeps the input's memory order (np.clip's order K) up to three
+    # channels, and is C-ordered beyond.
     return adjust(img, 2, c_order=get_h_w_c(img)[2] > 3)

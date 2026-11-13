@@ -10,15 +10,13 @@ with PyTorch's, and measures a speed table. Allow about an hour and a half.
 
 - **GPU**: any AMD GPU that ROCm 10.0.0 supports: Instinct MI100 (gfx908), MI210/MI250 (gfx90a), MI300X/MI325X (gfx942),
   MI350/MI355 (gfx950); Radeon RX 6800/6900 (gfx1030) and other RX 6000; RX 7900 (gfx1100), RX 7800/7700 (gfx1101),
-  RX 7600 (gfx1102); RX 9070 (gfx1201), RX 9060 (gfx1200); Ryzen AI Max (gfx1151). Most useful, in this order: one
-  Radeon RX 7000 or 9000 (the GPUs users have; the RX 9000 also runs FP8), one Instinct MI300X (wave size 64 and its
-  own FP8 format), a machine with two or more GPUs (checks the GPU order), and a machine with an integrated plus a
-  discrete AMD GPU if one is offered (memory reporting of integrated GPUs).
-- **Image**: plain `ubuntu:24.04` or `ubuntu:22.04`, or one of AMD's ROCm images
-  (`rocm/dev-ubuntu-24.04`, `rocm/pytorch`); the kit brings its own ROCm (AMD's pip packages), so the image's ROCm
-  does not matter. The machine must give the container the GPU (`/dev/kfd` and `/dev/dri`; with Docker,
-  `--device /dev/kfd --device /dev/dri`); the kit says so if not.
-- **Launch mode**: SSH. **Disk**: 80 GB (the kit needs 40 GB free; VOSR alone downloads 7 GB). Root is fine.
+  RX 7600 (gfx1102); RX 9070 (gfx1201), RX 9060 (gfx1200); Ryzen AI Max (gfx1151). The RX 9000 also runs FP8; an
+  Instinct MI300X checks wave size 64 and its own FP8 format; two or more GPUs check the GPU order; an integrated plus
+  a discrete AMD GPU checks memory reporting of integrated GPUs.
+- **System**: Ubuntu 24.04 or 22.04. The kit brings its own ROCm (AMD's pip packages), so an installed ROCm does not
+  matter. The kit needs access to `/dev/kfd` and `/dev/dri` (in a Docker container, `--device /dev/kfd --device
+  /dev/dri`) and says so if it has none.
+- **Disk**: the kit needs 40 GB free; VOSR alone downloads 7 GB.
 
 ## What to copy from this PC
 

@@ -3,15 +3,13 @@
 Box Blur is compared as the user receives its output, ImageOutput.enforce of both
 nodes' returns, and its kernel parity stays exact at the helpers: RAW_BOX, the body
 whose returns are box_blur's, separable_box's or filter2d's raw results, against the
-reference's OpenCV results. Both comparisons are bitwise (SP4b Task 3b2; owner,
-2026-10-04: a raw pre-enforce return is an internal detail).
+reference's OpenCV results. Both comparisons are bitwise (a raw pre-enforce
+return is an internal detail).
 """
 
 from __future__ import annotations
 
-import ast
 import ctypes as ct
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,6 +17,7 @@ import cv2
 import numpy as np
 import pytest
 from native_images import opaque
+from node_bodies import load_body
 from test_adjustment_complete import exact
 from test_normalized_outputs import RAW_BOX, assert_enforced_equal, node_schema
 
@@ -29,26 +28,6 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "backend/src/packages/chaiNNer_standard/image_filter"
 REFERENCE = Path(__file__).with_name("reference_convolution")
 PATHS = {"box_blur": "blur/box_blur.py", "convolve": "miscellaneous/convolve.py"}
-
-
-def load_body(path):
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    module = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), module.__dict__)
-    return module
 
 
 MODULES = {
@@ -249,6 +228,25 @@ def test_convolve_vector_tails(width, channels):
     equal(
         actual.convolve_node(source, text, 0), original.convolve_node(source, text, 0)
     )
+
+
+@pytest.mark.parametrize(
+    "text", ["1 2\n\n3 4", "1 2\n3 4\n\n", "\n1 2\n \t\n3 4\r\n\r\n"]
+)
+def test_convolve_skips_blank_lines(text):
+    source = image(3, 6, 7)
+    actual, original = MODULES["convolve"]
+    equal(
+        actual.convolve_node(source, text, 1),
+        original.convolve_node(source, "1 2\n3 4", 1),
+    )
+
+
+@pytest.mark.parametrize("text", ["   ", "1 2\n3", "1 2 3\n\n4 5"])
+def test_convolve_rejects_kernels_without_rows(text):
+    actual, _ = MODULES["convolve"]
+    with pytest.raises(ValueError, match="kernel"):
+        actual.convolve_node(image(3, 6, 7), text, 0)
 
 
 @pytest.mark.parametrize(

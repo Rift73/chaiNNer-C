@@ -134,7 +134,10 @@ def _log_pip_outcome(job: asyncio.Task[object]) -> None:
     if job.cancelled():
         logger.error("Dependency change was cancelled after its request closed")
     elif (error := job.exception()) is not None:
-        logger.error(f"Dependency change failed after its request closed: {error}")
+        logger.error(
+            f"Dependency change failed after its request closed: {error}",
+            exc_info=error,
+        )
     else:
         logger.info("Dependency change finished after its request closed")
 
@@ -216,6 +219,29 @@ class WorkerServer:
             await session.close()
         logger.info("Worker process stopped")
 
+    async def stop_run(self, timeout: float = 3) -> None:
+        """Stops the worker's run, if one runs, before the worker is closed: its Stop ends what
+        the run started (Save Video's FFmpeg, and the temporary file it deletes). A second
+        /kill waits for a stopped run's node and cleanups. Given up after `timeout` seconds:
+        the worker is closed then all the same."""
+        session = self._session
+        if session is None:
+            return
+
+        async def kill() -> None:
+            for _ in range(2):
+                async with session.post("/kill") as response:
+                    answer = await response.json()
+                if answer.get("type") == "no-executor":
+                    return
+
+        try:
+            await asyncio.wait_for(kill(), timeout)
+        except (TimeoutError, aiohttp.ClientError, ValueError) as error:
+            logger.warning(
+                f"The worker's run was not stopped before closing it: {error!r}"
+            )
+
     async def restart(self, extra_flags: Iterable[str] = []):
         logger.info("Restarting worker...")
         await self.stop()
@@ -253,9 +279,9 @@ class WorkerServer:
                             self._is_ready = True
                         return
                     except asyncio.TimeoutError:
-                        logger.warn("Server not ready yet due to timeout")
+                        logger.warning("Server not ready yet due to timeout")
                     except Exception as e:
-                        logger.warn("Server not ready yet", exc_info=e)
+                        logger.warning("Server not ready yet", exc_info=e)
 
                 await asyncio.sleep(0.1)
 
@@ -300,7 +326,7 @@ class WorkerServer:
                 async for data, _ in resp.content.iter_chunks():
                     yield data
             finally:
-                self._manually_close.remove(resp)
+                self._manually_close.discard(resp)
 
     async def registered_nodes(self) -> tuple[list[str], bool]:
         """The schema ids of the nodes the worker has registered so far, and whether it

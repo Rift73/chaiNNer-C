@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import onnx
 
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.onnx.utils import safely_optimize_onnx_model
@@ -24,6 +25,7 @@ from .. import utility_group
     ],
 )
 def optimize_model_node(model: OnnxModel) -> OnnxModel:
+    rdual_bundle.refuse(model, "Optimize Model")
     model_proto = onnx.load_from_string(model.bytes)
     model_proto = safely_optimize_onnx_model(model_proto)
     return load_onnx_model(model_proto)

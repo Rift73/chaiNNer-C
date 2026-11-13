@@ -12,6 +12,7 @@ from nodes.impl.ncnn.model import (
     NcnnParamCollection,
     UnaryOpTypes,
 )
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.onnx.onnx_to_ncnn import Onnx2NcnnConverter
 from nodes.impl.onnx.utils import safely_optimize_onnx_model
@@ -137,7 +138,7 @@ def fill_kernel_shapes(model: ModelProto) -> None:
     """Give each Conv and ConvTranspose without a kernel_shape the one its weights have:
     ONNX infers it from them when the attribute is absent, while the converter reads
     only the attribute and made a convolution with a kernel 0 wide. A weight that is no
-    initializer is left to the converter, as before."""
+    initializer is left to the converter."""
     weights = {w.name: w for w in model.graph.initializer}
     for node in model.graph.node:
         if node.op_type not in ("Conv", "ConvTranspose") or len(node.input) < 2:
@@ -219,6 +220,7 @@ def convert_to_ncnn_node(
 ) -> tuple[NcnnModelWrapper, str]:
     fp16 = bool(is_fp16)
 
+    rdual_bundle.refuse(model, "Convert To NCNN")
     model_proto = onnx.load_model_from_string(model.bytes)
     put_in_order(model_proto)  # first, as the optimizer optimizes only valid models
     fill_kernel_shapes(model_proto)

@@ -133,6 +133,8 @@ def _inplace_xy(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def normalize(x: np.ndarray, y: np.ndarray) -> XYZ:
+    if x.shape != y.shape:
+        raise ValueError("Normal components must have one size")
     nx, ny = _inplace_xy(x, y)
     z = np.empty(x.shape, dtype=np.float32)
     check(_api().cn_normalize_normals(ptr(nx), ptr(ny), ptr(z), x.size))
@@ -162,6 +164,8 @@ def decode(image: np.ndarray, *, octahedral: bool = False) -> XYZ:
 
 def encode(xyz: XYZ, *, octahedral: bool = False) -> np.ndarray:
     x, y, z = xyz
+    if not x.shape == y.shape == z.shape:
+        raise ValueError("Normal components must have one size")
     # Octahedral encoding intentionally normalizes the caller's x/y in-place.
     nx, ny = _inplace_xy(x, y) if octahedral else (f32(x), f32(y))
     nz = f32(z)
@@ -184,6 +188,8 @@ def add(
 ) -> XYZ:
     n1 = f32(n1)
     n2 = f32(n2) if n2 is not None else None
+    if n2 is not None and n2.shape[:2] != n1.shape[:2]:
+        raise ValueError("Normal maps must have one size")
     x, y, z = (np.empty(n1.shape[:2], dtype=np.float32) for _ in range(3))
     xyz = (x, y, z)
     check(

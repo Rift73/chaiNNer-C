@@ -16,6 +16,7 @@ from api import Collector, ExecutionOptions, Generator, IteratorInputInfo, NodeC
 from chain.chain import Chain
 from native_executor import build_plan
 from nodes.impl.item_window import ITEM_WINDOW_VARIABLE
+from process import context_wanted
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +163,7 @@ def test_temporal_radii_follow_dependency_paths(
     range_trace: list[object] = []
     ranged_chain = chain(lambda: frames.range(9, 1), range_trace)
     wanted = (4, 8) if serial else (3, 5)
-    plan, *_ = build_plan(
+    plan, nodes, *_ = build_plan(
         ranged_chain,
         ExecutionOptions.parse({}),
         tmp_path / "range",
@@ -174,7 +175,17 @@ def test_temporal_radii_follow_dependency_paths(
     )
     groups = plan["groups"]
     assert isinstance(groups, list)
-    assert groups[0]["context"] == wanted
+    group = groups[0]
+    assert sorted(nodes[i].id for i in group["temporal"]) == ["first", "second"]
+    assert group["gates"] == []
+    assert (
+        context_wanted(
+            ranged_chain,
+            {nodes[i].id for i in group["iterated"]},
+            [nodes[i] for i in group["temporal"]],
+        )
+        == wanted
+    )
     ranged = execute(
         kind,
         ranged_chain,

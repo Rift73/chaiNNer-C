@@ -48,8 +48,17 @@ def convolve_node(
     kernel_in: str,
     padding: int,
 ) -> np.ndarray:
-    kernel = np.stack([l.split() for l in kernel_in.splitlines()], axis=0).astype(float)
-
+    # Blank lines are no rows; a kernel of blank lines only keeps its one empty row,
+    # which convolve rejects.
+    rows = [line.split() for line in kernel_in.splitlines()]
+    rows = [row for row in rows if row] or rows[:1]
+    if len({len(row) for row in rows}) > 1:
+        raise ValueError(
+            "Every row of the kernel must have the same number of values, not "
+            + ", ".join(str(len(row)) for row in rows)
+            + "."
+        )
+    kernel = np.stack(rows, axis=0).astype(float)
     kernel = np.flipud(np.fliplr(kernel))
 
     return convolve(img, kernel, padding)

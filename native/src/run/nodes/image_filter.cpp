@@ -155,11 +155,11 @@ void palette_dither(NodeContext &, std::span<const Value> inputs, std::vector<Va
     if (image.channels != palette.channels)
         throw NodeError("AssertionError", "Image and palette must have the same number of channels.");
     const std::string &algorithm = std::get<std::string>(inputs[2]);
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
+    shaped(image);
     /* palette[:1, ...] */
     Image top = palette;
     top.height = std::min(palette.height, 1);
-    if (top.height == 0 || top.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(top));
+    shaped(top);
     int mode = algorithm == "None" ? 0 : algorithm == "Diffusion" ? 2 : 3;
     int diffusion = 0;
     if (mode == 2) diffusion = diffusion_map(std::get<std::string>(inputs[3]));

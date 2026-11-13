@@ -1,6 +1,6 @@
 """The worker exits when its host process ends.
 
-A host that is killed or crashes runs no cleanup: measured on 2026-10-16, a worker
+A host that is killed or crashes runs no cleanup: measured, a worker
 outlived its force-killed host by 15 s and more, still listening on its port with
 905 MB resident. The host passes its pid (--host-pid) and the worker's
 exit_with_host waits on it. exit_with_host is compiled alone out of server.py; the

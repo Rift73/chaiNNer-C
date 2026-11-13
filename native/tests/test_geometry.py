@@ -408,3 +408,18 @@ def test_concurrent_large_normal_calls():
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         list(executor.map(compare, range(4)))
+
+
+def test_components_of_other_sizes_are_refused_before_c_writes_past_them():
+    # The C kernels take one count for every component and image.
+    big, small = np.ones((4, 4), np.float32), np.ones((2, 2), np.float32)
+    with pytest.raises(ValueError, match="size"):
+        native_geometry.normalize(big, small)
+    with pytest.raises(ValueError, match="size"):
+        native_geometry.encode((big, small, big))
+    with pytest.raises(ValueError, match="size"):
+        native_geometry.encode((big, big, small), octahedral=True)
+    with pytest.raises(ValueError, match="size"):
+        native_geometry.add(
+            np.ones((4, 4, 3), np.float32), np.ones((2, 2, 3), np.float32), 0, 1
+        )

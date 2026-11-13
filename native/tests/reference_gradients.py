@@ -62,11 +62,11 @@ def conic_gradient(img: np.ndarray, rotation: float = 0):
 
 
 def judged(name: str):
-    """chaiNNer-C's contract for the gradient `name` (ruling of 2026-10-23), not
+    """chaiNNer-C's contract for the gradient `name`, not
     upstream's: the function above, except where it divides 0 by 0. A one-pixel axis
     is position 0; a zero-width diagonal or radial interval is a step, 0 before its
     edge and 1 at or after it. The radial position is clamped to 0..1, as the
-    diagonal's is (2026-10-23)."""
+    diagonal's is."""
     original = globals()[name]
     signature = inspect.signature(original)
 

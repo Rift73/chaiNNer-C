@@ -597,7 +597,7 @@ class Writer:
         )
 
     def colour_options(self, params: dict[str, Any], width: int, height: int) -> None:
-        """Save Video's colour options (approved 2026-10-09), in place, before the
+        """Save Video's colour options, in place, before the
         writer starts: GIF gets a palette made for each frame; YUV output carries all its
         colour tags, -chroma_sample_location included, and is converted to match them
         with filtered chroma, exact rounding and explicit chroma positions (libswscale
@@ -921,7 +921,7 @@ def frame_collector(
     settings: WriteSettings,
 ) -> FrameCollector:
     """Save Video in a run of the one chosen frame `item` (Load Video's "Run this frame",
-    or In = Out; approved 2026-10-21): the frame goes to `<video name>_f000123.png`
+    or Start = End): the frame goes to `<video name>_f000123.png`
     next to where the video would go, as the video would hold it (Writer.save_frame).
     FFmpeg never starts, the video's file is never touched and the audio is left out.
     Settings the video would refuse raise as they would for the video (its folder, the
@@ -1384,7 +1384,7 @@ def save_video_node(
 def prepare_video_frame(
     collector: VideoCollector | FrameCollector, inputs: list[np.ndarray | None]
 ) -> np.ndarray | None:
-    """The frame Save Video would pipe for this iteration in RGB mode (SP3-P9), in its
+    """The frame Save Video would pipe for this iteration in RGB mode, in its
     writer's pipe format (fixed by the container and parameters in RGB mode); in Planes
     mode, without an image, or in a run of one chosen frame (its PNG), None: the node
     runs whole."""

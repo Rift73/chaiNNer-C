@@ -1,15 +1,10 @@
-"""The .text comparison of two native binaries (SP4 spec 4.1).
+"""The .text comparison of two native binaries.
 
 Usage:
   python native/tools/isa_check.py text A B
 
 text compares the .text sections of two PE files; headers, timestamps and debug
 directories are ignored. It exits 1 on any difference.
-
-The instruction-set checks this tool held (objects: each object's VEX/EVEX use against
-its level, the baseline VEX-free; dll: every VEX/EVEX instruction placed through the
-linker map) retired with the Ice Lake-SP build (SP5a-c); the ThinLTO objects are bitcode,
-not instructions.
 """
 
 from __future__ import annotations

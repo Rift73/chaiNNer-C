@@ -10,7 +10,6 @@ app ends that process with TerminateProcess.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import signal
 import sys
 from types import ModuleType, SimpleNamespace
@@ -24,13 +23,6 @@ class Worker:
 
     async def stop(self) -> None:
         self.stops += 1
-
-
-@pytest.fixture
-def server_host(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    # The module parses its command line when imported.
-    monkeypatch.setattr(sys, "argv", ["server_host.py"])
-    return importlib.import_module("server_host")
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux hosts get SIGTERM")
@@ -56,3 +48,28 @@ def test_a_closing_host_ends_on_sigterm(
 
     assert worker.stops == 1
     assert stops == [True]
+
+
+def test_a_closing_host_stops_the_worker_s_run_before_it_ends_the_worker(
+    server_host: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    # Ending the worker at once left a run's partial output (Save Video's .tmp) behind:
+    # its Stop deletes it.
+    calls: list[str] = []
+
+    class Stoppable(Worker):
+        async def stop_run(self) -> None:
+            calls.append("stop run")
+
+        async def stop(self) -> None:
+            calls.append("stop")
+
+    monkeypatch.setattr(server_host.app.ctx, "_worker", Stoppable())
+    monkeypatch.setattr(signal, "signal", lambda *_args: None)
+    sanic_app = SimpleNamespace(
+        ctx=server_host.app.ctx,
+        state=SimpleNamespace(is_running=True),
+        stop=lambda: calls.append("host stop"),
+    )
+    asyncio.run(server_host.close_server(sanic_app))
+    assert calls == ["stop run", "stop", "host stop"]

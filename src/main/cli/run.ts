@@ -18,7 +18,7 @@ import { SchemaMap } from '../../common/SchemaMap';
 import { ChainnerSettings } from '../../common/settings/settings';
 import { FunctionDefinition } from '../../common/types/function';
 import { ProgressController, ProgressMonitor, ProgressToken } from '../../common/ui/progress';
-import { EMPTY_MAP, assertNever, delay, lazy } from '../../common/util';
+import { EMPTY_MAP, assertNever, lazy } from '../../common/util';
 import { RunArguments } from '../arguments';
 import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
@@ -26,6 +26,7 @@ import { applyOverrides, readOverrideFile } from '../input-override';
 import { getRootDir } from '../platform';
 import { SaveFile } from '../SaveFile';
 import { readSettings } from '../setting-storage';
+import { retryUntil } from '../util';
 import { Exit } from './exit';
 import type { Edge, Node } from 'reactflow';
 
@@ -72,27 +73,13 @@ const createBackend = async (token: ProgressToken, args: RunArguments) => {
     return setupBackend(token, getRootDir(), args.remoteBackend);
 };
 
+// The backend's worker process gets 5 minutes to start, so the CLI waits as long for it.
 const getBackendNodes = async (backend: Backend): Promise<NodeSchema[]> => {
-    // Retry with an exponential back-off, capped at `maxSleep`, until the backend answers. Its
-    // worker process gets 5 minutes to start, so wait as long before giving up.
-    const timeout = 5 * 60 * 1000;
-    const startSleep = 1;
-    const maxSleep = 250;
-
-    const deadline = Date.now() + timeout;
-    let lastError: unknown;
-    for (let i = 0; Date.now() < deadline; i += 1) {
-        try {
-            // eslint-disable-next-line no-await-in-loop
-            return (await backend.nodes()).nodes;
-        } catch (error) {
-            lastError = error;
-        }
-        // eslint-disable-next-line no-await-in-loop
-        await delay(Math.min(maxSleep, startSleep * 2 ** i));
+    try {
+        return (await retryUntil(() => backend.nodes(), Date.now() + 5 * 60 * 1000)).nodes;
+    } catch (error) {
+        throw new Error(`Unable to connect to backend server: ${String(error)}`);
     }
-
-    throw new Error(`Unable to connect to backend server: ${String(lastError)}`);
 };
 
 interface ReadyBackend {
@@ -218,7 +205,7 @@ const runChain = async (
     if (args.overrideFile) {
         log.info(`Read override file ${args.overrideFile}`);
         const overrideFile = await readOverrideFile(args.overrideFile);
-        applyOverrides(chain.nodes, chain.edges, schemata, overrideFile);
+        applyOverrides(chain.nodes, schemata, overrideFile);
     }
 
     const passthrough = PassthroughMap.create(functionDefinitions);

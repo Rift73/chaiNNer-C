@@ -361,7 +361,8 @@ def test_higher_depths_agree_with_8_bits(name: str, tmp_path: Path):
         name="sixteen",
         png_depth=PngColorDepth.U16,
     )
-    assert cv2.imread(str(png16), cv2.IMREAD_UNCHANGED).dtype == np.uint16
+    written = cv2.imread(str(png16), cv2.IMREAD_UNCHANGED)
+    assert written is not None and written.dtype == np.uint16
     np.testing.assert_allclose(load_image_node(png16, True)[0], eight, atol=2e-5)
     for depth, dtype in (
         (TiffColorDepth.U16, np.uint16),
@@ -375,7 +376,8 @@ def test_higher_depths_agree_with_8_bits(name: str, tmp_path: Path):
             name=depth.value,
             tiff_depth=depth,
         )
-        assert cv2.imread(str(tiff), cv2.IMREAD_UNCHANGED).dtype == dtype
+        written = cv2.imread(str(tiff), cv2.IMREAD_UNCHANGED)
+        assert written is not None and written.dtype == dtype
         np.testing.assert_allclose(load_image_node(tiff, True)[0], eight, atol=2e-5)
 
 
@@ -601,6 +603,7 @@ def test_tiff_source_carries_only_its_origin_tags(tmp_path: Path):
     tags = read_image_tags(source)
     assert tags.icc_profile == ADOBE
     assert tags.dpi == pytest.approx(EXPECTED_DPI)
+    assert tags.exif is not None
     exif = Image.Exif()
     exif.load(tags.exif)
     assert exif[MAKE] == "Maker" and 273 not in exif and 256 not in exif

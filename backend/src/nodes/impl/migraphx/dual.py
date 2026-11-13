@@ -11,15 +11,19 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import importlib.util
 import sys
 import tempfile
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sanic.log import logger
+
 from ..tensorrt.dual import (
     ALIGNMENT,
     SOURCE,
+    VENDOR,
     aligned_input_name,
     check_profile,
     export_manifest,
@@ -47,6 +51,15 @@ BUILD_SOURCES = (
     SOURCE / "nodes" / "impl" / "tensorrt" / "dual_dynamic_kernels.py",
     SOURCE / "nodes" / "impl" / "tensorrt" / "dual_na_kernel.py",
 )
+# The vendored exporter, which writes the graph a program is lowered from (build_identity):
+# the automatic route keys its programs by the weights, not by the ONNX, so a program of
+# an earlier exporter's graph is not read for a later one.
+EXPORTER_SOURCES = tuple(sorted(VENDOR.rglob("*.py")))
+# The manifest keys of the exporter's local and retrieval sites' operators (vendor/
+# dual_tensorrt/scripts/dual_tensorrt/spec.py): TensorRT plugins only, for which the
+# library has no op (dual_hip.TENSORRT_ONLY). Manifests without them are earlier exports
+# (local windows, 96 px retrieval blocks), which lower as before.
+TENSORRT_ONLY_KEYS = ("local", "retrieval")
 
 Size = tuple[int, int]
 
@@ -77,10 +90,11 @@ def load_ops() -> None:
 
 @cache
 def build_identity() -> str:
-    """The SHA-256 of what a DUAL program's ops are built from: the kernels, the
-    lowering, the library and the Triton that compiles the kernels."""
+    """The SHA-256 of what a DUAL program is built from: the kernels, the lowering, the
+    exporter of the graph it lowers, the library and the Triton that compiles the
+    kernels."""
     digest = hashlib.sha256()
-    for source in (*BUILD_SOURCES, OP_LIBRARY):
+    for source in (*BUILD_SOURCES, *EXPORTER_SOURCES, OP_LIBRARY):
         # A build without the library fails (op_library), so no program is kept under
         # the identity of a missing one.
         if source.is_file():
@@ -93,6 +107,29 @@ def build_identity() -> str:
             # The DUAL build reports a missing Triton itself.
             continue
     return digest.hexdigest()
+
+
+def refusal(keys: list[str]) -> str:
+    """Why a DUAL ONNX with these TENSORRT_ONLY_KEYS has no program."""
+    return (
+        f"This DUAL ONNX's {' and '.join(keys)} neighborhood attention runs only as"
+        " TensorRT plugins, which MIGraphX has no operators for, so it has no MIGraphX"
+        " program. Run the model with PyTorch's Upscale Image."
+    )
+
+
+@cache
+def exported_tensorrt_only_keys() -> list[str]:
+    """The TENSORRT_ONLY_KEYS every manifest of the vendored exporter holds (its spec's
+    LOCAL and RETRIEVAL, which export.py and dynamic.py write whatever the model), so the
+    automatic route knows before exporting that build_program would refuse the ONNX."""
+    path = VENDOR / "scripts" / "dual_tensorrt" / "spec.py"
+    spec = importlib.util.spec_from_file_location("dual_tensorrt_spec", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return [key for key in TENSORRT_ONLY_KEYS if hasattr(module, key.upper())]
 
 
 def op_library() -> Path:
@@ -122,7 +159,19 @@ def build_program(
     (`size` None); a dynamic one is built for one (height, width) `size`, which
     check_profile(manifest, size, size, size) accepts, and made one of that size first
     (dual_hip.fix_size). The program's input is named for the ONNX's alignment
-    (aligned_input_name), as a TensorRT engine's."""
+    (aligned_input_name), as a TensorRT engine's. An ONNX with local or retrieval
+    neighborhood attention (TENSORRT_ONLY_KEYS) has no program."""
+    tensorrt_only = [key for key in TENSORRT_ONLY_KEYS if key in manifest]
+    if tensorrt_only:
+        raise ValueError(refusal(tensorrt_only))
+    # Exported before local and retrieval neighborhood attention: it still builds, as
+    # the file holds it.
+    logger.warning(
+        "This DUAL ONNX was exported with the old local windows and retrieval blocks;"
+        " its program keeps them, while PyTorch's Upscale Image runs the model with"
+        " neighborhood attention there. Converting the model to ONNX again gives an"
+        " ONNX that only TensorRT builds."
+    )
     spec = manifest["specialization"]
     if spec.get("dynamic", False) != (size is not None):
         raise ValueError("Only a dynamic DUAL ONNX takes a size.")

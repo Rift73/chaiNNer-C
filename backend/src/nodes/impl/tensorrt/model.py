@@ -9,8 +9,24 @@ from typing import Any, Literal
 
 
 @dataclass
+class TemporalInfo:
+    """A temporal model's engine set (rdual_engine_set.py): its architecture, the one
+    input size (height, width) its engines take, their part names in build order, and
+    the flow part's precision recipe."""
+
+    architecture: str
+    height: int
+    width: int
+    plugin_key: str
+    parts: tuple[str, ...]
+    # The flow's precision recipe (rdual_export.FLOW_RECIPES)
+    flow_precision: str = "mixed"
+
+
+@dataclass
 class TensorRTEngineInfo:
-    """Metadata about a TensorRT engine."""
+    """Metadata about a TensorRT engine; `temporal` for an engine set, whose engine
+    bytes are the set's container."""
 
     precision: Literal["fp32", "fp16", "bf16", "int8", "mixed"]
     input_channels: int
@@ -22,6 +38,7 @@ class TensorRTEngineInfo:
     min_shape: tuple[int, int, int, int] | None  # (-, channels, width, height)
     opt_shape: tuple[int, int, int, int] | None  # (-, channels, width, height)
     max_shape: tuple[int, int, int, int] | None  # (-, channels, width, height)
+    temporal: TemporalInfo | None = None
 
 
 class DeserializedEngine:

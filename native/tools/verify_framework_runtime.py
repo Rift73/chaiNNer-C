@@ -13,11 +13,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import http.client
 import json
-import os
 import shutil
-import socket
 import subprocess
 import time
 import traceback
@@ -27,22 +24,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from package_files import hash_file
 from verify_runtime import (
     METADATA_COMPARISON,
-    METADATA_ENDPOINTS,
-    METADATA_TIMEOUT,
     ORACLE,
     PROJECT,
     REPEAT_RULES,
     SSE_EVENT_COMPARISON,
     Events,
     OwnedJob,
+    backend_launch,
     broadcast_multisets,
     canonical,
     check_success,
     compare_images,
     compare_metadata,
     edge,
+    fetch_metadata,
     generator_node_ids,
     make_node,
     metadata_record,
@@ -51,8 +49,10 @@ from verify_runtime import (
     repeat_final_value_differences,
     repeat_mismatches,
     request,
+    request_shutdown,
     sse_event_mismatches,
     sse_record,
+    wait_until_ready,
     write_json,
 )
 
@@ -100,13 +100,9 @@ FRAMEWORK_IDS = {
 }
 
 
-def file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def source_hashes(root: Path) -> dict[str, str]:
     return {
-        path.relative_to(root).as_posix(): file_hash(path)
+        path.relative_to(root).as_posix(): hash_file(path)
         for path in sorted(root.rglob("*"))
         if path.is_file() and "__pycache__" not in path.parts
     }
@@ -575,47 +571,7 @@ def run_backend(
     )
     graphs = fixture_graphs if graphs is None else graphs
     directory = root / label
-    directory.mkdir()
-    for name in ("storage", "output", "profile", "appdata", "localappdata", "temp"):
-        (directory / name).mkdir()
-    env = dict(os.environ)
-    for key in ("PYTHONPATH", "PYTHONHOME"):
-        env.pop(key, None)
-    env.update(
-        {
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONHASHSEED": "0",
-            "PYTHONIOENCODING": "utf-8",
-            "CUDA_VISIBLE_DEVICES": "-1",
-            "NVIDIA_VISIBLE_DEVICES": "none",
-            # ncnn's Vulkan, hidden on both sides (Consult 8 sweep item 6): no
-            # instance, so no crash at the host's exit and no clone holding DLLs.
-            "VK_LOADER_DRIVERS_DISABLE": "*",
-            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-            # A host's dependency installer must never write into the provisioned
-            # runtime or the package (bench_backend.ISOLATION): a needed install
-            # fails the start instead; pip list ignores it.
-            "PIP_REQUIRE_VIRTUALENV": "1",
-            "APPDATA": str(directory / "appdata"),
-            "LOCALAPPDATA": str(directory / "localappdata"),
-            "USERPROFILE": str(directory / "profile"),
-            "HOME": str(directory / "profile"),
-            "TMP": str(directory / "temp"),
-            "TEMP": str(directory / "temp"),
-        }
-    )
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    command = [
-        str(python),
-        "-B",
-        str(backend / "run.py"),
-        str(port),
-        "--storage-dir",
-        str(directory / "storage"),
-    ]
+    env, port, command = backend_launch(backend, python, directory)
     job, process, events = OwnedJob(), None, None
     log = (directory / "backend.log").open("wb")
     result: dict = {
@@ -639,26 +595,8 @@ def run_backend(
         )
         job.assign(process)
         result["owned_pid"] = process.pid
-        limit = time.monotonic() + timeout
-        while time.monotonic() < limit:
-            if process.poll() is not None:
-                raise RuntimeError(
-                    f"{label} exited {process.returncode}; inspect backend.log"
-                )
-            try:
-                if request(port, "/status", timeout=3).get("ready"):
-                    break
-            except OSError, urllib.error.URLError, json.JSONDecodeError:
-                pass
-            time.sleep(0.5)
-        else:
-            raise RuntimeError(f"{label} startup timeout; inspect backend.log")
-        metadata = {
-            key: request(port, "/" + key, timeout=METADATA_TIMEOUT)
-            for key in METADATA_ENDPOINTS
-        }
-        for key, value in metadata.items():
-            write_json(directory / (key + ".json"), value)
+        wait_until_ready(process, port, label, timeout, directory / "backend.log")
+        metadata = fetch_metadata(port, directory)
         result.update(metadata_record(metadata))
         schemas = {node["schemaId"]: node for node in metadata["nodes"]["nodes"]}
         if not required_schema_ids <= schemas.keys():
@@ -744,7 +682,7 @@ def run_backend(
                                 f"{name} executed an expected dead node"
                             )
                 files = {
-                    path.relative_to(outputs).as_posix(): file_hash(path)
+                    path.relative_to(outputs).as_posix(): hash_file(path)
                     for path in sorted(outputs.rglob("*"))
                     if path.is_file()
                 }
@@ -812,20 +750,8 @@ def run_backend(
         if events:
             write_json(directory / "events.json", events.events)
             events.close()
-        if process is not None and process.poll() is None:
-            try:
-                request(port, "/shutdown", {}, timeout=15)
-            except (
-                OSError,
-                urllib.error.URLError,
-                json.JSONDecodeError,
-                http.client.HTTPException,
-            ):
-                pass
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                pass
+        if process is not None:
+            request_shutdown(process, port)
         job.close()
         if process is not None:
             process.wait(timeout=15)
@@ -896,7 +822,7 @@ def compare_runs(a: dict, b: dict, python: Path) -> dict:
         "contracts_equal": contracts,
         "sse_event_mismatches": event_mismatches,
         "broadcast_multisets": broadcasts,
-        # Flagged, not failed (Consult D-35): the oracle's own attempts ended on
+        # Flagged, not failed: the oracle's own attempts ended on
         # different final values of an iterated field.
         "oracle_repeat_final_values_differ": oracle_repeat_flags(a),
         "serialized_model_bytes_equal": binary,
@@ -1021,7 +947,7 @@ def main() -> int:
             and all(report["original_source_trees_unchanged"].values())
             and report["all_owned_processes_stopped"]
         )
-        # Flagged, not failed (Consult D-35): the oracle's own attempts ended on
+        # Flagged, not failed: the oracle's own attempts ended on
         # different final values of an iterated field.
         report["oracle_repeat_final_values_differ"] = (
             oracle_repeat_flags(report["runs"][0]) if report["runs"] else {}

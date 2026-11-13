@@ -1,6 +1,9 @@
 """Native image_dimension entry points (native/src/run/nodes/image_dimension.cpp, image_resize.cpp) against their
 Python bodies."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from native_differential import assert_native_matches
@@ -13,6 +16,9 @@ RESIZE = "chainner:image:resize"
 SIZES = [(1, 1), (3, 5), (17, 31), (64, 257)]
 FILTERS = [f.value for f in ResizeFilter]
 PERCENT, ABSOLUTE = 0, 1
+DECLARED = (
+    Path(__file__).with_name("reference_resample") / "resize_percentage_declared.json"
+)
 
 
 def resize_inputs(
@@ -175,6 +181,54 @@ def test_resize_size_errors(shape, mode, scale, target):
     inputs = resize_inputs(img, mode, scale, target, ResizeFilter.LANCZOS.value, False)
     outcome = assert_native_matches(RESIZE, inputs)
     assert outcome[0] == "error"
+
+
+@pytest.mark.parametrize("transposed", [False, True])
+@pytest.mark.parametrize(
+    ("side", "scale", "expected"),
+    [
+        (200, 7.25, 15),
+        (199, 7.25, 14),
+        (201, 7.25, 15),
+        (200, 7.24, 14),
+        (200, 7.26, 15),
+        (360, 8.75, 32),
+        (100, 14.5, 15),
+        (600, 10.25, 62),
+        (3000, 7.25, 218),
+        (375, 9.2, 35),
+        (250, 64.6, 162),
+    ],
+)
+def test_resize_percentage_rounds_what_the_type_declares(
+    side, scale, expected, transposed
+):
+    # The declared side is round(side * scale / 100): 200 * 7.25 / 100 is 14.5, 200 * (7.25 / 100) just below it.
+    img = np.zeros((side, 1) if transposed else (1, side), np.float32)
+    outcome = assert_native_matches(
+        RESIZE,
+        resize_inputs(img, PERCENT, scale, (1, 1), ResizeFilter.NEAREST.value, False),
+    )
+    assert outcome[0] == "outputs"
+    assert outcome[1][0][2] == ((expected, 1) if transposed else (1, expected))
+
+
+def test_resize_percentage_gives_the_declared_size():
+    # The fixture's sizes come from the type system's own evaluation; they include every width from 1 to 8192 at 0.01
+    # to 20 % where side * (scale / 100) or side * scale / 100 rounds to another size. Even cases resize the height, odd ones the width.
+    cases = json.loads(DECLARED.read_text(encoding="utf-8"))["cases"]
+    for index, (side, scale, declared) in enumerate(cases):
+        axis = index % 2
+        shape = (side, 1) if axis == 0 else (1, side)
+        img = np.zeros(shape, np.float32)
+        outcome = assert_native_matches(
+            RESIZE,
+            resize_inputs(
+                img, PERCENT, scale, (1, 1), ResizeFilter.NEAREST.value, False
+            ),
+        )
+        assert outcome[0] == "outputs"
+        assert outcome[1][0][2][axis] == declared, (side, scale, axis)
 
 
 def test_resize_memory_message_text():

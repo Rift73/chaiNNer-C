@@ -8,7 +8,6 @@ that unsupported devices are never transferred into the C/NumPy path.
 from __future__ import annotations
 
 import ast
-import ctypes as ct
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -320,28 +319,6 @@ def test_concurrent_large_tensor_interpolation():
 
 
 def test_unsupported_and_invalid_contracts(monkeypatch):
-    dll = native._api()  # raw ABI rejection must precede writes
-    assert dll.cn_tensor_interpolate(None, None, None, 1, 0, 0.5, 0.5) == 1
-    data = np.zeros(4, np.float64)
-    assert (
-        dll.cn_tensor_interpolate(
-            data.ctypes.data,
-            data.ctypes.data,
-            data.ctypes.data,
-            (1 << (ct.sizeof(ct.c_size_t) * 8)) - 1,
-            2,
-            0.5,
-            0.5,
-        )
-        == 2
-    )
-    assert (
-        dll.cn_tensor_interpolate(
-            data.ctypes.data, data.ctypes.data, data.ctypes.data, 4, 3, 0.5, 0.5
-        )
-        == 1
-    )
-    np.testing.assert_array_equal(data, 0)
     with pytest.raises(AssertionError, match="same size and shape"):
         ONNX(
             [onph.from_array(np.ones(2, np.float32))],

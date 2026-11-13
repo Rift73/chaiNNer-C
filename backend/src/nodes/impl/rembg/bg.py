@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from sanic.log import logger
 
 from ...utils.utils import get_h_w_c
 from ..native_channels import _assemble, concatenate_channels
@@ -102,9 +103,8 @@ def remove_bg(
         return cutout, mask
 
     mask = None
-    for mask in masks:
-        if post_process_mask:
-            mask = post_process(mask)  # noqa
+    for raw_mask in masks:
+        mask = post_process(raw_mask) if post_process_mask else raw_mask
 
         if alpha_matting:
             try:
@@ -116,6 +116,9 @@ def remove_bg(
                     alpha_matting_erode_size,
                 )
             except ValueError:
+                logger.warning(
+                    "Alpha matting failed; using the mask as alpha.", exc_info=True
+                )
                 cutout = naive_cutout(img, mask)
         else:
             cutout = naive_cutout(img, mask)

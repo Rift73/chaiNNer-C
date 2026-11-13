@@ -5,41 +5,20 @@ from __future__ import annotations
 import ast
 import ctypes as ct
 import math
-import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-
 from native_images import opaque
+from node_bodies import load_body
 
 from nodes.impl import native_transfer, native_unsharp
 from nodes.impl.native import ptr
 from nodes.utils.utils import get_h_w_c
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def load_body(path: Path) -> types.ModuleType:
-    tree = ast.parse(path.read_text("utf-8"))
-    tree.body = [
-        node
-        for node in tree.body
-        if not isinstance(node, ast.ImportFrom)
-        or (
-            node.level == 0
-            and node.module not in {"api", "nodes.groups"}
-            and not (node.module or "").startswith("nodes.properties")
-        )
-    ]
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            node.decorator_list = []
-    result = types.ModuleType(path.stem)
-    exec(compile(tree, str(path), "exec"), result.__dict__)
-    return result
 
 
 STRETCH = load_body(

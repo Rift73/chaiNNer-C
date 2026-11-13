@@ -110,6 +110,12 @@ void cn_bind_atomic_file(py::module_ &module) {
                  py::gil_scoped_release release;
                  return target.commit();
              })
+        .def("commit_or_keep",
+             [](AtomicTarget &target) {
+                 py::gil_scoped_release release;
+                 return target.commit_or_keep();
+             },
+             "commit(), but a failed rename leaves the temporary file at temp, which abandon() then keeps.")
         .def("abandon",
              [](AtomicTarget &target) {
                  py::gil_scoped_release release;

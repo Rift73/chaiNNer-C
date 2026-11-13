@@ -1,39 +1,23 @@
-/* chaiNNer execution/path application control, adapted from its GPL-3.0 source.
- * Native state preserves Python object identity and ordered arbitrary-precision
- * arithmetic. CPython objects/range and pathlib host resolution remain engines.
- * Note and Execution Number have no substantive backend algorithm.
- */
+/* chaiNNer's execution and directory utility nodes, adapted from its GPL-3.0 source.
+ * Values stay Python objects, so identity and arbitrary-precision arithmetic are kept;
+ * range(), pathlib and the operators do the work. */
 #include "graph_python.hpp"
 #include <memory>
 
 namespace py = pybind11;
 namespace {
+using graphpy::ActiveIteration;
+using graphpy::exhausted;
 using graphpy::O;
+using graphpy::steal;
 
-struct ActiveIteration {
-    bool &running;
-    explicit ActiveIteration(bool &value) : running(value) {
-        if (running) throw py::value_error("generator already executing");
-        running = true;
-    }
-    ~ActiveIteration() { running = false; }
-};
-
-O checked(PyObject *value) {
-    if (!value) throw py::error_already_set();
-    return py::reinterpret_steal<O>(value);
-}
-[[noreturn]] void exhausted() {
-    PyErr_SetNone(PyExc_StopIteration);
-    throw py::error_already_set();
-}
 O name(const py::dict &globals, const char *key) {
     py::str k(key);
     if (globals.contains(k)) return globals[k];
     return graphpy::builtin(key);
 }
 bool comparison(const O &a, const O &b, int op) {
-    return graphpy::truth(checked(PyObject_RichCompare(a.ptr(), b.ptr(), op)));
+    return graphpy::truth(steal(PyObject_RichCompare(a.ptr(), b.ptr(), op)));
 }
 bool option(const py::dict &globals, const O &value, const char *type, const char *member) {
     O expected = name(globals, type).attr(member);
@@ -48,7 +32,7 @@ O directory_into(const O &directory, const py::tuple &folders) {
     O result = directory;
     for (py::handle item : folders) {
         if (!item.is_none()) {
-            O path = checked(PyNumber_TrueDivide(result.ptr(), item.ptr()));
+            O path = steal(PyNumber_TrueDivide(result.ptr(), item.ptr()));
             result = path.attr("resolve")();
         }
     }
@@ -64,8 +48,8 @@ O neutral(const py::dict &globals, const O &operation) {
 }
 
 O reduce(const py::dict &globals, const O &operation, const O &a, const O &b) {
-    if (option(globals, operation, "Operation", "SUM")) return checked(PyNumber_Add(a.ptr(), b.ptr()));
-    if (option(globals, operation, "Operation", "PRODUCT")) return checked(PyNumber_Multiply(a.ptr(), b.ptr()));
+    if (option(globals, operation, "Operation", "SUM")) return steal(PyNumber_Add(a.ptr(), b.ptr()));
+    if (option(globals, operation, "Operation", "PRODUCT")) return steal(PyNumber_Multiply(a.ptr(), b.ptr()));
     if (option(globals, operation, "Operation", "MAXIMUM")) return name(globals, "max")(a, b);
     if (option(globals, operation, "Operation", "MINIMUM")) return name(globals, "min")(a, b);
     not_implemented();
@@ -99,7 +83,7 @@ O logic(const py::dict &globals, const O &operation, const O &a, const O &b) {
         return graphpy::truth(a) ? a : O(b.attr("value"));
     if (option(globals, operation, "LogicOperation", "XOR")) {
         O value = b.attr("value");
-        return checked(PyObject_RichCompare(a.ptr(), value.ptr(), Py_NE));
+        return steal(PyObject_RichCompare(a.ptr(), value.ptr(), Py_NE));
     }
     if (option(globals, operation, "LogicOperation", "NOT")) return py::bool_(!graphpy::truth(a));
     return py::none();
@@ -124,7 +108,7 @@ public:
         try {
             if (cursor_.is_none()) {
                 O range = graphpy::builtin("range")(count_);
-                cursor_ = checked(PyObject_GetIter(range.ptr()));
+                cursor_ = steal(PyObject_GetIter(range.ptr()));
             }
             PyObject *raw = PyIter_Next(cursor_.ptr());
             if (!raw) {
@@ -138,7 +122,7 @@ public:
             throw;
         }
         try {
-            return checked(PyNumber_Add(start_.ptr(), index.ptr()));
+            return steal(PyNumber_Add(start_.ptr(), index.ptr()));
         } catch (const py::error_already_set &error) {
             if (error.matches(PyExc_Exception)) return error.value();
             closed_ = true;
@@ -155,9 +139,9 @@ public:
 O range_node(const py::dict &globals, O start, const O &start_inclusive,
              O end, const O &end_inclusive) {
     const O one = py::int_(1);
-    if (!graphpy::truth(start_inclusive)) start = checked(PyNumber_InPlaceAdd(start.ptr(), one.ptr()));
-    if (graphpy::truth(end_inclusive)) end = checked(PyNumber_InPlaceAdd(end.ptr(), one.ptr()));
-    O count = checked(PyNumber_Subtract(end.ptr(), start.ptr()));
+    if (!graphpy::truth(start_inclusive)) start = steal(PyNumber_InPlaceAdd(start.ptr(), one.ptr()));
+    if (graphpy::truth(end_inclusive)) end = steal(PyNumber_InPlaceAdd(end.ptr(), one.ptr()));
+    O count = steal(PyNumber_Subtract(end.ptr(), start.ptr()));
     if (!comparison(count, py::int_(0), Py_GE)) {
         PyErr_SetNone(PyExc_AssertionError);
         throw py::error_already_set();

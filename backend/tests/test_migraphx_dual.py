@@ -162,6 +162,20 @@ def test_the_residual_norm_variant_is_refused():
         dual_hip.lower(model, KEY, dual_hip.Target.amd("gfx1100"))
 
 
+@pytest.mark.parametrize("plugin", ["DualLocalNA", "DualXR", "DualRowSum"])
+def test_plugins_that_only_tensorrt_runs_are_refused(plugin: str):
+    model = _plugin_model()
+    model.graph.node.insert(
+        0,
+        helper.make_node(
+            f"{plugin}_{KEY}_TRT", ["qkv"], ["tensorrt_only"], name="t", domain="trt"
+        ),
+    )
+    with pytest.raises(ValueError, match="a TensorRT plugin only") as refused:
+        dual_hip.lower(model, KEY, dual_hip.Target.amd("gfx1100"))
+    assert dual_hip.TENSORRT_ONLY[plugin] in str(refused.value)
+
+
 @pytest.mark.parametrize("gfx", ["gfx1100", "gfx90a:sramecc+:xnack-"])
 def test_target_features_are_dropped_and_wave_size_follows_the_family(gfx: str):
     target = dual_hip.Target.amd(gfx)

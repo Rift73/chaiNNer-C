@@ -49,7 +49,7 @@ PRIVATE_DIRS = {
     "TMP": "temp",
     "TEMP": "temp",
 }
-# The DLL's ISA override (spec 4.3). A side that sets it must log its ISA line, or
+# The DLL's ISA override. A side that sets it must log its ISA line, or
 # it may be a tree that ignores the variable and runs the same code as the other.
 ISA_VARIABLE = "CHAINNER_C_ISA"
 # The worker's startup line: effective level, requested level and the CPU's maximum.

@@ -1,4 +1,4 @@
-"""The native engine's memo cache (native/local/instant-exec/DESIGN.md amendment A3): its allow-list, hits that send
+"""The native engine's memo cache: its allow-list, hits that send
 the events of a computed node (judged against process.Executor by native/tools/engine_differential.py), keys that
 follow a source file's identity, its budget (an entry above an eighth of it not kept), and the Result Cache settings
 that set it at each run's start (on, size), over which CHAINNER_C_MEMO_BUDGET_MIB wins."""
@@ -71,7 +71,12 @@ KEYED_GENERATORS = {
     "chainner:onnx:load_models": ["Directory"],
     "chainner:pytorch:load_models": ["Directory"],
     "chainner:utility:range": [],
-    "chainner:vapoursynth:clip_frames": ["FPS", "Colour Info"],
+    "chainner:vapoursynth:clip_frames": [
+        "FPS",
+        "Colour Info",
+        "Preview",
+        "Frame Count",
+    ],
 }
 # Generators whose per-run outputs are read from a file, so their run has no key (Load
 # Videos reads its folder's first video; a run gives each file a Load Video).
@@ -415,6 +420,38 @@ def test_a_changed_file_is_computed_again(schemas, tmp_path):
     chain, engine = run("native", nodes, tmp_path, output)
     assert engine.files == oracle.files != first.files
     assert mismatches("changed image", chain, oracle, engine, tmp_path) == []
+
+
+def test_a_same_size_rewrite_with_its_write_time_put_back_is_loaded_again(
+    schemas, tmp_path
+):
+    # The rewrite keeps the file, its size and (put back) its last-write time; only its
+    # change time tells the new version.
+    output = tmp_path / "out"
+    image = tmp_path / "single.bmp"
+    rng = np.random.default_rng(6)
+    first_pixels, second_pixels = (
+        (rng.random((61, 83, 3)) * 255).astype(np.uint8) for _ in range(2)
+    )
+    assert cv2.imwrite(str(image), first_pixels)
+    nodes = single_chain(schemas, image, output)
+    _, first = run("native", nodes, tmp_path, output)
+    written = image.stat()
+    encoded = cv2.imencode(".bmp", second_pixels)[1].tobytes()
+    assert len(encoded) == written.st_size
+    with open(image, "r+b") as file:
+        file.write(encoded)
+    os.utime(image, ns=(written.st_atime_ns, written.st_mtime_ns))
+    rewritten = image.stat()
+    assert (rewritten.st_size, rewritten.st_mtime_ns, rewritten.st_ino) == (
+        written.st_size,
+        written.st_mtime_ns,
+        written.st_ino,
+    )
+    _, oracle = run("python", nodes, tmp_path, output)
+    chain, engine = run("native", nodes, tmp_path, output)
+    assert engine.files == oracle.files != first.files
+    assert mismatches("rewritten image", chain, oracle, engine, tmp_path) == []
 
 
 BUDGET = """

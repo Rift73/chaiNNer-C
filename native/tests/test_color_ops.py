@@ -230,7 +230,6 @@ def test_quantization_rounding_and_wrapping():
             [0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0],
         )
         equal(to_uint8(img, normalized=True), expected)
-        equal(native.quantize_u8(img), expected)
 
 
 @pytest.mark.parametrize("kind", [0, 1])
@@ -484,6 +483,19 @@ def test_missing_library_not_hidden(monkeypatch):
 def test_node_schema_and_signature_unchanged(relative):
     current = ast.parse((BASE / relative).read_text(encoding="utf-8"))
     original = ast.parse((REFERENCE / Path(relative).name).read_text(encoding="utf-8"))
+    if Path(relative).name == "normal_map_generator.py":
+        # The help's grammar is corrected: "a albedo" becomes "an albedo".
+        typo = "If you have a albedo/diffuse texture"
+        docs = [
+            (expression, expression.value)
+            for expression in ast.walk(original)
+            if isinstance(expression, ast.Constant)
+            and isinstance(expression.value, str)
+            and typo in expression.value
+        ]
+        assert len(docs) == 1
+        expression, text = docs[0]
+        expression.value = text.replace(typo, "If you have an albedo/diffuse texture")
 
     def contracts(tree):
         return {

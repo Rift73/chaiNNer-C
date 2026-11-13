@@ -34,10 +34,10 @@
 namespace py = pybind11;
 namespace {
 using graphpy::O;
-O checked(PyObject *value) {
-    if (!value) throw py::error_already_set();
-    return py::reinterpret_steal<O>(value);
-}
+using graphpy::ActiveIteration;
+using graphpy::equal;
+using graphpy::exhausted;
+using graphpy::steal;
 // A str as the UTF-16 Windows takes (lone surrogates kept, as os.scandir reports them).
 std::wstring to_wide(const O &text) {
     Py_ssize_t size = 0;
@@ -105,18 +105,11 @@ std::optional<std::wstring> child_identity(const std::wstring &parent, std::wstr
     return result;
 }
 #endif
-[[noreturn]] void exhausted() {
-    PyErr_SetNone(PyExc_StopIteration);
-    throw py::error_already_set();
-}
 O own(py::handle value) { return py::reinterpret_borrow<O>(value); }
 O name(const py::dict &globals, const char *key) {
     py::str k(key);
     if (globals.contains(k)) return globals[k];
     return graphpy::builtin(key);
-}
-bool equal(const O &a, const O &b) {
-    return graphpy::truth(checked(PyObject_RichCompare(a.ptr(), b.ptr(), Py_EQ)));
 }
 O item(const O &value, py::ssize_t index) { return value[py::int_(index)]; }
 bool flag(const O &value, const char *key) { return graphpy::truth(value.attr(key)); }
@@ -131,15 +124,6 @@ struct RecursiveCall {
 struct Entry { O name; bool directory; bool hidden; bool link; bool reparse; };
 struct Match { O path; bool directory; };
 using Sink = std::function<void(const Match &)>;
-
-struct ActiveIteration {
-    bool &running;
-    explicit ActiveIteration(bool &value) : running(value) {
-        if (running) throw py::value_error("generator already executing");
-        running = true;
-    }
-    ~ActiveIteration() { running = false; }
-};
 
 class Walker {
     O config_;
@@ -186,7 +170,7 @@ class Walker {
         O patterns = config_.attr("npatterns");
         if (!graphpy::truth(patterns)) return false;
         if (directory && !graphpy::truth(value.attr("endswith")(sep_)))
-            value = checked(PyNumber_InPlaceAdd(value.ptr(), sep_.ptr()));
+            value = steal(PyNumber_InPlaceAdd(value.ptr(), sep_.ptr()));
         for (py::handle pattern : py::reinterpret_borrow<py::iterable>(patterns))
             if (graphpy::truth(own(pattern).attr("fullmatch")(value))) return true;
         return false;
@@ -385,26 +369,26 @@ O alphanumeric(const O &value) {
     Py_ssize_t index = 0;
     while (index < length) {
         if (!Py_UNICODE_ISDECIMAL(PyUnicode_READ(kind, data, index))) { ++index; continue; }
-        result.append(checked(PyUnicode_Substring(upper.ptr(), previous, index)));
+        result.append(steal(PyUnicode_Substring(upper.ptr(), previous, index)));
         const Py_ssize_t begin = index++;
         while (index < length && Py_UNICODE_ISDECIMAL(PyUnicode_READ(kind, data, index))) ++index;
-        O digits = checked(PyUnicode_Substring(upper.ptr(), begin, index));
-        result.append(checked(PyLong_FromUnicodeObject(digits.ptr(), 10)));
+        O digits = steal(PyUnicode_Substring(upper.ptr(), begin, index));
+        result.append(steal(PyLong_FromUnicodeObject(digits.ptr(), 10)));
         previous = index;
     }
-    result.append(checked(PyUnicode_Substring(upper.ptr(), previous, length)));
+    result.append(steal(PyUnicode_Substring(upper.ptr(), previous, length)));
     return result;
 }
 
 O extension_filter(const O &extensions) {
     O joined = py::str("|").attr("join")(extensions);
-    O first = checked(PyUnicode_Concat(py::str("**/*@(").ptr(), joined.ptr()));
-    return checked(PyUnicode_Concat(first.ptr(), py::str(")").ptr()));
+    O first = steal(PyUnicode_Concat(py::str("**/*@(").ptr(), joined.ptr()));
+    return steal(PyUnicode_Concat(first.ptr(), py::str(")").ptr()));
 }
 O flags(const O &glob) {
     O value = glob.attr("EXTGLOB");
     for (const char *key : {"BRACE", "GLOBSTAR", "NEGATE", "DOTGLOB", "NEGATEALL"})
-        value = checked(PyNumber_Or(value.ptr(), glob.attr(key).ptr()));
+        value = steal(PyNumber_Or(value.ptr(), glob.attr(key).ptr()));
     return value;
 }
 
@@ -415,7 +399,7 @@ O flags(const O &glob) {
 // list_glob's extension filter and natural sort, in C++.
 
 O from_wide(std::wstring_view text) {
-    return checked(PyUnicode_FromWideChar(text.data(), static_cast<Py_ssize_t>(text.size())));
+    return steal(PyUnicode_FromWideChar(text.data(), static_cast<Py_ssize_t>(text.size())));
 }
 bool ascii(std::wstring_view text) {
     for (wchar_t c : text)
@@ -641,8 +625,8 @@ std::optional<py::list> plain_listing(const py::dict &globals, const O &director
     prefix.pop_back();
     // str(directory / relative) is base + relative; the sort compares the relative
     // parts alone, as base ends before any digit run (in a separator or a colon).
-    O probe = checked(PyObject_Str(checked(PyNumber_TrueDivide(directory.ptr(), py::str("x").ptr())).ptr()));
-    O base = checked(PyUnicode_Substring(probe.ptr(), 0, PyUnicode_GET_LENGTH(probe.ptr()) - 1));
+    O probe = steal(PyObject_Str(steal(PyNumber_TrueDivide(directory.ptr(), py::str("x").ptr())).ptr()));
+    O base = steal(PyUnicode_Substring(probe.ptr(), 0, PyUnicode_GET_LENGTH(probe.ptr()) - 1));
     const Py_ssize_t base_length = PyUnicode_GET_LENGTH(base.ptr());
     if (base_length && Py_UNICODE_ISDECIMAL(PyUnicode_READ_CHAR(base.ptr(), base_length - 1))) return std::nullopt;
 
@@ -676,12 +660,12 @@ std::optional<py::list> plain_listing(const py::dict &globals, const O &director
     std::unordered_set<std::wstring> seen;
     std::vector<O> paths;
     std::vector<std::u32string> keys;
-    O unique = checked(PySet_New(nullptr));
+    O unique = steal(PySet_New(nullptr));
     for (const std::wstring &relative : listed) {
         if (seen.contains(lowered(relative))) continue;
         seen.insert(relative);
         if (!image(relative, suffixes)) continue;
-        O text = checked(PyUnicode_Concat(base.ptr(), from_wide(relative).ptr()));
+        O text = steal(PyUnicode_Concat(base.ptr(), from_wide(relative).ptr()));
         if (PySet_Add(unique.ptr(), text.ptr()) < 0) throw py::error_already_set();
         paths.push_back(std::move(text));
         keys.push_back(uppered(relative));
@@ -717,7 +701,7 @@ O list_glob(const py::dict &globals, const O &directory, const O &expression, co
         Walker walker(configuration, name(globals, "os"));
         discovered = walker.run();
     }
-    O insensitive = checked(PyNumber_Or(glob_flags.ptr(), glob.attr("IGNORECASE").ptr()));
+    O insensitive = steal(PyNumber_Or(glob_flags.ptr(), glob.attr("IGNORECASE").ptr()));
     O transformed = glob.attr("_flag_transform")(insensitive);
     O compiler = glob.attr("_wcparse").attr("compile");
     O compiled = compiler(extension_expression, transformed);
@@ -727,7 +711,7 @@ O list_glob(const py::dict &globals, const O &directory, const O &expression, co
         graphpy::raise(PyExc_RuntimeError, py::str("unexpected WCMatch real-path extension filter"));
     O include = compiled.attr("_include");
     O exclude = compiled.attr("_exclude");
-    O unique = checked(PySet_New(nullptr));
+    O unique = steal(PySet_New(nullptr));
     for (py::handle filename : discovered) {
         bool matched = false;
         for (py::handle pattern : py::reinterpret_borrow<py::iterable>(include)) {
@@ -739,14 +723,14 @@ O list_glob(const py::dict &globals, const O &directory, const O &expression, co
             }
         }
         if (matched) {
-            O path = checked(PyNumber_TrueDivide(directory.ptr(), filename.ptr()));
-            O text = checked(PyObject_Str(path.ptr()));
+            O path = steal(PyNumber_TrueDivide(directory.ptr(), filename.ptr()));
+            O text = steal(PyObject_Str(path.ptr()));
             if (PySet_Add(unique.ptr(), text.ptr()) < 0) throw py::error_already_set();
         }
     }
     // Preserve CPython set iteration and stable equal-key sort ties, rather than
     // introducing C++ hash order or an unsolicited lexical tie breaker.
-    O ordered = checked(PySequence_List(unique.ptr()));
+    O ordered = steal(PySequence_List(unique.ptr()));
     ordered.attr("sort")(py::arg("key") = py::cpp_function(&alphanumeric));
     py::list result;
     for (py::handle path : py::reinterpret_borrow<py::iterable>(ordered))
@@ -771,7 +755,7 @@ class FileIterator {
         O path;
         O index = index_;
         try {
-            if (cursor_.is_none()) cursor_ = checked(PyObject_GetIter(paths_.ptr()));
+            if (cursor_.is_none()) cursor_ = steal(PyObject_GetIter(paths_.ptr()));
             PyObject *raw = PyIter_Next(cursor_.ptr());
             if (!raw) {
                 closed_ = true;
@@ -779,7 +763,7 @@ class FileIterator {
                 exhausted();
             }
             path = py::reinterpret_steal<O>(raw);
-            index_ = checked(PyNumber_Add(index_.ptr(), py::int_(1).ptr()));
+            index_ = steal(PyNumber_Add(index_.ptr(), py::int_(1).ptr()));
         } catch (...) {
             closed_ = true;
             throw;
@@ -851,8 +835,8 @@ O load_images(const py::dict &globals, const O &directory, const O &use_glob, co
     Py_ssize_t length = PyObject_Length(paths.ptr());
     if (length < 0) throw py::error_already_set();
     if (!length) {
-        O formatted = checked(PyObject_Format(directory.ptr(), nullptr));
-        O message = checked(PyUnicode_Concat(formatted.ptr(), py::str(" has no valid images.").ptr()));
+        O formatted = steal(PyObject_Format(directory.ptr(), nullptr));
+        O message = steal(PyUnicode_Concat(formatted.ptr(), py::str(" has no valid images.").ptr()));
         graphpy::raise(PyExc_FileNotFoundError, message);
     }
     if (graphpy::truth(use_limit)) paths = paths[py::slice(py::none(), limit, py::none())];

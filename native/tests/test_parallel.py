@@ -231,7 +231,7 @@ def test_noop_dispatch_validates_its_count():
 
 
 def todays_wakes(capacity, chunks):
-    """SP2's wake count for a lone call: every helper the budget admits
+    """The wake count for a lone call: every helper the budget admits
     (capacity - callers - running helpers), at most one per chunk beyond the
     caller's. No other call remains, so its leave re-submits nothing."""
     return min(capacity - 1, chunks - 1)
@@ -249,7 +249,7 @@ def sleep_in_chunk(seconds):
 
 @pytest.mark.parametrize("count", [1, 8, 32, 128])
 def test_wakes_per_dispatch_never_exceed_todays_count(count):
-    """Task 3d: however helpers are woken, a lone call submits at most SP2's
+    """However helpers are woken, a lone call submits at most
     min(room, chunks - 1) wakes: with empty chunks (the no-op probe) and with
     slow ones, where helpers find chunks left and wake more."""
     dll = counters()
@@ -266,8 +266,8 @@ def test_wakes_per_dispatch_never_exceed_todays_count(count):
 
 @pytest.mark.parametrize("count", [8, 16])
 def test_slow_chunks_still_wake_todays_count(count):
-    """Task 3d: when every helper finds a chunk (each sleeps 5 ms), a lone call
-    wakes SP2's full count, so a policy that wakes fewer helpers up front makes
+    """When every helper finds a chunk (each sleeps 5 ms), a lone call
+    wakes the full count, so a policy that wakes fewer helpers up front makes
     up the rest while chunks remain. Twice the count in CPUs leaves room for the
     full count even while a few late helpers of an earlier call are leaving."""
     dll = counters()
@@ -282,9 +282,9 @@ def test_slow_chunks_still_wake_todays_count(count):
 
 
 def test_overlapping_slow_calls_run_every_chunk_once_within_the_wake_bound():
-    """Task 3d: concurrent calls with slow chunks (helpers find chunks left and
+    """Concurrent calls with slow chunks (helpers find chunks left and
     wake more) each deliver their partition exactly once, and together submit
-    no more wakes than SP2's bound: per call min(capacity - 1, chunks - 1) plus
+    no more wakes than the bound: per call min(capacity - 1, chunks - 1) plus
     the one re-submit after it leaves."""
     dll = counters()
     capacity = dll.cn_parallel_capacity()

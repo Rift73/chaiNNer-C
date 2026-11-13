@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
+from sanic.exceptions import RequestCancelled, ServerError
 
 from events import BackendEvent, BackendEventBroadcast, Event, EventQueue
 
@@ -125,7 +126,7 @@ def test_the_host_announces_the_nodes_the_worker_registers_while_it_loads(
     monkeypatch.setattr(server_host.AppContext, "get", lambda _app: ctx)
 
     async def start() -> list[tuple[object, object]]:
-        await server_host.setup(None, asyncio.get_running_loop())
+        await server_host.setup(None)
         return [
             (event["event"], (event.get("data") or {}).get("schemaIds"))
             async for event in pending(listener)
@@ -150,3 +151,97 @@ def test_the_host_announces_the_nodes_the_worker_registers_while_it_loads(
 async def pending(listener: EventQueue) -> AsyncIterator[Event]:
     while not listener.queue.empty():
         yield await listener.get()
+
+
+# How a stream ends when its client has gone (the app's window closed, a reset
+# connection): Sanic's RequestCancelled (a CancelledError) for a closing transport, its
+# ServerError once the stream has ended, or the socket's own error.
+CLOSED = [
+    RequestCancelled(),
+    ServerError(
+        "Response stream was ended, no more response data is allowed to be sent."
+    ),
+    ConnectionResetError(10054, "An existing connection was forcibly closed"),
+    ConnectionAbortedError(10053, "The connection was aborted"),
+    BrokenPipeError(32, "Broken pipe"),
+]
+FAILURES = [*CLOSED, RuntimeError("the stream failed")]
+
+
+@pytest.mark.parametrize("failure", FAILURES, ids=lambda e: type(e).__name__)
+def test_a_failing_setup_stream_is_logged_and_a_closed_one_ends_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: BaseException,
+):
+    closed = failure is not FAILURES[-1]
+    monkeypatch.setattr(sys, "argv", ["server_host.py"])
+    server_host = importlib.import_module("server_host")
+    events = BackendEventBroadcast()
+    events.put(READY)
+    ctx = SimpleNamespace(setup_events=events)
+    stopped: list[EventQueue] = []
+    stop_listening = events.stop_listening
+
+    def stop(listener: EventQueue) -> None:
+        stopped.append(listener)
+        stop_listening(listener)
+
+    monkeypatch.setattr(events, "stop_listening", stop)
+    monkeypatch.setattr(server_host.AppContext, "get", lambda _app: ctx)
+
+    class Response:
+        async def send(self, _data: str) -> None:
+            raise failure
+
+    async def respond(**_kwargs: object) -> Response:
+        return Response()
+
+    request = SimpleNamespace(app=None, respond=respond)
+    if isinstance(failure, RequestCancelled):
+        with pytest.raises(RequestCancelled):
+            asyncio.run(server_host.setup_sse(request))
+    else:
+        asyncio.run(server_host.setup_sse(request))
+    failures = [str(r.exc_info[1]) for r in caplog.records if r.exc_info]
+    assert failures == ([] if closed else ["the stream failed"])
+    assert len(stopped) == 1
+
+
+@pytest.mark.parametrize("failure", FAILURES, ids=lambda e: type(e).__name__)
+def test_the_host_s_event_stream_ends_quietly_only_for_a_closed_client(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: BaseException,
+):
+    monkeypatch.setattr(sys, "argv", ["server_host.py"])
+    server_host = importlib.import_module("server_host")
+
+    class Worker:
+        async def get_sse(self, _request: object) -> AsyncIterator[bytes]:
+            yield b"event: x\n\n"
+
+    async def get_worker() -> Worker:
+        return Worker()
+
+    monkeypatch.setattr(
+        server_host.AppContext,
+        "get",
+        lambda _app: SimpleNamespace(get_worker=get_worker),
+    )
+
+    class Response:
+        async def send(self, _data: bytes) -> None:
+            raise failure
+
+    async def respond(**_kwargs: object) -> Response:
+        return Response()
+
+    request = SimpleNamespace(app=None, respond=respond)
+    if isinstance(failure, RequestCancelled):
+        with pytest.raises(RequestCancelled):
+            asyncio.run(server_host.sse(request))
+    else:
+        asyncio.run(server_host.sse(request))
+    failures = [str(r.exc_info[1]) for r in caplog.records if r.exc_info]
+    assert failures == ([] if failure in CLOSED else ["the stream failed"])

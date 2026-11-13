@@ -72,12 +72,12 @@ export class Vec2 {
 
     mul(v: Vec2Like): Vec2 {
         if (typeof v === 'number') v = new Vec2(v);
-        return new Vec2(this.x * v.x, this.y * v.x);
+        return new Vec2(this.x * v.x, this.y * v.y);
     }
 
     div(v: Vec2Like): Vec2 {
         if (typeof v === 'number') v = new Vec2(v);
-        return new Vec2(this.x / v.x, this.y / v.x);
+        return new Vec2(this.x / v.x, this.y / v.y);
     }
 
     min(v: Vec2Like): Vec2 {

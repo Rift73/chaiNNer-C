@@ -251,6 +251,61 @@ def test_a_crash_without_a_message_names_the_exit_code(tmp_path: Path) -> None:
     assert str(script_error(script, "", 0)) == "vspipe failed without a message."
 
 
+@pytest.mark.parametrize(
+    ("message", "hint"),
+    [
+        (
+            "vapoursynth.Error: DFTTest: [error] 'cuInit(0)' failed: CUDA_ERROR_NO_DEVICE",
+            "No usable NVIDIA GPU: pick a CPU backend in the method's Backend setting.",
+        ),
+        (
+            (
+                "vstools.exceptions.UnsupportedFieldBasedError: (FieldBased.is_tff)"
+                " Progressive video isn't field based."
+            ),
+            (
+                "The video does not say its field order: set Top or Bottom field first in"
+                " the method's field order setting."
+            ),
+        ),
+        *(
+            (
+                message,
+                (
+                    "This method needs a 32-bit float clip: add Convert Format > Bit depth"
+                    " (depth) set to 32 before it."
+                ),
+            )
+            for message in (
+                "vapoursynth.Error: Debicubic: Only float32 input is supported.",
+                (
+                    "vstools.exceptions.CustomRuntimeError: (BM3D) The backend"
+                    " Backend.CUDA_STD only supports 32 bit float input."
+                ),
+                (
+                    "vapoursynth.Error: BM3D: only constant format 32 bit float input"
+                    " supported"
+                ),
+                (
+                    "vstools.exceptions.UnsupportedSampleTypeError: (FixInterlacedFades)"
+                    " Input clip must be of FLOAT sample type, not INTEGER."
+                ),
+            )
+        ),
+    ],
+)
+def test_known_script_errors_get_a_plain_hint(
+    tmp_path: Path, message: str, hint: str
+) -> None:
+    script = tmp_path / "chain.vpy"
+    script.write_text("import vapoursynth as vs\n", encoding="utf-8")
+    stderr = f"Script evaluation failed:\n{message}\n"
+    assert str(script_error(script, stderr)) == (
+        f"Script evaluation failed:\n{message}\n{hint}"
+    )
+    assert hint not in str(script_error(script, "vapoursynth.Error: Crop: bad\n"))
+
+
 def test_a_crash_by_a_signal_names_the_signal(tmp_path: Path) -> None:
     # POSIX: Popen reports a child that a signal ended as the signal's number, negated.
     script = tmp_path / "chain.vpy"
@@ -358,14 +413,20 @@ def display(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner, "vs_env", lambda: dict(os.environ))
 
 
+TITLE = "Clip 1 - chaiNNer-C"
+
+
 def viewer_process(
-    monkeypatch: pytest.MonkeyPatch, code: str
+    monkeypatch: pytest.MonkeyPatch, code: str, commands: list[list[str]] | None = None
 ) -> list[subprocess.Popen[Any]]:
-    """vsview is a Python process running `code`; returns the ones that start."""
+    """vsview is a Python process running `code`; returns the ones that start, and
+    puts the commands they were started for in `commands`."""
     started: list[subprocess.Popen[Any]] = []
     popen = subprocess.Popen
 
     def start(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
+        if commands is not None:
+            commands.append(command)
         started.append(popen([sys.executable, "-c", code], **kwargs))
         return started[-1]
 
@@ -382,7 +443,7 @@ def test_vsview_needs_a_window_system(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(runner.importlib.util, "find_spec", lambda _: object())
     with pytest.raises(VSScriptError, match="DISPLAY"):
-        runner.launch_preview(tmp_path / "preview.vpy", "view")
+        runner.launch_preview(tmp_path / "preview.vpy", "view", TITLE)
     assert not (tmp_path / "vsview.log").exists()
 
 
@@ -395,7 +456,7 @@ def test_vsview_that_ends_at_once_is_an_error(
         "import sys; print('qt.qpa.plugin: no platform plugin', flush=True); sys.exit(3)",
     )
     with pytest.raises(VSScriptError, match=r"ended right after.*code 3") as error:
-        runner.launch_preview(tmp_path / "preview.vpy", "view")
+        runner.launch_preview(tmp_path / "preview.vpy", "view", TITLE)
     assert str(tmp_path / "vsview.log") in str(error.value)
     assert str(error.value).endswith(":\nqt.qpa.plugin: no platform plugin")
     assert not (tmp_path / "vsview.pid").exists()
@@ -404,11 +465,23 @@ def test_vsview_that_ends_at_once_is_an_error(
 def test_vsview_that_stays_up_is_the_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, display: None
 ) -> None:
-    started = viewer_process(monkeypatch, "import time; time.sleep(60)")
+    commands: list[list[str]] = []
+    started = viewer_process(monkeypatch, "import time; time.sleep(60)", commands)
     monkeypatch.setattr(runner, "VIEWER_GRACE_SECONDS", 0.3)
     try:
-        runner.launch_preview(tmp_path / "preview.vpy", "view")
+        runner.launch_preview(tmp_path / "preview.vpy", "view", TITLE)
         assert [viewer.poll() for viewer in started] == [None]
+        # The launcher, without its folder on sys.path, runs vsview on the script.
+        assert commands == [
+            [
+                str(runner.vs_python()),
+                "-P",
+                str(runner.VIEWER_LAUNCHER),
+                str(tmp_path / "preview.vpy"),
+                TITLE,
+            ]
+        ]
+        assert runner.VIEWER_LAUNCHER.is_file()
     finally:
         for viewer in started:
             viewer.kill()
@@ -422,27 +495,27 @@ def test_vsview_of_an_earlier_worker_stays_the_window(
     monkeypatch.setattr(runner, "VIEWER_GRACE_SECONDS", 0.3)
     script = tmp_path / "preview.vpy"
     try:
-        runner.launch_preview(script, "view")
+        runner.launch_preview(script, "view", TITLE)
         # A new worker (a restart) knows no viewer; the window is still open.
         monkeypatch.setattr(runner, "_viewers", {})
-        runner.launch_preview(script, "view")
+        runner.launch_preview(script, "view", TITLE)
         assert len(started) == 1
         # Once the user closes it, the next run opens a new one.
         started[0].kill()
         started[0].wait()
-        runner.launch_preview(script, "view")
+        runner.launch_preview(script, "view", TITLE)
         assert len(started) == 2
         # Linux reads the start time against a clock that a step or a resume moves.
         pid, recorded = (tmp_path / "vsview.pid").read_text(encoding="utf-8").split()
         moved = float(recorded) + 0.5
         (tmp_path / "vsview.pid").write_text(f"{pid} {moved!r}", encoding="utf-8")
         monkeypatch.setattr(runner, "_viewers", {})
-        runner.launch_preview(script, "view")
+        runner.launch_preview(script, "view", TITLE)
         assert len(started) == 2
         # A process that took a recorded pid later is not the window.
         (tmp_path / "vsview.pid").write_text(f"{pid} 12.5", encoding="utf-8")
         monkeypatch.setattr(runner, "_viewers", {})
-        runner.launch_preview(script, "view")
+        runner.launch_preview(script, "view", TITLE)
         assert len(started) == 3
     finally:
         for viewer in started:

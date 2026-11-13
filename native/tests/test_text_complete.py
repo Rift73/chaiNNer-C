@@ -86,7 +86,7 @@ def test_codepoint_scan_preserves_python_string_contract(text):
 @pytest.mark.parametrize("channels", [1, 3, 4])
 def test_caption_text_edge_cases(monkeypatch, text, size, width, channels):
     for module in (caption, ORIGINAL_CAPTION):
-        # The floor of 1 is chaiNNer-C's contract (ruling of 2026-10-23): upstream's
+        # The floor of 1 is chaiNNer-C's contract: upstream's
         # Pillow call refuses the size 0 a long caption computes.
         monkeypatch.setattr(
             module,

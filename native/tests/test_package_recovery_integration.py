@@ -85,7 +85,7 @@ VERSIONS = {
     "pynvml": "13.0.1",
     "nvidia-ml-py": "13.615.71",
 }
-# Requirements as measured (Consult 6 P2): the dev set requires shared packages;
+# Requirements as measured: the dev set requires shared packages;
 # a shipped one names pytest only under an extra nobody asks for.
 REQUIRES = {
     "pytest": ["colorama>=0.4; sys_platform == 'win32'", "iniconfig", "pluggy"],
@@ -97,7 +97,7 @@ REQUIRES = {
 # A stray cache in an excluded import directory, in no RECORD.
 STRAY = SITE + "_pytest/__pycache__/stray.cpython-314.pyc"
 # A shipped module in no RECORD, with the caches numba's cache=True leaves beside it
-# (machine code for the build CPU) and a timestamp .pyc: none is copied (D-9).
+# (machine code for the build CPU) and a timestamp .pyc: none is copied.
 NUMBA_MODULE = SITE + "pymatting/util/util.py"
 SOURCE_CACHES = (
     SITE + "pymatting/util/__pycache__/util.boxfilter-58.py314.nbi",
@@ -394,7 +394,7 @@ def test_fresh_package_never_copies_installed_backend_or_bytecode(package_case):
     # import directories (a stray cache in one included), dist-info, .pth and
     # entry points; Scripts keeps the shipped files, and the pynvml module ships
     # as nvidia-ml-py's. No __pycache__ of the source is copied (its .pyc and
-    # numba's .nbi/.nbc); the build compiles one .pyc per Lib .py (D-9).
+    # numba's .nbi/.nbc); the build compiles one .pyc per Lib .py.
     caches = {name for name in python_before if "/__pycache__/" in "/" + name}
     assert set(SOURCE_CACHES) <= caches
     shipped = python_before.keys() - case.excluded - caches
@@ -885,7 +885,7 @@ def test_the_hosts_server_dependencies_ship_at_the_locks_pins():
     that pip list does not show at its version or newer (dependencies.store), so
     every one is a shipped distribution at the lock's pin, under pip's name:
     nvidia-ml-py, which provides the pynvml module gpu.py imports, and never
-    pynvml, which the runtime keeps for upstream's host (Consult 8 sweep item 4)."""
+    pynvml, which the runtime keeps for upstream's host."""
     project = Path(__file__).resolve().parents[2]
     declared = server_dependencies(project)
     pins = package_manifest.read_lock(project / package_manifest.LOCK)["pins"]
@@ -1045,8 +1045,8 @@ def test_chainner_pip_must_be_preinstalled(package_case):
 
 @pytest.mark.parametrize("overlay", [None, {"source": "retired"}])
 def test_refresh_ignores_the_retired_overlay_record(package_case, overlay):
-    """A package copied before 2026-10-07 carries python_stack.overlay (null, or a
-    record); it is no longer part of the identity, so the package still refreshes."""
+    """An older package carries python_stack.overlay (null, or a record); it is
+    not part of the identity, so the package still refreshes."""
     case = package_case
     case.run()
     manifest = package_manifest.load(case.manifest)
@@ -1158,7 +1158,7 @@ def test_the_version_probe_asks_the_interpreter_itself():
     )
 
 
-# The runtime's bytecode (Consult 10 D-9).
+# The runtime's bytecode.
 
 LIB_SOURCES = {
     "top.py": b"VALUE = 1\n",
@@ -1347,7 +1347,7 @@ def test_a_package_copied_without_compiled_bytecode_refuses_refresh(package_case
 def test_a_package_without_the_toolchain_record_gains_it_at_its_next_refresh(
     package_case,
 ):
-    """A package written before native_toolchain was recorded (Consult 14 D-30):
+    """A package written before native_toolchain was recorded:
     its next refresh writes the record and nothing else, the one after is a no-op."""
     case = package_case
     case.run()

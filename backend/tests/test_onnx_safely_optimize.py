@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from onnx import TensorProto, helper
 
@@ -99,7 +100,6 @@ def reshape_of_a_reshape(second_shape: list[int]) -> bytes:
 def test_a_reshape_that_copies_dimensions_keeps_the_reshape_before_it():
     ort = pytest.importorskip("onnxruntime")
     onnx = pytest.importorskip("onnx")
-    np = pytest.importorskip("numpy")
     sys.path.insert(0, str(BACKEND))
     from nodes.impl.onnx.utils import safely_optimize_onnx_model
 
@@ -123,3 +123,25 @@ def test_a_reshape_of_a_reshape_with_a_full_shape_is_still_fused():
     data = reshape_of_a_reshape([1, 1, 2, 2, 3, 2])
     optimized = safely_optimize_onnx_model(onnx.load_model_from_string(data))
     assert [node.op_type for node in optimized.graph.node] == ["Reshape"]
+
+
+# The model is returned as it is when onnxoptimizer fails, and the log says why.
+def test_an_optimizer_error_is_logged(monkeypatch: pytest.MonkeyPatch):
+    onnx = pytest.importorskip("onnx")
+    onnxoptimizer = pytest.importorskip("onnxoptimizer")
+    sys.path.insert(0, str(BACKEND))
+    from nodes.impl.onnx import utils
+
+    def fail(*_: object) -> None:
+        raise RuntimeError("optimizer failed")
+
+    warnings: list[str] = []
+    monkeypatch.setattr(onnxoptimizer, "optimize", fail)
+    monkeypatch.setattr(
+        utils.logger, "warning", lambda message, **_: warnings.append(message)
+    )
+    data = model(CASES["valid"])
+    optimized = utils.safely_optimize_onnx_model(onnx.load_model_from_string(data))
+    assert optimized.SerializeToString() == data
+    assert len(warnings) == 1
+    assert "optimizer failed" in warnings[0]

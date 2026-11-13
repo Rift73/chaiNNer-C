@@ -127,13 +127,13 @@ def _onnx(path: str) -> Upscaler:
         get_output_shape,
     )
     from nodes.impl.upscale.auto_split_tiles import ESTIMATE, TILE_SIZE_256, TileSize
-    from packages.chaiNNer_onnx.onnx.io.load_model import load_model_node
+    from packages.chaiNNer_onnx.onnx.io.load_model import read_model
     from packages.chaiNNer_onnx.onnx.processing.upscale_image import (
         upscale_with_session,
     )
     from packages.chaiNNer_onnx.settings import default_provider, provider_device
 
-    model = load_model_node(Path(path))[0]
+    model = read_model(Path(path))[0]
     if not isinstance(model, OnnxGeneric):
         raise ValueError(
             f"{Path(path).name} is a background removal model; AI Upscale runs"

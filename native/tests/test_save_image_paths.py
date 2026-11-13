@@ -9,17 +9,16 @@ older Windows sends the file to the device, as texconv still does on Windows 11.
 
 from __future__ import annotations
 
-import importlib
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 import pytest
-from engine_differential import KINDS, execute, load_registry_errors
+from engine_differential import KINDS, execute
 from verify_runtime import edge, gradient, make_node
 
-import api
 from api import Lazy
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
@@ -42,6 +41,7 @@ from packages.chaiNNer_standard.image.io.save_image import (
 from process import NodeExecutionError
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
+TOOLS = Path(__file__).resolve().parents[1] / "tools"
 IMAGE = np.full((4, 6, 3), 0.5, np.float32)
 LEAVING = [
     "../x",
@@ -70,7 +70,9 @@ def message(node: str, label: str, value: str) -> str:
     )
 
 
-def save(directory: Path, relative: str | None, filename: str) -> None:
+def save(
+    directory: Path, relative: str | None, filename: str, skip: bool = False
+) -> None:
     save_image_node(
         Lazy.ready(IMAGE),
         directory,
@@ -98,7 +100,7 @@ def save(directory: Path, relative: str | None, filename: str) -> None:
         AvifSubsampling.FACTOR_420,
         ExrColorDepth.F32,
         ExrCompression.ZIP,
-        False,
+        skip,
         None,
     )
 
@@ -150,32 +152,19 @@ def test_save_dds_texture_names_itself_and_its_input(tmp_path: Path):
     assert str(caught.value) == message("Save DDS Texture", "Texture Name", "../x")
 
 
-@pytest.fixture(scope="module")
-def schemas():
-    main = sys.modules["__main__"]
-    previous = getattr(main, "__file__", None)
-    main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
-    errors = load_registry_errors(BACKEND / "server.py")
-    assert not errors, [e.module for e in errors]
-    yield {
-        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
-        for schema, (data, _) in api.registry.nodes.items()
-    }
-    if previous is None:
-        del main.__file__
-    else:
-        main.__file__ = previous
-
-
-def save_chain(schemas, output: Path, relative: str | None, filename: str):
+def save_chain(
+    schemas, output: Path, relative: str | None, filename: str, skip: bool = False
+):
+    inputs: dict[int, object] = {0: edge("gradient"), 1: str(output), 2: relative, 3: filename, 4: "png"}
+    if skip:
+        inputs[1000] = True  # Skip existing files
     nodes = [
         gradient(schemas, "gradient", rgba=False),
         make_node(
             schemas,
             "save",
             "chainner:image:save",
-            {0: edge("gradient"), 1: str(output), 2: relative, 3: filename, 4: "png"},
+            inputs,
         ),
     ]
     chain = parse_json(cast("list[JsonNode]", nodes))
@@ -339,3 +328,79 @@ def test_both_executors_refuse_a_device_name_alike(
         assert error.node_id == "save"
         assert str(error) == device_message("Save Image", label, value, part), kind
     assert files(tmp_path) == []
+
+
+def test_skip_existing_files_does_not_hide_a_folder_in_the_way(tmp_path: Path):
+    # A folder named as the file: the write raises, with or without Skip existing files.
+    (tmp_path / "x.png").mkdir()
+    for skip in (False, True):
+        with pytest.raises(PermissionError) as raised:
+            save(tmp_path, None, "x", skip)
+        assert raised.value.filename == str(tmp_path / "x.png"), skip
+
+
+def test_both_executors_raise_for_a_folder_in_the_way_with_skip(
+    schemas, tmp_path: Path
+):
+    for kind in KINDS:
+        out = tmp_path / kind
+        (out / "x.png").mkdir(parents=True)
+        error = execute(
+            kind, save_chain(schemas, out, None, "x", True), storage=tmp_path
+        ).error
+        assert isinstance(error, NodeExecutionError), f"{kind}: {error!r}"
+        assert error.node_id == "save"
+
+
+# Clears this process's long-path flag (PEB.IsLongPathAwareProcess, which
+# RtlAreLongPathsEnabled reads), as on a PC where the setting is off, then saves a
+# file whose full path passes MAX_PATH twice, the second time with Skip existing files.
+LONG_PATH_CHILD = r"""
+import ctypes, ctypes.wintypes as wt, sys
+from pathlib import Path
+
+
+class PBI(ctypes.Structure):
+    _fields_ = [("r1", ctypes.c_void_p), ("peb", ctypes.c_void_p), ("r2", ctypes.c_void_p * 2),
+                ("pid", ctypes.c_void_p), ("r3", ctypes.c_void_p)]
+
+
+ntdll, kernel32 = ctypes.WinDLL("ntdll"), ctypes.WinDLL("kernel32")
+kernel32.GetCurrentProcess.restype = wt.HANDLE
+ntdll.NtQueryInformationProcess.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+ntdll.RtlAreLongPathsEnabled.restype = ctypes.c_ubyte
+pbi = PBI()
+assert ntdll.NtQueryInformationProcess(kernel32.GetCurrentProcess(), 0, ctypes.byref(pbi), ctypes.sizeof(pbi), None) == 0
+ctypes.c_ubyte.from_address(pbi.peb + 3).value &= 0x7F
+assert not ntdll.RtlAreLongPathsEnabled()
+sys.path[:0] = sys.argv[2:]
+import numpy as np
+import test_save_image_paths as module
+
+folder = Path(sys.argv[1])
+name = "n" * (275 - len(str(folder)) - 5)
+final = chr(92) * 2 + "?" + chr(92) + str(folder / f"{name}.png")
+module.save(folder, None, name)
+before = open(final, "rb").read()
+module.IMAGE = np.full((4, 6, 3), 1.0, np.float32)
+module.save(folder, None, name, True)
+print("kept" if open(final, "rb").read() == before else "replaced")
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="MAX_PATH is a Windows limit")
+def test_skip_existing_files_sees_a_file_past_max_path(tmp_path: Path):
+    tests = Path(__file__).resolve().parent
+    # A script file: texconv.py reads the main module's __file__ at import.
+    child = tmp_path / "child.py"
+    child.write_text(LONG_PATH_CHILD, encoding="utf-8")
+    out = tmp_path / "out"
+    result = subprocess.run(
+        [sys.executable, str(child), str(out), str(tests), str(BACKEND), str(TOOLS)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        cwd=tests,
+    )
+    assert result.stdout.strip().splitlines()[-1:] == ["kept"], result.stderr[-2000:]

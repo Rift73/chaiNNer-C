@@ -1,0 +1,1004 @@
+# Help texts of the VapourSynth nodes Load Clip, Clip Properties, Convert Format, Cut and Splice,
+# Planes, Colour and Expression (pop-up texts; see the overlay format in common.toml).
+
+[method."vssource.*.source"]
+help = "Opens a video file through vs-jetpack, which also sets the colour information and converts the bit depth (32-bit float unless Bit depth says otherwise). Pick the indexer below; BestSource is the safe default. Use it over \"Open a video (BestSource)\" when you want the clip ready for vs-jetpack filters. Pitfall: 32-bit float is slower and uses four times the memory of 8-bit."
+
+[method."vssource.*.source".docs]
+file = "The file to open. Several files are opened one after another as one clip."
+bits = "Bit depth of the clip after loading: 8, 10, 16, or 32 (32-bit float). Higher keeps more precision for filtering but is slower and uses more memory. Leave empty to keep the file's own depth.\n\nExample: `16`"
+matrix = "Overrides what the clip says its YUV-to-RGB matrix is; the pixels are not changed. Default reads it from the file, else guesses from the size (BT.709 for HD). Set it when colours come out wrong.\n\nExample: BT.601 / SMPTE 170M (6) for a DVD."
+transfer = "Overrides the transfer (the brightness curve, e.g. BT.709 or PQ for HDR) the clip is marked with; the pixels are not changed. Default reads the file, else guesses."
+primaries = "Overrides the colour primaries (the gamut, e.g. BT.709 or BT.2020) the clip is marked with; the pixels are not changed. Default reads the file, else guesses."
+chroma_location = "Overrides where the colour samples sit relative to the brightness samples. Left is usual for most video, Top left for UHD Blu-ray. Only matters for later resizing of colour planes."
+color_range = "Overrides whether the clip is marked limited (TV, 16-235 at 8 bit) or full (PC, 0-255) range; the pixels are not changed. Wrong range looks washed out or crushed."
+field_based = "Overrides whether the clip is marked progressive or interlaced (TFF: top field first, BFF: bottom field first). Resizers treat interlaced clips field by field."
+idx_props = "On: stores the file path and the indexer name in each frame's properties (IdxFilePath, Idx). Harmless; off only to keep the properties short."
+ref = "Another clip to match: the loaded clip gets its size, format, colour information, frame rate and length (cut, or padded by repeating the last frame)."
+name = "A name stored in each frame's Name property, to tell clips apart later in a script or a comparison."
+
+[method."vssource.*.source".init_docs]
+cachemode = "Where BestSource keeps its index. 0 never saves it (re-indexes every run); 1 and 2 use BestSource's own cache folder; 3 (the default here) and 4 use vs-jetpack's cache folder. 2 and 4 always write, 1 and 3 only when it saves time.\n\nExample: `0`"
+rff = "1 applies the file's repeat-field flags (soft telecine on DVD or broadcast MPEG-2), giving the frames as a player shows them. 0 keeps the coded frames. Files without such flags are unchanged.\n\nExample: `0`"
+showprogress = "1 prints indexing progress to the log while BestSource indexes the file; 0 stays quiet.\n\nExample: `0`"
+show_pretty_progress = "A progress bar for indexing, meant for a terminal; it has no use inside chaiNNer, so leave it off."
+kwargs = "Extra settings passed to the indexer's own source plugin, by its parameter names.\n\nExample: `{'threads': 4}`"
+bin_path = "The D2VWitch program to run. Empty uses `d2vwitch` found on PATH."
+ext = "File extension of the index D2VWitch writes. Empty uses `d2v`."
+force = "For D2VWitch: on deletes a corrupted index file and indexes again; off stops with an error instead. Does nothing for the other indexers."
+default_out_folder = "Folder for the D2VWitch index file. Empty writes it next to the video."
+
+[method."vssource.*.source".choices]
+BestSource = "Frame-exact even when seeking; indexes the whole file the first time, which takes a while on long videos. The safe default."
+D2VWitch = "For DVD MPEG-2 (.vob, .m2v): runs the external D2VWitch program to make a .d2v index, then opens that. D2VWitch must be installed and on PATH."
+FFMS2 = "Indexes faster than BestSource; seeking may be less exact on some files."
+LSMAS = "L-SMASH Works. Can still be the better choice for some files such as .m2ts; vs-jetpack marks it as going away later."
+ZipSource = "Opens image files (PNG, JPEG ...) with the vszip image reader, not video."
+
+[method."bs.VideoSource"]
+help = "Opens a video with the BestSource plugin directly: frame-exact even when seeking. It indexes the whole file the first time (slow on long videos), then reuses the index. The clip keeps the file's format and bit depth, unlike \"Open a video, vs-jetpack indexers\", which also converts it. Image sequences open with `%03d` in the file name."
+
+[method."bs.VideoSource".docs]
+track = "Which track to open: 0, 1, 2 ... counts all tracks of the file; a negative number picks the nth video track (-1 the first). Default is the first video track.\n\nExample: `-1`"
+variableformat = "For files whose format changes midway: 0 or higher keeps only the nth format met and drops other frames; -1 lets the format change. Most files have one format, so it does nothing.\n\nExample: `0`"
+fpsnum = "With Frame rate denominator, turns a variable-frame-rate file into a constant rate by repeating or dropping frames. Cannot be used together with Apply repeat flags.\n\nExample: `24000`"
+fpsden = "Denominator of the constant frame rate set with Frame rate numerator; 1 by default.\n\nExample: `1001`"
+rff = "1 applies repeat-field flags (soft telecine in DVD or broadcast MPEG-2) so frames come out as a player shows them. Off by default in the plugin. Cannot be combined with Frame rate numerator.\n\nExample: `1`"
+threads = "Decoding threads. 0 picks automatically, which is usually best.\n\nExample: `8`"
+seekpreroll = "How many frames before a requested one to decode and cache when seeking. Default 20. Raise only if seeking gives wrong frames.\n\nExample: `40`"
+enable_drefs = "1 lets the MP4/MOV reader follow data references to other files. Rarely needed.\n\nExample: `1`"
+use_absolute_path = "1 makes the MP4/MOV reader use absolute paths for data references. Rarely needed.\n\nExample: `1`"
+cachemode = "Index storage: 0 never saves it; 1 saves under Index folder or file when it helps (default); 2 always saves there; 3 and 4 use Index folder or file as the index file's base name (3 when it helps, 4 always).\n\nExample: `0`"
+cachepath = "Folder for index files (modes 1 and 2), or the index file's base name (modes 3 and 4). Default: %LOCALAPPDATA%\\bsindex, or next to the video for modes 3 and 4."
+cachesize = "Memory for decoded frames, in MB. Default 100; raise it for 4K so seeking back stays fast.\n\nExample: `1000`"
+timecodes = "Writes a timecode file (v2) with every frame's time to this path, for variable-frame-rate encodes. Fails if a frame has no timestamp."
+start_number = "First number of an image sequence opened with `%d` or `%03d` in the file name. Without it, the sequence may start at 0 to 4.\n\nExample: `1`"
+viewid = "Which view of a multi-view (3D) HEVC file to output. 0 by default; only some MV-HEVC files have more.\n\nExample: `1`"
+showprogress = "1 prints indexing progress to the log (default); 0 stays quiet.\n\nExample: `0`"
+maxdecoders = "How many decoders are kept for jumping around the file; default 4. 1 saves memory on 4K (about 250 MB of RAM each).\n\nExample: `1`"
+gpufallback = "With Decode on the GPU on: 1 (default) decodes on the CPU when GPU decoding is not possible; 0 makes that an error. Does nothing without Decode on the GPU.\n\nExample: `0`"
+exporttimestamps = "1 also returns every frame's timestamp. Cannot be combined with Apply repeat flags or Frame rate numerator. Rarely needed in a node chain.\n\nExample: `1`"
+apply_rotation = "1 (default) turns the picture the way the file says it should be shown (phone videos); 0 keeps it as stored. Only multiples of 90 degrees.\n\nExample: `0`"
+gpu = "1 decodes on the graphics card (Vulkan) and keeps frames in video memory. Only filters that take GPU frames can use them; not faster on every machine.\n\nExample: `1`"
+source = "The video file to open. An image sequence opens with a number pattern in the name, `%03d` for 001, 002 ...; URLs work too."
+
+[method."ffms2.Source"]
+help = "Opens a video with FFMS2 (FFmpegSource). Indexes faster than BestSource; seeking is exact on most files but less safe on some. The index is saved next to the video as .ffindex. Pick BestSource when frame exactness matters most."
+
+[method."ffms2.Source".docs]
+track = "The video track to open, counted from 0 as FFMS2 sees them. -1 (default) opens the first video track.\n\nExample: `1`"
+cache = "1 (default) saves the index to the cache file and reuses it; 0 indexes every time the clip is opened.\n\nExample: `0`"
+cachefile = "Path of the index file. Default: the video's path plus .ffindex. With a custom path, a mismatching index is an error instead of a re-index."
+fpsnum = "With Frame rate denominator, forces a constant frame rate, dropping or repeating frames (for variable-frame-rate files). Default keeps the file's frames.\n\nExample: `24000`"
+fpsden = "Denominator of the constant frame rate set with Frame rate numerator; 1 by default.\n\nExample: `1001`"
+threads = "Decoding threads; 0 or less uses all CPU cores (default). Some decoders ignore it.\n\nExample: `4`"
+timecodes = "Writes Matroska v2 timecodes of the video track to this file. Empty writes none."
+seekmode = "How seeking is done. 1 (default) safe; 0 decodes from the start every time (slow, for difficult files); 2 like 1 without the guess error; 3 aggressive, for testing.\n\nExample: `0`"
+width = "Output width in pixels; default keeps the first frame's width. Mostly for streams that change size midway.\n\nExample: `1920`"
+height = "Output height in pixels; default keeps the first frame's height. Mostly for streams that change size midway.\n\nExample: `1080`"
+resizer = "Scaling method when Width, Height or Output format need resampling: FAST_BILINEAR, BILINEAR, BICUBIC (default), POINT, AREA, BICUBLIN, GAUSS, SINC, LANCZOS or SPLINE.\n\nExample: `LANCZOS`"
+format = "Converts the output to this format while decoding. Default keeps the closest match to the file."
+alpha = "1 also outputs the file's alpha (transparency) channel as a second clip. Default 0.\n\nExample: `1`"
+source = "The video file to open."
+
+[method."lsmas.LWLibavSource"]
+help = "Opens a video with L-SMASH Works through FFmpeg, for any container. Writes an .lwi index next to the video. Can be the better pick for some files such as .m2ts; BestSource is the safer default elsewhere."
+
+[method."lsmas.LWLibavSource".docs]
+stream_index = "Which stream to open. -1 (default) picks the video stream with the largest resolution.\n\nExample: `0`"
+cache = "1 (default) writes the .lwi index next to the video, so later openings are fast; 0 writes none.\n\nExample: `0`"
+cachefile = "Path of the index file. Default: the video's path plus .lwi."
+threads = "Decoding threads; 0 (default) picks automatically, up to 16.\n\nExample: `8`"
+seek_mode = "What to do on a decoding error. 0 (default) retries from earlier keyframes, then gives the last good frame; 1 retries only on fatal errors; 2 gives the last good frame at once.\n\nExample: `1`"
+seek_threshold = "How many frames ahead are reached by decoding forward instead of seeking to a keyframe. Default 10.\n\nExample: `30`"
+dr = "1 tries direct rendering from the decoder (faster); the picture may then be padded to a multiple of 16 or 32 and need cropping. Default 0.\n\nExample: `1`"
+fpsnum = "With Frame rate denominator, converts variable frame rate to this constant rate by repeating or dropping frames. Needed for AVI captures with dropped frames, to keep audio in sync.\n\nExample: `30000`"
+fpsden = "Denominator of the constant frame rate set with Frame rate numerator; 1 by default.\n\nExample: `1001`"
+variable = "1 lets format, width and height change midway, as the stream does. Default 0.\n\nExample: `1`"
+format = "Forces this output pixel format, e.g. YUV420P10 or RGB24. Empty keeps the file's.\n\nExample: `YUV420P16`"
+decoder = "FFmpeg decoders to try first, comma separated.\n\nExample: `h264_qsv,mpeg2_qsv`"
+prefer_hw = "Hardware decoding: 0 software (default); 1 NVIDIA CUVID; 2 Intel Quick Sync; 3 tries CUVID, QSV, DXVA2, D3D11, D3D12, Vulkan in turn; 4 DXVA2; 5 D3D11; 6 D3D12; 7 Vulkan.\n\nExample: `1`"
+repeat = "Applies repeat-field flags (soft telecine). 2 (default) applies them, silently giving a wrong constant rate when it cannot; 1 fails instead; 0 ignores the flags.\n\nExample: `0`"
+dominance = "Field order used with Repeat flags: 0 follows the file (default), 1 top field first, 2 bottom field first.\n\nExample: `1`"
+ff_loglevel = "How much FFmpeg prints: 0 nothing (default) up to 8 everything. 3 shows errors.\n\nExample: `3`"
+cachedir = "Folder for the .lwi index files instead of next to the video; file names encode the full video path."
+ff_options = "FFmpeg decoder options, `key=value` separated by spaces.\n\nExample: `drc_scale=0`"
+rap_verification = "1 checks while indexing that every keyframe the file reports can really be decoded; 0 indexes faster. Changing it needs the old .lwi deleted.\n\nExample: `0`"
+source = "The video file to open."
+
+[method."lsmas.LibavSMASHSource"]
+help = "Opens MP4, MOV and other ISO-media files with L-SMASH Works, which reads their frame table directly, so no index file is written. For other containers use \"Open a video, L-SMASH\"."
+
+[method."lsmas.LibavSMASHSource".docs]
+track = "Track number in the file; 0 (default) takes the first video track found.\n\nExample: `2`"
+threads = "Decoding threads; 0 (default) picks automatically, up to 16.\n\nExample: `8`"
+seek_mode = "What to do on a decoding error. 0 (default) retries from earlier keyframes, then gives the last good frame; 1 retries only on fatal errors; 2 gives the last good frame at once.\n\nExample: `1`"
+seek_threshold = "How many frames ahead are reached by decoding forward instead of seeking to a keyframe. Default 10.\n\nExample: `30`"
+dr = "1 tries direct rendering from the decoder (faster); the picture may then be padded to a multiple of 16 or 32 and need cropping. Default 0.\n\nExample: `1`"
+fpsnum = "With Frame rate denominator, converts variable frame rate to this constant rate by repeating or dropping frames.\n\nExample: `30000`"
+fpsden = "Denominator of the constant frame rate set with Frame rate numerator; 1 by default.\n\nExample: `1001`"
+variable = "1 lets format, width and height change midway, as the stream does. Default 0.\n\nExample: `1`"
+format = "Forces this output pixel format, e.g. YUV420P10 or RGB24. Empty keeps the file's.\n\nExample: `YUV420P16`"
+decoder = "FFmpeg decoders to try first, comma separated.\n\nExample: `h264_qsv`"
+prefer_hw = "Hardware decoding: 0 software (default); 1 NVIDIA CUVID; 2 Intel Quick Sync; 3 tries CUVID, QSV, DXVA2, D3D11, D3D12, Vulkan in turn; 4 DXVA2; 5 D3D11; 6 D3D12; 7 Vulkan.\n\nExample: `1`"
+ff_loglevel = "How much FFmpeg prints: 0 nothing (default) up to 8 everything. 3 shows errors.\n\nExample: `3`"
+ff_options = "FFmpeg decoder options, `key=value` separated by spaces.\n\nExample: `drc_scale=0`"
+source = "The MP4, MOV or other ISO-media file to open."
+
+[method."d2v.Source"]
+help = "Opens a .d2v index made by DGIndex or D2VWitch for a DVD or other MPEG-2 video. Make the .d2v first; \"Open a video, vs-jetpack indexers\" with D2VWitch does both steps. Repeat-field flags are applied by default."
+
+[method."d2v.Source".docs]
+input = "Full path of the .d2v file (not the video itself)."
+threads = "Decoding threads; 0 (default) picks automatically.\n\nExample: `4`"
+nocrop = "1 always uses the decoder's padded picture, a little faster when you crop anyway; the picture may then need cropping. Default 0.\n\nExample: `1`"
+rff = "1 (default) applies repeat-field flags (soft telecine) so frames come out as a DVD player shows them; 0 keeps the coded frames, for sources known to be 100% film.\n\nExample: `0`"
+
+[method."vssource.IsoFile.get_vts"]
+help = "Opens a whole DVD title set (VTS: a group of titles, usually the main film is title set 1) from an .iso or a DVD folder, applying the repeat-field flags so frames play as on a DVD player. Pitfall: the result may mix film and video parts."
+
+[method."vssource.IsoFile.get_vts".docs]
+path = "The DVD: an .iso file or the DVD's root folder (the one with VIDEO_TS)."
+title_set_nr = "Which title set to open, counted from 1.\n\nExample: `2`"
+apply_rff = "On (default) applies repeat-field flags (soft telecine) as a DVD player does; off keeps the coded frames."
+
+[method."std.SetFrameProps"]
+
+[method."std.SetFrameProps".docs]
+_Matrix = "The YUV-to-RGB matrix the frames are marked with. Later conversions to RGB use it; set it when colours look shifted. HD is usually BT.709 (1), DVD BT.601 (6).\n\nExample: BT.709 (1)"
+_Transfer = "The brightness curve the frames are marked with: BT.709 (1) for SDR video, PQ (16) or HLG (18) for HDR.\n\nExample: BT.709 (1)"
+_Primaries = "The colour gamut the frames are marked with: BT.709 (1) for HD, SMPTE 170M (6) for NTSC DVD, BT.470BG (5) for PAL DVD, BT.2020 (9) for UHD.\n\nExample: BT.709 (1)"
+_SARNum = "Width part of the sample (pixel) aspect ratio. Pixels are Width/Height times as wide as tall; anamorphic DVDs are not square.\n\nExample: `32` (with height `27` for 16:9 NTSC DVD)"
+_SARDen = "Height part of the sample (pixel) aspect ratio; see the width part. 1 with width 1 means square pixels.\n\nExample: `27`"
+kwargs = "More properties to set, by name. A name starting with `_` is one VapourSynth itself reads.\n\nExample: `{'_FieldBased': 0, '_ColorRange': 1}`"
+
+[method."std.AssumeFPS"]
+
+[method."std.AssumeFPS".docs]
+src = "Takes the frame rate from this clip instead of the numbers below; set either this or the numbers, not both."
+fpsnum = "Frame rate numerator. With denominator 1001, 24000 gives 23.976 fps.\n\nExample: `24000`"
+fpsden = "Frame rate denominator; 1 for whole rates such as 25.\n\nExample: `1001`"
+
+[method."vstools.change_fps"]
+
+[method."vstools.change_fps".docs]
+fps = "The new frame rate, as a fraction or a whole number. Frames are repeated or dropped to reach it; the length in seconds stays.\n\nExample: `24000/1001`"
+
+[method."vstools.Sar.apply"]
+help = "Marks the clip with a sample (pixel) aspect ratio, Aspect ratio width/height; the picture is not changed. Colour info and aspect does the same with colour information too. Example: 32 and 27 for a 16:9 NTSC DVD."
+
+[method."vstools.Sar.apply".init_docs]
+numerator = "Width part of the pixel aspect ratio. 1 with height 1 (the start) means square pixels; 0 marks it unknown.\n\nExample: `32`"
+denominator = "Height part of the pixel aspect ratio, a whole number. Empty means 1.\n\nExample: `27`"
+
+[method."vstools.initialize_clip"]
+help = "Marks the clip with matrix, transfer, primaries, range, chroma location and field order, reading them from the clip or guessing from its size, then converts the bit depth (32-bit float by default). Use it right after a source that left this information unset. Pitfall: a guess can be wrong for SD material; set the values when you know them."
+
+[method."vstools.initialize_clip".docs]
+bits = "Bit depth after the conversion: 8, 10, 16 or 32 (float). The default 32 is slow and memory hungry; 16 is usually enough.\n\nExample: `16`"
+matrix = "Marks the YUV-to-RGB matrix; Default keeps the clip's, else guesses from the size.\n\nExample: BT.709 (1)"
+transfer = "Marks the brightness curve (BT.709 for SDR, PQ or HLG for HDR); Default keeps the clip's, else guesses."
+primaries = "Marks the colour gamut; Default keeps the clip's, else guesses."
+chroma_location = "Marks where the colour samples sit; Default keeps the clip's, else guesses (Left for most video)."
+color_range = "Marks limited (TV, 16-235) or full (PC, 0-255) range; Default keeps the clip's, else limited for YUV."
+field_based = "Marks progressive, or interlaced with top (TFF) or bottom (BFF) field first; As the video says keeps the clip's, else guesses."
+kwargs = "Extra settings for the bit depth conversion (as in Bit depth in the Convert Format node).\n\nExample: `{'dither_type': 'none'}`"
+
+[method."vstools.finalize_clip"]
+help = "Prepares a clip for the encoder: converts to an integer bit depth (10 by default) and clips values outside the legal range. Use it at the end of a chain that works in 32-bit float. Pitfall: fails on a float or over-16-bit result."
+
+[method."vstools.finalize_clip".docs]
+clamp_tv_range = "On clips values to the TV (limited) range, 16-235 for luma at 8 bit; off clips only to the format's full range."
+bits = "Output bit depth of the finished clip. Starts at 10, the usual for encoding.\n\nExample: `8`"
+kwargs = "Extra settings for the bit depth conversion (as in Bit depth in the Convert Format node).\n\nExample: `{'dither_type': 'error_diffusion'}`"
+
+[method."vstools.merge_clip_props"]
+help = "Copies the frame properties of several clips into one: the main clip's picture with every other clip's properties added (theirs win on equal names). Example: keep scene-change marks measured on another clip."
+
+[method."vstools.merge_clip_props".docs]
+main_idx = "Which clip keeps its picture and receives the properties, counted from 0 in the order the clips are connected.\n\nExample: `1`"
+
+[method."vstools.sc_detect"]
+help = "Marks scene changes: compares each frame with its neighbours and sets the properties _SceneChangePrev and _SceneChangeNext to 1 or 0. Filters that respect scene changes read them. The picture is not changed."
+
+[method."vstools.sc_detect".docs]
+threshold = "How different two frames must be (0 to 1, average pixel difference) to count as a scene change. Higher finds fewer; 0.1 is the default.\n\nExample: `0.15`"
+
+[method."std.ClipToProp"]
+help = "Attaches each frame of a second clip (usually a mask or alpha) to the first clip's frames as a property, so cuts and splices keep both together. \"Get an attached clip\" gets it back. The output length follows the attached clip."
+
+[method."std.ClipToProp".docs]
+mclip = "The clip to attach, usually a mask or alpha channel."
+prop = "Property name to store it under; default `_Alpha`. Use another name when it is not transparency.\n\nExample: `Mask`"
+
+[method."std.PropToClip"]
+help = "Gets back a clip attached to the frames as a property (by \"Attach a clip to the frames\"), such as the alpha channel some sources attach."
+
+[method."std.PropToClip".docs]
+prop = "Name of the property holding the clip; default `_Alpha`.\n\nExample: `Mask`"
+index = "Which entry to take when the property holds several; 0 by default.\n\nExample: `0`"
+
+[method."std.CopyFrameProps"]
+help = "Gives the clip the frame properties of another clip, all of them or only the listed ones; the picture is not changed. Example: restore colour information lost in a filter."
+
+[method."std.CopyFrameProps".docs]
+prop_src = "The clip whose properties are copied. If it is shorter, its last frame's properties are used for the rest."
+props = "Only these properties are copied (others stay as they are); a name the source lacks is deleted. Empty copies all and replaces everything.\n\nExample: `['_Matrix', '_Transfer']`"
+
+[method."std.RemoveFrameProps"]
+help = "Deletes frame properties: the listed ones, or all when the list is empty. The picture is not changed."
+
+[method."std.RemoveFrameProps".docs]
+props = "Names to delete; `*` and `?` work as wildcards. `_*` deletes only VapourSynth's own (colour, time, field) properties.\n\nExample: `VFM*`"
+
+[method."std.PlaneStats"]
+help = "Measures one plane of each frame and stores minimum, maximum and average (0 to 1) as frame properties (PlaneStatsMin, PlaneStatsMax, PlaneStatsAverage); with a second clip also their difference. Other filters and expressions can read them; the picture is not changed."
+
+[method."std.PlaneStats".docs]
+plane = "Which plane to measure: 0 luma (or red), 1 and 2 the colour planes. Default 0.\n\nExample: `1`"
+prop = "Start of the property names; default `PlaneStats` gives PlaneStatsAverage and so on.\n\nExample: `Luma`"
+clipb = "A clip to compare with; then the average absolute difference is stored as ...Diff (0 to 1)."
+
+[method."std.SetFieldBased"]
+help = "Marks the clip as progressive or interlaced; the picture is not changed. Mark a progressive clip that the source called interlaced as progressive, so resizers scale whole frames instead of fields."
+
+[method."std.SetFieldBased".docs]
+value = "0 progressive (frame based), 1 bottom field first, 2 top field first.\n\nExample: `0`"
+
+[method."std.SetFrameProp"]
+help = "Sets one frame property on every frame, as a whole number, a decimal number or text; an existing one is overwritten. Example: name `_FieldBased`, whole number `2` marks top field first."
+
+[method."std.SetFrameProp".docs]
+prop = "Name of the property.\n\nExample: `_FieldBased`"
+intval = "Whole number(s) to store; several make a list.\n\nExample: `2`"
+floatval = "Decimal number(s) to store; several make a list.\n\nExample: `0.5`"
+data = "Text to store.\n\nExample: `film`"
+
+[method."std.Trim"]
+
+[method."std.Trim".docs]
+first = "First frame kept, counted from 0. Default 0.\n\nExample: `30`"
+last = "Last frame kept (included). Empty keeps up to the end. Set this or Length, not both.\n\nExample: `1000`"
+length = "Number of frames kept from First frame. Set this or Last frame, not both.\n\nExample: `240`"
+
+[method."vstools.replace_ranges"]
+
+[method."vstools.replace_ranges".docs]
+ranges = "Frames to take from the replacement clip: single frames and ranges, comma separated; a range includes both ends.\n\nExample: `682-687, 713-717, 721`"
+exclusive = "Yes makes a range leave out its last frame (10-20 then means 10 to 19). Default includes both ends."
+mismatch = "On allows a replacement clip of another size or format; the result then has a variable format."
+planes = "Only these planes are taken from the replacement clip; the others stay from the original."
+prop_src = "Only used when the frames are chosen by a Python function, which this node cannot take; leave it empty."
+
+[method."std.DeleteFrames"]
+help = "Removes the listed frames, so the clip gets shorter. Frame numbers are those of the input clip. Example: `0, 5, 6` removes three frames."
+
+[method."std.DeleteFrames".docs]
+frames = "Frame numbers to remove, comma separated, of the input clip. A frame listed twice is an error.\n\nExample: `0, 5, 6`"
+
+[method."std.BlankClip"]
+
+[method."std.BlankClip".docs]
+length = "Number of frames. Default: like the input clip, or 10 seconds without one.\n\nExample: `240`"
+color = "The colour, one value per plane in the clip's own scale (0-255 at 8 bit). Default black.\n\nExample: `255, 0, 0` (red in 8-bit RGB)"
+width = "Width in pixels; default like the input clip, else 640.\n\nExample: `1920`"
+height = "Height in pixels; default like the input clip, else 480.\n\nExample: `1080`"
+format = "Pixel format; default like the input clip, else RGB24."
+fpsnum = "Frame rate numerator; default like the input clip, else 24.\n\nExample: `24000`"
+fpsden = "Frame rate denominator; default like the input clip, else 1.\n\nExample: `1001`"
+keep = "1 returns the same frame for every request (saves a little time); there is rarely a reason to set it.\n\nExample: `1`"
+varsize = "1 makes the clip report a variable size, for testing filters that must handle that.\n\nExample: `1`"
+varformat = "1 makes the clip report a variable format, for testing filters that must handle that.\n\nExample: `1`"
+gpu = "1 makes the frames GPU resident, for filters that take GPU frames.\n\nExample: `1`"
+
+[method."std.Splice"]
+
+[method."std.Splice".docs]
+mismatch = "1 allows clips of different sizes or formats; the result then has a variable size or format, which many filters refuse. Clips of different frame rates always work.\n\nExample: `1`"
+
+[method."std.DuplicateFrames"]
+help = "Repeats the listed frames once each, so the clip gets longer. A frame may be listed several times. Example: `10, 10, 20`."
+
+[method."std.DuplicateFrames".docs]
+frames = "Frame numbers to repeat, comma separated, of the input clip.\n\nExample: `10, 20`"
+
+[method."std.FreezeFrames"]
+help = "Replaces whole ranges with one still frame each, keeping the length. Use it to hide a few broken frames. Example: Range starts `0, 100`, Range ends `15, 112`, Frame shown per range `8, 50` shows frame 8 for 0-15 and frame 50 for 100-112."
+
+[method."std.FreezeFrames".docs]
+first = "Start of each range (included), comma separated.\n\nExample: `0, 100`"
+last = "End of each range (included), in the same order as Range starts. Ranges must not overlap.\n\nExample: `15, 112`"
+replacement = "The input frame shown over each range, in the same order.\n\nExample: `8, 50`"
+
+[method."std.Interleave"]
+help = "Alternates the frames of the clips: A0, B0, A1, B1 ... Use it to compare clips frame by frame, or to rebuild a sequence after splitting. The frame rate is multiplied by the number of clips by default."
+
+[method."std.Interleave".docs]
+extend = "1 treats every clip as long as the longest, repeating the last frame of shorter ones.\n\nExample: `1`"
+mismatch = "1 allows clips of different formats, sizes or frame rates.\n\nExample: `1`"
+modify_duration = "1 (default) multiplies the frame rate by the number of clips, keeping the duration; 0 keeps the first clip's rate, so the result plays longer.\n\nExample: `0`"
+
+[method."std.Loop"]
+help = "Plays the clip several times in a row. Example: Times `3` gives three copies."
+
+[method."std.Loop".docs]
+times = "How many times to play it; 0 (default) repeats up to the longest length VapourSynth allows.\n\nExample: `3`"
+
+[method."std.Reverse"]
+help = "Plays the clip backwards: the last frame comes first."
+
+[method."std.SelectEvery"]
+help = "Keeps chosen frames out of every group of frames. Examples: Group size `2`, Positions kept `0` keeps even frames; Group size `5`, Positions kept `1, 2, 3, 4` drops the first of every five. The frame rate follows by default."
+
+[method."std.SelectEvery".docs]
+cycle = "Size of the repeating group of frames. Must be 1 or more.\n\nExample: `5`"
+offsets = "Positions to keep in each group, from 0 to Group size minus 1; a position may repeat to duplicate it.\n\nExample: `1, 2, 3, 4`"
+modify_duration = "1 (default) scales the frame rate by kept/cycle so the duration stays; 0 keeps the rate.\n\nExample: `0`"
+
+[method."vstools.insert_clip"]
+help = "Overwrites part of the clip with a shorter clip, starting at a frame; the length stays. Use it to drop in a fixed scene. Pitfall: the inserted clip must end before the main clip does unless Error if too long is off."
+
+[method."vstools.insert_clip".docs]
+insert = "The clip whose frames are written over the main clip."
+start_frame = "Frame of the main clip where the inserted clip begins.\n\nExample: `1200`"
+strict = "On stops with an error when the inserted clip would run past the end; off cuts it to fit."
+
+[method."vstools.remap_frames"]
+help = "Builds a new clip from the frames listed, in that order; frames may repeat. Example: `[0, 5, (10, 15)]` gives frames 0, 5 and 10 to 15."
+
+[method."vstools.remap_frames".docs]
+ranges = "Frame numbers and (start, end) pairs in square brackets; a pair includes both ends.\n\nExample: `[0, 5, (10, 15)]`"
+
+[method."vstools.replace_every"]
+help = "Replaces frames at fixed positions in every group of frames with the same frames of a second clip. Example: Group size `5`, Positions replaced `4` takes every fifth frame from the second clip, e.g. a differently deinterlaced one."
+
+[method."vstools.replace_every".docs]
+clipb = "The clip the replacement frames come from, frame for frame."
+cycle = "Size of the repeating group of frames, 2 or more.\n\nExample: `5`"
+offsets = "Positions in each group taken from the second clip, from 0 to Group size minus 1.\n\nExample: `4`"
+modify_duration = "Leave on: it keeps the frame rate. Off leaves the frame rate doubled."
+
+[method."vstools.shift_clip"]
+help = "Moves the clip in time by whole frames, keeping the length: with 1, output frame n shows input frame n+1 and the last frame repeats; with -1, frame n shows n-1 and the first repeats. Use it to compare a frame with its neighbour."
+
+[method."vstools.shift_clip".docs]
+offset = "Frames to shift by. Positive shows later frames earlier; negative the reverse.\n\nExample: `-1`"
+
+[method."vstools.shift_clip_multi"]
+help = "Gives several shifted copies of the clip at once, one per offset in a range (see \"Shift in time\"). Example: `(-1, 1)` gives copies shifted by -1, 0 and 1, the previous, current and next frames."
+
+[method."vstools.shift_clip_multi".docs]
+offsets = "First and last offset of the range, both included, as a pair in brackets.\n\nExample: `(-2, 2)`"
+
+[method."resize.Point"]
+help = "Nearest-pixel kernel: no blurring, blocky when enlarging. Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Point".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Bilinear"]
+help = "Bilinear kernel: smooth, soft. Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Bilinear".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Bicubic"]
+help = "Bicubic kernel: the neutral default (Kernel settings a and b tune it). Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Bicubic".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Lanczos"]
+help = "Lanczos kernel: sharp, may ring (halos) at edges. Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Lanczos".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Spline16"]
+help = "Spline16 kernel: sharp, little ringing. Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Spline16".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Spline36"]
+help = "Spline36 kernel: sharp with little ringing, a common choice. Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Spline36".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Spline64"]
+help = "Spline64 kernel: the sharpest spline. Converts format, bit depth and colours (matrix, transfer, primaries, range), and resizes when Width or Height is set. The kernel matters only for resizing and for changing chroma subsampling. Pitfall: YUV to RGB needs a known matrix; on 'no path between colorspaces' set Input matrix."
+
+[method."resize.Spline64".docs]
+width = "Output width in pixels. Empty keeps the width, so only format and colours change.\n\nExample: `1920`"
+height = "Output height in pixels. Empty keeps the height.\n\nExample: `1080`"
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+
+[method."resize.Bob"]
+help = "A simple deinterlacer: makes a full frame from each field by resizing it to full height, so the frame rate doubles. Fast but soft and flickery; the other methods of this node look better. Needs the field order, from the frames or from Top field first."
+
+[method."resize.Bob".docs]
+format = "The output pixel format: colour family (GRAY, YUV, RGB), chroma subsampling (420, 444) and bit depth (P8, P16, S for 32-bit float). Default keeps the input's."
+matrix = "The YUV-to-RGB matrix of the output. Needed when converting RGB to YUV; default keeps the input's. HD is usually BT.709 (1).\n\nExample: BT.709 (1)"
+transfer = "The brightness curve of the output, e.g. Linear (8) for linear-light processing or BT.709 (1) for SDR video. Changing it converts the values.\n\nExample: Linear (8)"
+primaries = "The colour gamut of the output, e.g. BT.709 (1) or BT.2020 (9). Changing it converts the colours.\n\nExample: BT.709 (1)"
+range = "Output range: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default: limited for YUV, full for RGB when the family changes, else the input's."
+matrix_s = "Output matrix by name instead of number; wins over Matrix: `709`, `170m`, `470bg`, `2020ncl`, `rgb` ...\n\nExample: `709`"
+transfer_s = "Output transfer by name: `709`, `601`, `srgb`, `linear`, `st2084` (PQ), `std-b67` (HLG) ...\n\nExample: `linear`"
+primaries_s = "Output primaries by name: `709`, `170m`, `470bg`, `2020`, `st432-1` (DCI-P3) ...\n\nExample: `2020`"
+range_s = "Output range by name: `limited` or `full`.\n\nExample: `full`"
+chromaloc = "Where the output's colour samples sit, for subsampled formats: 0 left (usual video), 1 center, 2 top left (UHD Blu-ray), 3 top, 4 bottom left, 5 bottom.\n\nExample: `0`"
+chromaloc_s = "Output chroma location by name: `left`, `center`, `top_left`, `top`, `bottom_left`, `bottom`.\n\nExample: `left`"
+matrix_in = "The input's matrix, used only when the frames do not say (or say unspecified). Set it on the error 'no path between colorspaces'.\n\nExample: BT.709 (1)"
+matrix_in_s = "The input's matrix by name, used only when the frames do not say.\n\nExample: `709`"
+transfer_in = "The input's brightness curve, used only when the frames do not say.\n\nExample: BT.709 (1)"
+transfer_in_s = "The input's transfer by name, used only when the frames do not say.\n\nExample: `709`"
+primaries_in = "The input's colour gamut, used only when the frames do not say.\n\nExample: BT.709 (1)"
+primaries_in_s = "The input's primaries by name, used only when the frames do not say.\n\nExample: `709`"
+range_in = "The input's range, used only when the frames do not say: limited (TV) or full (PC)."
+range_in_s = "The input's range by name (`limited` or `full`), used only when the frames do not say.\n\nExample: `full`"
+chromaloc_in = "The input's chroma location (0 left ... 5 bottom), used only when the frames do not say.\n\nExample: `2`"
+chromaloc_in_s = "The input's chroma location by name, used only when the frames do not say.\n\nExample: `top_left`"
+filter_param_a = "Kernel setting for luma and RGB: b for Bicubic (blur), taps for Lanczos (more = sharper, more ringing). Other kernels ignore it.\n\nExample: `0` (Bicubic) or `4` (Lanczos)"
+filter_param_b = "Second kernel setting: c for Bicubic (sharpness); b 0 with c 0.5 is Catmull-Rom, sharper than the default. Other kernels ignore it.\n\nExample: `0.5`"
+resample_filter_uv = "Kernel for the colour planes only: `point`, `bilinear`, `bicubic`, `spline16`, `spline36`, `spline64` or `lanczos`. Default the same as for luma.\n\nExample: `spline36`"
+filter_param_a_uv = "Like Kernel setting a (b, taps), for the colour planes' kernel.\n\nExample: `3`"
+filter_param_b_uv = "Like Kernel setting b (c), for the colour planes' kernel.\n\nExample: `0.5`"
+dither_type = "Dithering when the result is an integer format with fewer bits: `none` (default, rounds), `ordered`, `random` or `error_diffusion`. Dithering hides banding from the bit reduction.\n\nExample: `error_diffusion`"
+cpu_type = "Only for testing the resizer; leave empty."
+src_left = "Starts the source region this many input pixels from the left; also shifts the picture by fractions of a pixel.\n\nExample: `0.5`"
+src_top = "Starts the source region this many input pixels from the top; also shifts the picture by fractions of a pixel.\n\nExample: `-0.25`"
+src_width = "Width of the source region in input pixels; default the whole width. With Source region left, crops and scales in one step.\n\nExample: `1440`"
+src_height = "Height of the source region in input pixels; default the whole height.\n\nExample: `810`"
+nominal_luminance = "How bright the value 1.0 is, in cd/m² (nits), for conversions between linear light and PQ or HLG.\n\nExample: `203`"
+approximate_gamma = "1 (default) computes transfer curves through a fast table; 0 computes them exactly, slower.\n\nExample: `0`"
+chromatic_adaptation = "1 (default) shifts the white point when the primaries' white points differ (DCI-P3 to BT.709); 0 keeps the original white, which leaves a colour cast.\n\nExample: `0`"
+filter = "Kernel for stretching each field: `point`, `bilinear`, `bicubic` (default), `spline16`, `spline36`, `spline64` or `lanczos`.\n\nExample: `spline36`"
+tff = "Field order when the frames do not say: 1 top field first, 0 bottom field first.\n\nExample: `1`"
+
+[method."vstools.depth"]
+
+[method."vstools.depth".docs]
+dither_type = "How the bit reduction hides banding: None rounds; Ordered a fixed pattern; Random (default) light noise; Error diffusion and the other diffusion kinds (Sierra, Stucki, Atkinson, Ostromoukhov) spread the error, best for gradients. Only matters when lowering the depth.\n\nExample: Error diffusion"
+sample_type = "Integer or float output. Default: float for 32 bit (and 16 when asked as float), integer below."
+range_in = "The input's range when the clip does not say: limited (TV) or full (PC)."
+range_out = "Converts to this range at the same time: limited (TV, 16-235 at 8 bit) or full (PC, 0-255). Default keeps the input's."
+bitdepth = "Bit depth of the output: 8, 10, 12 or 16 give integer, 32 gives float. Lowering it dithers (see Dither).\n\nExample: `10`"
+
+[method."vstools.limiter"]
+help = "Clips pixel values into a range: the format's legal range, the TV range (16-235 at 8 bit) or bounds you give. Integer clips without bounds or TV range pass unchanged. Use it after filters that overshoot. Example: TV range on before encoding."
+
+[method."vstools.limiter".docs]
+min_val = "Lowest value kept, in the clip's scale (0-255 at 8 bit, 0-1 float); one per plane, the last reused.\n\nExample: `16, 16`"
+max_val = "Highest value kept, in the clip's scale; one per plane, the last reused.\n\nExample: `235, 240`"
+tv_range = "On clips to the TV (limited) range: luma 16-235 and chroma 16-240 at 8 bit, scaled for other depths."
+mask = "For float mask clips: treats the colour planes as 0 to 1 instead of -0.5 to 0.5."
+
+[method."std.Limiter"]
+help = "Clips pixel values to between Lowest value and Highest value; values outside are set to the bound. Default bounds are the format's lowest and highest value. Example: Lowest value `16`, Highest value `235, 240` on 8-bit YUV."
+
+[method."std.Limiter".docs]
+min = "Lowest value kept, in the clip's scale; one per plane.\n\nExample: `16`"
+max = "Highest value kept, in the clip's scale; one per plane.\n\nExample: `235, 240`"
+
+[method."vstools.match_clip"]
+help = "Converts the clip to look like the reference clip: its size (Bicubic), format, matrix, transfer and primaries, frame rate, and optionally length. Use it before comparing or merging clips that must match."
+
+[method."vstools.match_clip".docs]
+ref = "The clip whose size, format, colour information and frame rate the clip takes on."
+dimensions = "On resizes the clip to the reference's width and height (Bicubic)."
+vformat = "On converts the clip to the reference's format (colour family, subsampling, bit depth)."
+matrices = "On marks the clip with the reference's matrix, transfer and primaries (marks only, no conversion)."
+length = "On cuts the clip, or pads it by repeating its last frame, to the reference's length."
+
+[method."vstools.get_y"]
+help = "Takes the luma (Y, brightness) plane as a grayscale clip. Example: work on brightness only, then put it back with Join planes."
+
+[method."vstools.get_u"]
+help = "Takes the first colour plane (U, blue difference) as a grayscale clip. On 4:2:0 video it is half the width and height."
+
+[method."vstools.get_v"]
+help = "Takes the second colour plane (V, red difference) as a grayscale clip. On 4:2:0 video it is half the width and height."
+
+[method."vstools.get_r"]
+help = "Takes the red plane of an RGB clip as a grayscale clip."
+
+[method."vstools.get_g"]
+help = "Takes the green plane of an RGB clip as a grayscale clip."
+
+[method."vstools.get_b"]
+help = "Takes the blue plane of an RGB clip as a grayscale clip."
+
+[method."vstools.plane"]
+help = "Takes one plane, chosen by number, as a grayscale clip: 0 is Y (or R), 1 is U (or G), 2 is V (or B)."
+
+[method."vstools.plane".docs]
+index = "Plane number: 0 Y or R, 1 U or G, 2 V or B.\n\nExample: `1`"
+strict = "Off removes the matrix mark when taking a plane of an RGB clip (a grayscale clip of RGB has no YUV matrix)."
+
+[method."vstools.join"]
+
+[method."vstools.join".docs]
+alpha = "An alpha (transparency) clip attached to the result."
+family = "Colour family of the result: YUV (default), RGB or GRAY. Joining a luma clip with a chroma source must give YUV."
+
+[method."vstools.stack_planes"]
+help = "Shows every plane of the clip side by side as one grayscale picture, to inspect each plane. On 4:2:0 the colour planes are smaller and stacked. Example: look for noise in the colour planes."
+
+[method."vstools.stack_planes".docs]
+shift_float_chroma = "On, for 32-bit float YUV: shifts the colour planes so grey shows as mid-grey, as in integer video. Off shows them dark."
+offset_chroma = "Brightens the colour planes for viewing: a number is added to their values; Python value `'min'` or `'max'` lines them up with luma's minimum or maximum.\n\nExample: `0.25`"
+mode = "h places the planes side by side, v one under the other."
+write_plane_name = "On writes each plane's name (Y, U, V ...) on it."
+alignment = "Where the plane names are written, numpad style: 7 top left, 8 top centre, 5 centre, 1 bottom left.\n\nExample: `8`"
+scale = "Size of the plane names; 2 doubles it.\n\nExample: `2`"
+
+[method."std.Merge"]
+
+[method."std.Merge".docs]
+clipb = "The clip mixed in; same size and format as the first."
+weight = "Share of the second clip, 0 to 1, one per plane; one value is used for all, a second covers both colour planes. Default 0.5.\n\nExample: `1, 0` (luma from the second clip, colour from the first)"
+
+[method."std.MaskedMerge"]
+help = "Mixes two clips pixel by pixel through a mask: black in the mask keeps the first clip, white takes the second, grey mixes. Example: apply a filter only where an edge mask is white."
+
+[method."std.MaskedMerge".docs]
+clipb = "The clip taken where the mask is white; same size and format as the first."
+mask = "The mask: full-range values, black keeps the first clip, white takes the second. Same format as the clips or grayscale."
+first_plane = "1 uses the mask's first plane for all planes (scaled down for subsampled colour planes). A grayscale mask always works this way.\n\nExample: `1`"
+premultiplied = "1 treats the second clip as premultiplied with the mask (alpha compositing). Default 0.\n\nExample: `1`"
+
+[method."std.MakeDiff"]
+help = "Stores the difference between two clips as a clip (grey means no difference). With \"Add a difference back\" it moves detail between clips. Example: clip minus a blurred copy gives the detail; adding it back sharpens."
+
+[method."std.MakeDiff".docs]
+clipb = "The clip subtracted from the first; same size and format."
+
+[method."std.MergeDiff"]
+help = "Adds a difference clip made by \"Difference of two clips\" back onto a clip. Example: add the detail taken from the source back onto a denoised clip."
+
+[method."std.MergeDiff".docs]
+clipb = "The difference clip made by \"Difference of two clips\"."
+
+[method."std.MakeFullDiff"]
+help = "Like \"Difference of two clips\", but the result has one more bit of depth, so large differences are not clipped. Use it with \"Add a full difference back\"."
+
+[method."std.MakeFullDiff".docs]
+clipb = "The clip subtracted from the first; same size and format."
+
+[method."std.MergeFullDiff"]
+help = "Adds a difference clip made by \"Difference, one bit more\" back onto a clip; the difference clip must have one bit more than the clip."
+
+[method."std.MergeFullDiff".docs]
+clipb = "The difference clip made by \"Difference, one bit more\"."
+
+[method."std.ShufflePlanes"]
+help = "Picks planes from up to three clips and puts them together as a new clip, with almost no checks. Examples: Plane from each clip `0`, Gray takes plane 0; Plane from each clip `0, 2, 1`, YUV swaps U and V."
+
+[method."std.ShufflePlanes".docs]
+planes = "Which plane to take from each clip, one number per output plane (first from the first clip ...). One clip is reused for all.\n\nExample: `0, 2, 1`"
+colorfamily = "Colour family of the result: Gray (one plane), YUV or RGB."
+prop_src = "Takes the frame properties from this clip instead of the first."
+
+[method."std.SplitPlanes"]
+help = "Splits a clip into one grayscale clip per plane. Split Planes gives them as three separate outputs."
+
+[method."std.StackHorizontal"]
+help = "Places clips side by side, left to right. They must have the same height and format. Example: compare a source and a filtered clip."
+
+[method."std.StackVertical"]
+help = "Places clips one under the other. They must have the same width and format."
+
+[method."std.Levels"]
+help = "Adjusts brightness, contrast and gamma by mapping the input range Input black-white to Output black-white; values outside are clipped. Example: Input black `16`, Input white `235, 240`, Output black `0`, Output white `255` turns 8-bit TV range into full range. Pitfall: float YUV assumes 0-1 for the colour planes too."
+
+[method."std.Levels".docs]
+min_in = "Input value that becomes Output black (black point), in the clip's scale; one per plane, the last reused.\n\nExample: `16`"
+max_in = "Input value that becomes Output white (white point); default the format's maximum.\n\nExample: `235, 240`"
+gamma = "Midtone curve: above 1 brightens, below 1 darkens; 1 (default) is linear.\n\nExample: `1.2`"
+min_out = "Output value for Input black; default 0.\n\nExample: `16`"
+max_out = "Output value for Input white; default the format's maximum.\n\nExample: `235`"
+
+[method."std.Invert"]
+help = "Makes a negative: each value becomes the format's maximum minus the value. Choose the planes; for a mask use Invert Mask in the Masks node."
+
+[method."vszip.CLAHE"]
+help = "Local contrast boost (contrast limited adaptive histogram equalization): evens out brightness tile by tile, lifting detail in dark and flat areas. 8 to 16-bit integer clips only. Often used to make edge masks find faint edges."
+
+[method."vszip.CLAHE".docs]
+limit = "How much contrast may be added; higher is stronger and noisier. Default 7 at 8 bit; multiply by 256 for 16 bit.\n\nExample: `15`"
+tiles = "The tile grid of the equalization (as OpenCV's tile grid): one value for both sides, or two. Default 3.\n\nExample: `8`"
+
+[method."placebo.Tonemap"]
+help = "Converts HDR to SDR (and other colour mappings) with libplacebo on the GPU (Vulkan). Example: Input colour space `1` (HDR10) and Output colour space `0` (SDR) for a UHD Blu-ray. Takes RGB48 or 16-bit YUV; gives RGB48 or YUV444P16."
+
+[method."placebo.Tonemap".docs]
+src_csp = "Colour space of the input: 0 SDR, 1 HDR10, 2 HLG, 3 Dolby Vision.\n\nExample: `1`"
+dst_csp = "Colour space of the output: 0 SDR (BT.709), 1 HDR10, 2 HLG, 3 Dolby Vision.\n\nExample: `0`"
+dst_prim = "Output primaries: 3 BT.709 (HD), 6 BT.2020, 11 DCI-P3, 12 DCI-P3 with D65 white; other numbers in the plugin's list.\n\nExample: `3`"
+src_max = "Brightest level of the source display, in nits; default from the frame properties when present.\n\nExample: `1000`"
+src_min = "Darkest level of the source display, in nits.\n\nExample: `0.005`"
+dst_max = "Brightest level of the target display, in nits.\n\nExample: `203`"
+dst_min = "Darkest level of the target display, in nits.\n\nExample: `0.1`"
+dynamic_peak_detection = "1 (default) measures each scene's peak brightness and adapts to it; 0 uses the static values.\n\nExample: `0`"
+smoothing_period = "Smooths the measured brightness over about this many frames, against flicker; 0 turns smoothing off. Default 20.\n\nExample: `50`"
+scene_threshold_low = "Brightness change (in 1% PQ steps) where smoothing starts to give way at a scene cut. Default 1; 0 disables the scene logic.\n\nExample: `1.5`"
+scene_threshold_high = "Brightness change where smoothing is fully off at a scene cut. Default 3.\n\nExample: `5`"
+percentile = "Which brightness percentile counts as the peak; 100 (default) the brightest pixel. 99.995 ignores tiny highlights.\n\nExample: `99.995`"
+gamut_mapping = "How out-of-gamut colours are handled: 0 clip, 1 perceptual (default), 2 softclip, 3 relative, 4 saturation, 5 absolute, 6 desaturate, 7 darken, 8 highlight them, 9 linear.\n\nExample: `2`"
+tone_mapping_function = "Tone curve: 0 clip, 1 spline (default), 2 st2094-40, 3 st2094-10, 4 bt2390, 5 bt2446a, 6 reinhard, 7 mobius, 8 hable, 9 gamma, 10 linear, 11 linearlight.\n\nExample: `4`"
+tone_mapping_function_s = "Tone curve by name, winning over the number: `spline`, `bt2390`, `bt2446a`, `hable`, `reinhard` ...\n\nExample: `bt2390`"
+tone_mapping_param = "Fine-tunes the chosen tone curve; its meaning depends on the curve. Default the curve's own."
+metadata = "Which HDR metadata to use: 0 automatic (default), 1 none, 2 HDR10 static, 3 HDR10+, 4 measured luminance.\n\nExample: `2`"
+use_dovi = "1 uses the Dolby Vision metadata (RPU); on by default when the input is Dolby Vision.\n\nExample: `0`"
+dovi_el = "The Dolby Vision enhancement layer clip (YUV420P16), when the source has one; needs Use Dolby Vision data `1`."
+visualize_lut = "1 draws a graph of the active tone curve on the picture, for tuning.\n\nExample: `1`"
+show_clipping = "1 highlights pixels that are hard-clipped by the tone mapping.\n\nExample: `1`"
+contrast_recovery = "Adds back fine detail lost in tone mapping; 0 (default) off, 0.3 as libplacebo's high-quality preset. May ring on some sources.\n\nExample: `0.3`"
+log_level = "How much libplacebo prints; default 2.\n\nExample: `3`"
+
+[method."vsexprtools.norm_expr"]
+help = "Runs a per-pixel formula (\"normalize\" refers to tidying the formula, not the picture). Formulas list operands first, then the operator: `x 2 *` is x times 2. `x` is the main clip, `y`, `z`, `a` ... the next clips. Unlike \"Formula per pixel (std.Expr)\" it knows names that fit any bit depth (`plane_max`, `neutral` ...). Example: `plane_min plane_max + x -` makes a negative."
+
+[method."vsexprtools.norm_expr".docs]
+expr = "`x`, `y` ... clips; `plane_min`/`plane_max` legal range of the plane; `range_max` full-range peak; `neutral` grey colour (128); `X` `Y` position; `N` frame number; `x[-1,0]` left pixel. Per plane: `('x 1.2 *', '')`, empty copies.\n\nExample: `x neutral - 1.5 * neutral +` on U and V boosts saturation."
+opt = "On computes with whole numbers where possible: faster on integer clips, but intermediate results must fit 32-bit integers. Needed for bit operations on 24-32-bit integer clips."
+boundary = "What a neighbour pixel past the picture edge is (in `x[-1,0]`): on mirrors the picture (default), off repeats the edge pixel."
+format = "The output format; Default gives the first clip's format. Pick another when results would not fit, e.g. a 32-bit float format.\n\nExample: GRAYS"
+split_planes = "On splits each clip into its planes first, so `x`, `y`, `z` are the Y, U, V planes of one clip (needs 4:4:4 to mix them)."
+kwargs = "Values for `{name}` placeholders in the formula, one value or one per plane.\n\nExample: `{'gain': 1.5}` with formula `x {gain} *`"
+
+[method."vsexprtools.expr_func"]
+help = "Runs a per-pixel formula exactly as typed, through the akarin plugin, without the depth names (`plane_max`, `neutral`) or placeholders of \"Formula per pixel, any bit depth\". Formulas list operands first, then the operator: `x 2 *` is x times 2. Example: `x 0.5 *` halves the values."
+
+[method."vsexprtools.expr_func".docs]
+expr = "The formula, applied to every plane; values are in the clip's own scale (0-255 at 8 bit, 0-1 float). `x`, `y` ... are the clips.\n\nExample: `x 16 - 255 * 219 /`"
+opt = "On computes with whole numbers where possible: faster on integer clips, but intermediate results must fit 32-bit integers."
+boundary = "What a neighbour pixel past the picture edge is (in `x[-1,0]`): on mirrors the picture (default), off repeats the edge pixel."
+format = "The output format; Default gives the first clip's format."
+
+[method."vsexprtools.combine"]
+help = "Joins clips pixel by pixel with one operator: by default the maximum, keeping the brightest value of the clips at each pixel (useful for adding masks). Before each clip and After each clip change each clip's term. Example: After the whole formula `0.5 *` halves the result."
+
+[method."vsexprtools.combine".docs]
+operator = "The joining operator. Max (the start value) keeps the brightest pixel of the clips, Min the darkest.\n\nExample: Min"
+suffix = "Formula text put after each clip's letter.\n\nExample: `2 *` (gives `x 2 * y 2 * max`)"
+prefix = "Formula text put before each clip's letter.\n\nExample: `1` with suffix `-`"
+expr_suffix = "Formula text put after the whole joined formula.\n\nExample: `0.5 *`"
+expr_prefix = "Formula text put before the whole joined formula.\n\nExample: `1`"
+split_planes = "On treats each plane of the clips as a separate input, so the planes of one clip are joined with each other."
+kwargs = "More settings for the formula run, as in \"Formula per pixel, any bit depth\", e.g. placeholder values.\n\nExample: `{'opt': True}`"
+
+[method."std.Expr"]
+help = "VapourSynth's built-in per-pixel formula. Formulas list operands first, then the operator: `x 2 *` is x times 2. `x`, `y`, `z`, `a` ... are the clips (up to 26). Values are in the clip's own scale (0-255 at 8 bit). The neighbours method also reads nearby pixels and frame properties; the any-bit-depth method has names that fit every depth. Example: `x y + 2 /` averages two clips."
+
+[method."std.Expr".docs]
+expr = "The formula, or a list with one per plane; an empty one copies that plane, and the last is reused for missing planes.\n\nExample: `['x 1.1 *', '']`"
+format = "Output format; default the first clip's. It must keep the subsampling. Integer results are clipped to the format's range."
+
+[method."akarin.Expr"]
+help = "Per-pixel formula like \"Formula per pixel (std.Expr)\", plus neighbour pixels `x[-1,0]`, frame properties `x.PlaneStatsAverage`, position `X` `Y`, frame number `N`, `clamp`, `round` and variables. Formulas list operands first, then the operator: `x 2 *` is x times 2. Example: `x x[-1,0] + x[1,0] + 3 /` blurs horizontally."
+
+[method."akarin.Expr".docs]
+expr = "The formula, or a list with one per plane; an empty one copies that plane.\n\nExample: `['x 1.1 *', '']`"
+format = "Output format; default the first clip's. It must keep the subsampling."
+opt = "1 computes with 32-bit whole numbers as long as possible: faster, but values must fit and overflow wraps. Default 0.\n\nExample: `1`"
+boundary = "Neighbour pixels past the edge: 0 (default) repeat the edge pixel, 1 mirror the picture.\n\nExample: `1`"
+
+[method."akarin.Select"]
+help = "Chooses per frame which clip to output, by a formula on frame properties of the property clips: the result is the clip's number. Example: `x._Combed 1 0 ?` gives the second clip on frames marked combed."
+
+[method."akarin.Select".docs]
+prop_src = "Clip(s) whose frame properties the formula reads, as `x`, `y` ..."
+expr = "Formula on frame properties (`x.PlaneStatsAverage`); pixels cannot be read. Its result picks the clip, counted from 0.\n\nExample: `x.PlaneStatsAverage 0.5 > 1 0 ?`"
+
+[method."akarin.Text"]
+help = "Writes text on the frames, with frame properties filled in, for checking a chain. Example: `Frame {N}: {_PictType}`. By default the text shows in previews but not when encoding with vspipe."
+
+[method."akarin.Text".docs]
+text = "The text; `{N}` is the frame number, `{Name}` a frame property, `{x._Matrix:d}` as a number, `{x.Prop:.4f}` with 4 decimals.\n\nExample: `{N} {_PictType}`"
+alignment = "Position, numpad style: 7 top left (default), 8 top centre, 5 centre, 2 bottom centre.\n\nExample: `8`"
+scale = "Text size; 2 doubles it.\n\nExample: `2`"
+prop = "If set, the text is stored in this frame property instead of being drawn.\n\nExample: `Label`"
+strict = "1 stops with an error when the text format is wrong for a frame.\n\nExample: `1`"
+vspipe = "1 also draws the text when encoding with vspipe (default only in previews).\n\nExample: `1`"
+
+[method."akarin.Cambi"]
+help = "Measures visible banding (Netflix's CAMBI score) on the luma of each frame and stores it in the CAMBI frame property; the picture is not changed. 8 or 10-bit integer clips only. Example: find frames that need debanding."
+
+[method."akarin.Cambi".docs]
+window_size = "Size of the area judged together, 15 to 127; 63 (default) fits 4K.\n\nExample: `31`"
+topk = "Share of the worst pixels pooled into the score, 0.0001 to 1; default 0.6.\n\nExample: `0.3`"
+tvi_threshold = "Visibility threshold for brightness steps, 0.0001 to 1; default 0.019. Lower counts fainter bands.\n\nExample: `0.01`"
+scores = "1 also stores the score at each of 5 scales (CAMBI_SCALE0 ...).\n\nExample: `1`"
+scaling = "Factor that normalizes the per-scale scores stored with Per-scale scores; default 1 divided by Window size."
+
+[method."akarin.DLISR"]
+help = "Upscales with NVIDIA's DLISR network. Needs an RTX graphics card and the nvngx_dlisr.dll next to the plugin; takes RGBS (32-bit float RGB) only. Uses much video memory (about 2 GB for 2x of 1080p)."
+
+[method."akarin.DLISR".docs]
+scale = "Upscale factor: 2 (default), 4 or 8.\n\nExample: `2`"
+
+[method."akarin.DLVFX"]
+help = "NVIDIA Video Effects: Effect 0 reduces compression artifacts, Effect 1 upscales. Needs an RTX card and NVIDIA's Video Effects library installed; RGBS or RGB24 input with width a multiple of 128."
+
+[method."akarin.DLVFX".docs]
+op = "0 artifact reduction, 1 super resolution.\n\nExample: `1`"
+scale = "Upscale factor for Effect 1.\n\nExample: `2`"
+strength = "Enhancement strength: 0 or 1.\n\nExample: `1`"
+output_depth = "32 gives RGBS, 8 gives RGB24; default like the input.\n\nExample: `32`"
+num_streams = "Frames processed at once on the GPU; more can be faster on a strong card.\n\nExample: `2`"
+
+[method."std.Lut"]
+help = "Replaces every value through a table you type: one output value per possible input value (256 entries for 8 bit). \"Formula per pixel (std.Expr)\" or \"Formula per pixel, any bit depth\" is easier for most uses."
+
+[method."std.Lut".docs]
+lut = "Output value for each input value 0, 1, 2 ... up to the maximum, comma separated; integer output."
+lutf = "Like the whole-number table, with decimal output values; needs Float output `1`."
+bits = "Bit depth of the output; default the input's.\n\nExample: `16`"
+floatout = "1 gives 32-bit float output (with Table (decimals)).\n\nExample: `1`"
+
+[method."std.Lut2"]
+help = "Like \"Lookup table, one clip\" with two clips: the table has one output for every pair of input values (65,536 entries for two 8-bit clips), so typing it is impractical. \"Formula per pixel (std.Expr)\" or \"Formula per pixel, any bit depth\" is easier."
+
+[method."std.Lut2".docs]
+clipb = "The second clip, whose value is the second index into the table."
+lut = "Output value for every pair of values, comma separated; the second clip's value varies slowest."
+lutf = "Like the whole-number table, with decimal output values; needs Float output `1`."
+bits = "Bit depth of the output; default the first clip's. Values are not scaled.\n\nExample: `10`"
+floatout = "1 gives 32-bit float output (with Table (decimals)).\n\nExample: `1`"
+
+[method."chainner_vs.range_fix"]
+
+[method."chainner_vs.range_fix".docs]
+mode = "Compress squeezes full-range values into the limited range, for a clip that looks too dark and contrasty; Expand stretches limited to full, for a washed-out clip. Only the values change, not the range flag.\n\nExample: Compress (Full to Limited)"
