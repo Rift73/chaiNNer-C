@@ -6,9 +6,10 @@ with aot.py's options); Norm and the attention barrier get Triton versions of th
 code. An AOT plugin launches one kernel, so Core's three become three plugins whose
 statistics and attention matrices are tensors. Neighborhood attention (DualNA, which has
 no C++ plugin) launches dual_na_kernel.py's kernel, compiled with its own options.
-In a static 128-channel model, four pointwise chains around the Norms (attention output
-projection or DualProject to FFN expand, FFN contraction to the next Norm, attention gate
-to the next core's qkv) become one plugin each (dual_chain_kernels.py, fuse_chains).
+In a static 128-channel model, the pointwise chains around the Norms (attention output
+projection, gate and projection, or DualProject to FFN expand, FFN contraction to the next
+Norm and its attention's qkv, attention gate to the next core's qkv) become one plugin
+each (dual_chain_kernels.py, fuse_chains).
 
 The exported ONNX keeps the guide's C++ plugin nodes. TensorRT 11.2's ONNX parser mixes
 up Python plugin instances (a layer calls another plugin's functions), so `lower`
@@ -42,6 +43,7 @@ from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 
 from . import (
+    dual_box_mean_kernel,
     dual_chain_kernels,
     dual_dynamic_kernels,
     dual_local_na_kernel,
@@ -286,6 +288,22 @@ def retrieval_na_kernel(channels: int, sm: int) -> Any:
             dual_retrieval_na_kernel.OPTIONS,
         ),
         "retrieval neighborhood-attention",
+    )
+
+
+@cache
+def box_mean_kernel(channels: int, sm: int) -> Any:
+    """The routed convolution's neighborhood means (dual_box_mean_kernel), once per
+    width: the trunk's height and width are run-time arguments."""
+    return _checked_shared(
+        compile_kernel(
+            dual_box_mean_kernel.box_mean,
+            {"x_ptr": "*bf16", "height": "i32", "width": "i32", "out_ptr": "*fp32"},
+            {"channels": channels, **dual_box_mean_kernel.LAUNCH},
+            sm,
+            dual_box_mean_kernel.OPTIONS,
+        ),
+        "box-mean",
     )
 
 
@@ -614,6 +632,23 @@ def register(key: str) -> None:
     ) -> Launch:
         return kernel_launch(row_sum_kernel(c, sm), (h, 1, 1), [w])
 
+    @trtp.register(plugin("boxmean"))
+    @resolved
+    def boxmean_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
+        s = x.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[2], s[3]), trt.float32)
+
+    @trtp.aot_impl(plugin("boxmean"))
+    @resolved
+    def boxmean_launch(
+        x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
+    ) -> Launch:
+        return kernel_launch(
+            box_mean_kernel(c, sm),
+            dual_box_mean_kernel.grid(h, w, c, triton.cdiv),
+            [h, w],
+        )
+
     _register_barrier(sm)
     if c == dual_chain_kernels.CHANNELS:
         _register_chains(key, sm)
@@ -621,7 +656,7 @@ def register(key: str) -> None:
 
 @cache
 def _register_chains(key: str, sm: int) -> None:
-    """Chains A's, B's, C's and D's plugins (dual_chain_kernels.py) of a static key."""
+    """Chains A's to F's plugins (dual_chain_kernels.py) of a static key."""
 
     def plugin(name: str) -> str:
         return f"{NAMESPACE}::{name}_{key}"
@@ -704,6 +739,72 @@ def _register_chains(key: str, sm: int) -> None:
     chain_a_plugin(plugin("chaina"), False)
     chain_a_plugin(plugin("chainc"), True)
 
+    @trtp.register(plugin("chaine"))
+    @resolved
+    def chain_e_shape(
+        a: trtp.TensorDesc,
+        wg: trtp.TensorDesc,
+        bg: trtp.TensorDesc,
+        na: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        w1: trtp.TensorDesc,
+        b1: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        w2: trtp.TensorDesc,
+        b2: trtp.TensorDesc,
+        eps: float,
+        c_div: float,
+        c_add: float,
+        c_mul: float,
+    ) -> tuple[trtp.TensorDesc, trtp.TensorDesc]:
+        s = r.shape_expr
+        return r.like(), trtp.from_shape_expr((s[0], s[1], s[2], 256), trt.bfloat16)
+
+    @trtp.aot_impl(plugin("chaine"))
+    @resolved
+    def chain_e_launch(
+        a: trtp.TensorDesc,
+        wg: trtp.TensorDesc,
+        bg: trtp.TensorDesc,
+        na: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        w1: trtp.TensorDesc,
+        b1: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        w2: trtp.TensorDesc,
+        b2: trtp.TensorDesc,
+        eps: float,
+        c_div: float,
+        c_add: float,
+        c_mul: float,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        pixels = _elements(r) // dual_chain_kernels.CHANNELS
+        launch = dual_chain_kernels.CHAIN_A_LAUNCH
+        names = ("a", "wg", "bg", "na", "r", "w1", "b1", "gamma", "beta", "w2", "b2")
+        kernel = compile_kernel(
+            dual_chain_kernels.chain_e,
+            {
+                f"{name}_ptr": "*fp32" if name in ("gamma", "beta") else "*bf16"
+                for name in (*names, "res", "out")
+            },
+            {
+                "pixels": pixels,
+                "eps": eps,
+                "c_div": c_div,
+                "c_add": c_add,
+                "c_mul": c_mul,
+                **launch,
+            },
+            sm,
+            dual_chain_kernels.OPTIONS,
+        )
+        blocks = (pixels + launch["bm"] - 1) // launch["bm"]
+        return kernel_launch(checked(kernel), (blocks, 1, 1))
+
     @trtp.register(plugin("chainb"))
     @resolved
     def chain_b_shape(
@@ -738,6 +839,57 @@ def _register_chains(key: str, sm: int) -> None:
                 **dict.fromkeys(("g_ptr", "r_ptr", "w_ptr", "b_ptr"), "*bf16"),
                 **dict.fromkeys(("gamma_ptr", "beta_ptr"), "*fp32"),
                 **dict.fromkeys(("res_ptr", "y_ptr"), "*bf16"),
+            },
+            {"pixels": pixels, "eps": eps, **launch},
+            sm,
+            dual_chain_kernels.OPTIONS,
+        )
+        blocks = (pixels + launch["bm"] - 1) // launch["bm"]
+        return kernel_launch(checked(kernel), (blocks, 1, 1))
+
+    @trtp.register(plugin("chainf"))
+    @resolved
+    def chain_f_shape(
+        g: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        w: trtp.TensorDesc,
+        b: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        wq: trtp.TensorDesc,
+        bq: trtp.TensorDesc,
+        eps: float,
+    ) -> tuple[trtp.TensorDesc, trtp.TensorDesc, trtp.TensorDesc]:
+        s = r.shape_expr
+        return (
+            r.like(),
+            r.like(),
+            trtp.from_shape_expr((s[0], s[1], s[2], 384), trt.bfloat16),
+        )
+
+    @trtp.aot_impl(plugin("chainf"))
+    @resolved
+    def chain_f_launch(
+        g: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        w: trtp.TensorDesc,
+        b: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        wq: trtp.TensorDesc,
+        bq: trtp.TensorDesc,
+        eps: float,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        pixels = _elements(r) // dual_chain_kernels.CHANNELS
+        launch = dual_chain_kernels.CHAIN_B_LAUNCH
+        names = ("g", "r", "w", "b", "gamma", "beta", "wq", "bq", "res", "y", "qkv")
+        kernel = compile_kernel(
+            dual_chain_kernels.chain_f,
+            {
+                f"{name}_ptr": "*fp32" if name in ("gamma", "beta") else "*bf16"
+                for name in names
             },
             {"pixels": pixels, "eps": eps, **launch},
             sm,
@@ -1096,6 +1248,24 @@ def register_dynamic(channels: int) -> None:
             [height, width],
         )
 
+    @trtp.register(plugin("boxmean"))
+    @resolved
+    def dynamic_boxmean_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
+        s = x.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[2], s[3]), trt.float32)
+
+    @trtp.aot_impl(plugin("boxmean"))
+    @resolved
+    def dynamic_boxmean_launch(
+        x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
+    ) -> Launch:
+        height, width, _, _ = _trunk(x)
+        return kernel_launch(
+            box_mean_kernel(channels, sm),
+            dual_box_mean_kernel.grid(height, width, channels, trtp.cdiv),
+            [height, width],
+        )
+
     @trtp.register(plugin("xr"))
     @resolved
     def dynamic_xr_shape(
@@ -1304,6 +1474,54 @@ class _Sites:
             return users[0]
         return None
 
+    def single(self, tensor: str) -> bool:
+        return len(self.users.get(tensor, [])) == 1 and not self.plugin_users.get(
+            tensor
+        )
+
+    def linear(self, tensor: str) -> tuple[str, str, str] | None:
+        """(x, W, b) of tensor = Add(MatMul(x, W [C, C]), b [C]), each read once."""
+        c = dual_chain_kernels.CHANNELS
+        add = self.producer.get(tensor)
+        if (
+            add is None
+            or add.op_type != "Add"
+            or self.dims(add.input[1]) != [c]
+            or not self.single(tensor)
+        ):
+            return None
+        matmul = self.producer.get(add.input[0])
+        if (
+            matmul is None
+            or matmul.op_type != "MatMul"
+            or self.dims(matmul.input[1]) != [c, c]
+            or not self.single(matmul.output[0])
+        ):
+            return None
+        return matmul.input[0], matmul.input[1], add.input[1]
+
+    def gated(self, tensor: str) -> tuple[str, tuple[str, str, str]] | None:
+        """(na, (a, Wg, bg)) of tensor = Mul(na, Sigmoid(Add(MatMul(a, Wg), bg))), in
+        either operand order, each intermediate read once."""
+        mul = self.producer.get(tensor)
+        if mul is None or mul.op_type != "Mul" or not self.single(tensor):
+            return None
+        for attended, gated in (
+            (mul.input[0], mul.input[1]),
+            (mul.input[1], mul.input[0]),
+        ):
+            sigmoid = self.producer.get(gated)
+            if (
+                sigmoid is None
+                or sigmoid.op_type != "Sigmoid"
+                or not self.single(gated)
+            ):
+                continue
+            gate = self.linear(sigmoid.input[0])
+            if gate is not None:
+                return attended, gate
+        return None
+
     def unused(self, tensor: str) -> bool:
         return not (
             self.users.get(tensor)
@@ -1384,14 +1602,16 @@ def _add_readers(lowered: Lowered, label: str, tensors: list[str]) -> None:
         lowered.readers[reader] = tensor
 
 
-def _fuse_chain_a(lowered: Lowered, key: str) -> int:
+def _fuse_chain_a(lowered: Lowered, key: str, gated: bool) -> int:
     """Chain A sites (dual_chain_kernels.chain_a) as one plugin each:
     g -> MatMul(W1 [C, C]) -> Add(b1) -> Add(r, .) = s -> Norm (sigma unused) ->
     MatMul(W2 [C, 2C]) -> Add(b2) = h -> GELU. The plugin takes (g, r, W1, b1, gamma,
     beta, W2, b2) and gives (s, the GELU output); the replaced nodes stay as stand-ins,
     dead once `attach` moves their readers to the plugin. Chain C sites, where s is a
     DualProject plugin's output (x, W1, r), become one plugin with that one's place
-    (x, r, W1, W1 for the unread bias, gamma, beta, W2, b2)."""
+    (x, r, W1, W1 for the unread bias, gamma, beta, W2, b2). Chain E sites, where g is
+    an attention output gated as `_Sites.gated` reads it, take (a, Wg, bg, na) in g's
+    place: (a, Wg, bg, na, r, W1, b1, gamma, beta, W2, b2); only with `gated`."""
     sites = _Sites(lowered)
     c = dual_chain_kernels.CHANNELS
     projects = {p.outputs[0]: p for p in lowered.plugins if p.op.startswith("project_")}
@@ -1446,26 +1666,33 @@ def _fuse_chain_a(lowered: Lowered, key: str) -> int:
             _scalar(sites.consts[n.input[1]]) for n in (div, add, scale)
         )
         weights = [matmul.input[1], bias_add.input[1], expand.input[1], bias.input[1]]
+        attributes = {
+            "eps": float(plugin.attributes["epsilon"]),
+            "c_div": c_div,
+            "c_add": c_add,
+            "c_mul": c_mul,
+        }
+        tail = [r, weights[0], weights[1], plugin.inputs[1], plugin.inputs[2]]
+        gate = sites.gated(matmul.input[0]) if gated else None
+        if gate is not None:
+            attended, (a, wg, bg) = gate
+            kept.append(
+                Plugin(
+                    f"chaine_{key}",
+                    [a, wg, bg, attended, *tail, *weights[2:]],
+                    [s, out.output[0]],
+                    attributes,
+                )
+            )
+            _add_readers(lowered, f"chaine_{count}", [wg, bg, *weights])
+            count += 1
+            continue
         kept.append(
             Plugin(
                 f"chaina_{key}",
-                [
-                    matmul.input[0],
-                    r,
-                    weights[0],
-                    weights[1],
-                    plugin.inputs[1],
-                    plugin.inputs[2],
-                    weights[2],
-                    weights[3],
-                ],
+                [matmul.input[0], *tail, *weights[2:]],
                 [s, out.output[0]],
-                {
-                    "eps": float(plugin.attributes["epsilon"]),
-                    "c_div": c_div,
-                    "c_add": c_add,
-                    "c_mul": c_mul,
-                },
+                attributes,
             )
         )
         _add_readers(lowered, f"chaina_{count}", weights)
@@ -1474,10 +1701,13 @@ def _fuse_chain_a(lowered: Lowered, key: str) -> int:
     return count
 
 
-def _fuse_chain_b(lowered: Lowered, key: str) -> int:
+def _fuse_chain_b(lowered: Lowered, key: str, qkv: bool) -> int:
     """Chain B sites (dual_chain_kernels.chain_b) as one plugin each, after chain A,
     whose Norms are no longer Norm plugins: g [.., 2C] -> MatMul(W [2C, C]) -> Add(b)
-    -> Add(r, .) = s -> Norm (sigma unused) = y; (g, r, W, b, gamma, beta) -> (s, y)."""
+    -> Add(r, .) = s -> Norm (sigma unused) = y; (g, r, W, b, gamma, beta) -> (s, y).
+    Chain F sites, where exactly one of y's readers is MatMul(Wq [C, 3C]) -> Add(bq [3C])
+    (an attention layer's qkv), also give that sum: (.., Wq, bq) -> (s, y, qkv); only
+    with `qkv`."""
     sites = _Sites(lowered)
     c = dual_chain_kernels.CHANNELS
     kept: list[Plugin] = []
@@ -1486,7 +1716,7 @@ def _fuse_chain_b(lowered: Lowered, key: str) -> int:
         if not plugin.op.startswith("norm_"):
             kept.append(plugin)
             continue
-        s, sigma = plugin.inputs[0], plugin.outputs[1]
+        s, y, sigma = plugin.inputs[0], plugin.outputs[0], plugin.outputs[1]
         found = sites.projection(sites.producer.get(s), [2 * c, c], [c])
         if not sites.unused(sigma) or found is None:
             kept.append(plugin)
@@ -1494,14 +1724,31 @@ def _fuse_chain_b(lowered: Lowered, key: str) -> int:
         source, bias_add, matmul = found
         r = next(name for name in sites.producer[s].input if name != source)
         weights = [matmul.input[1], bias_add.input[1]]
-        kept.append(
-            Plugin(
-                f"chainb_{key}",
-                [matmul.input[0], r, *weights, plugin.inputs[1], plugin.inputs[2]],
-                [s, plugin.outputs[0]],
-                {"eps": float(plugin.attributes["epsilon"])},
+        inputs = [matmul.input[0], r, *weights, plugin.inputs[1], plugin.inputs[2]]
+        attributes = {"eps": float(plugin.attributes["epsilon"])}
+        products = [
+            (reader, bias)
+            for reader in sites.users.get(y, [])
+            if reader.op_type == "MatMul"
+            and sites.dims(reader.input[1]) == [c, 3 * c]
+            and (bias := sites.only_user(reader.output[0], "Add")) is not None
+            and sites.dims(bias.input[1]) == [3 * c]
+        ]
+        if qkv and len(products) == 1:
+            product, bias = products[0]
+            fused = [product.input[1], bias.input[1]]
+            kept.append(
+                Plugin(
+                    f"chainf_{key}",
+                    [*inputs, *fused],
+                    [s, y, bias.output[0]],
+                    attributes,
+                )
             )
-        )
+            _add_readers(lowered, f"chainf_{count}", [*weights, *fused])
+            count += 1
+            continue
+        kept.append(Plugin(f"chainb_{key}", inputs, [s, y], attributes))
         _add_readers(lowered, f"chainb_{count}", weights)
         count += 1
     lowered.plugins[:] = kept
@@ -1516,32 +1763,6 @@ def _fuse_chain_d(lowered: Lowered, key: str) -> int:
     once, by the next layer only."""
     sites = _Sites(lowered)
     c = dual_chain_kernels.CHANNELS
-
-    def single(tensor: str) -> bool:
-        return len(sites.users.get(tensor, [])) == 1 and not sites.plugin_users.get(
-            tensor
-        )
-
-    def linear(tensor: str) -> tuple[str, str, str] | None:
-        """(x, W, b) of tensor = Add(MatMul(x, W [C, C]), b [C])."""
-        add = sites.producer.get(tensor)
-        if (
-            add is None
-            or add.op_type != "Add"
-            or sites.dims(add.input[1]) != [c]
-            or not single(tensor)
-        ):
-            return None
-        matmul = sites.producer.get(add.input[0])
-        if (
-            matmul is None
-            or matmul.op_type != "MatMul"
-            or sites.dims(matmul.input[1]) != [c, c]
-            or not single(matmul.output[0])
-        ):
-            return None
-        return matmul.input[0], matmul.input[1], add.input[1]
-
     kept: list[Plugin] = []
     count = 0
     for plugin in lowered.plugins:
@@ -1553,35 +1774,21 @@ def _fuse_chain_d(lowered: Lowered, key: str) -> int:
         hit = None
         if sites.unused(sigma) and residual is not None and residual.op_type == "Add":
             for name in residual.input:
-                projection = linear(name)
+                projection = sites.linear(name)
                 if projection is None:
                     continue
-                mul = sites.producer.get(projection[0])
-                if mul is None or mul.op_type != "Mul" or not single(projection[0]):
+                gated = sites.gated(projection[0])
+                if gated is None:
                     continue
-                for attended, gated in (
-                    (mul.input[0], mul.input[1]),
-                    (mul.input[1], mul.input[0]),
+                attended, gate = gated
+                readers = sites.users.get(y, [])
+                if (
+                    len(readers) == 1
+                    and readers[0].op_type == "MatMul"
+                    and sites.dims(readers[0].input[1]) == [c, 3 * c]
+                    and not sites.plugin_users.get(y)
                 ):
-                    sigmoid = sites.producer.get(gated)
-                    if (
-                        sigmoid is None
-                        or sigmoid.op_type != "Sigmoid"
-                        or not single(gated)
-                    ):
-                        continue
-                    gate = linear(sigmoid.input[0])
-                    if gate is None:
-                        continue
-                    readers = sites.users.get(y, [])
-                    if (
-                        len(readers) == 1
-                        and readers[0].op_type == "MatMul"
-                        and sites.dims(readers[0].input[1]) == [c, 3 * c]
-                        and not sites.plugin_users.get(y)
-                    ):
-                        hit = (name, projection, attended, gate, readers[0])
-                    break
+                    hit = (name, projection, attended, gate, readers[0])
         if hit is None or residual is None:
             kept.append(plugin)
             continue
@@ -1613,15 +1820,17 @@ def _fuse_chain_d(lowered: Lowered, key: str) -> int:
     return count
 
 
-def fuse_chains(lowered: Lowered, key: str) -> tuple[int, int, int]:
+def fuse_chains(lowered: Lowered, key: str, dual: bool) -> tuple[int, int, int]:
     """Chain A's, chain D's, then chain B's sites as plugins (the order the kernels were
     measured in), for a static key of the kernels' width (a dynamic or other-width model
-    is left as it is); the sites fused of each."""
+    is left as it is); the sites fused of each. `dual`: the lowering is DUAL's own
+    (`lower`), whose chain A and B sites also take chains E's and F's forms; RDUAL's
+    engines (rdual_aot.lower) keep the four chains they were checked with."""
     if "_h" not in key or Geometry.of(key).channels != dual_chain_kernels.CHANNELS:
         return 0, 0, 0
-    a = _fuse_chain_a(lowered, key)
+    a = _fuse_chain_a(lowered, key, dual)
     d = _fuse_chain_d(lowered, key)
-    return a, _fuse_chain_b(lowered, key), d
+    return a, _fuse_chain_b(lowered, key, dual), d
 
 
 def lower(model: onnx.ModelProto, key: str, chains: bool = True) -> Lowered:
@@ -1750,6 +1959,19 @@ def lower(model: onnx.ModelProto, key: str, chains: bool = True) -> Lowered:
                 )
             )
             plugins.append(Plugin(f"rowsum_{key}", inputs, outputs))
+        elif op == f"DualBoxMean_{key}_TRT":
+            # Input x [1, H, W, C] BF16; the output, its FP32 neighborhood means.
+            attributes = {a.name: helper.get_attribute_value(a) for a in node.attribute}
+            window = dual_box_mean_kernel.LAUNCH["window"]
+            if int(attributes["neighbourhood"]) != window:
+                raise ValueError(
+                    "DUAL's box-mean plugin takes a neighborhood of"
+                    f" {window}, not {attributes['neighbourhood']}"
+                )
+            nodes.append(
+                helper.make_node("Cast", inputs, outputs, to=TensorProto.FLOAT)
+            )
+            plugins.append(Plugin(f"boxmean_{key}", inputs, outputs))
         elif op == "DualAttentionBarrier_TRT":
             identity(inputs[0], outputs[0])
             barrier = "barrier_dynamic" if dynamic else "barrier"
@@ -1776,7 +1998,7 @@ def lower(model: onnx.ModelProto, key: str, chains: bool = True) -> Lowered:
     result = Lowered(lowered, plugins, readers)
     _lower_router_additions(result, channels)
     if chains:
-        fuse_chains(result, key)
+        fuse_chains(result, key, dual=True)
     return result
 
 
@@ -1832,6 +2054,7 @@ __all__ = [
     "Lowered",
     "Plugin",
     "attach",
+    "box_mean_kernel",
     "compile_kernel",
     "device_sm",
     "fuse_chains",

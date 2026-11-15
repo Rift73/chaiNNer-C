@@ -20,6 +20,8 @@ Shape at run time:
   length) per axis read at run time; a coarse grid that fits 48 per axis is one 96 px
   block, the source's single-block attention; an NHWC router mean is
   DualRowSum_c128_TRT's FP32 row sums, divided by the run-time H * W;
+- expert routing per position (routing_na): DualBoxMean_c128_TRT takes K = min(96, L)
+  per axis at run time; the routed blend writes no size;
 - depthwise shifted sums slice with negative ends; pixel (un)shuffles read their sizes.
 The rest (convolutions, plugin nodes, tail) is graph.py unchanged. Plugin nodes carry a
 width-only key (DualCore_c128_TRT), which chaiNNer-C lowers to its dynamic plugins.
@@ -38,15 +40,26 @@ from onnx import TensorProto as T
 
 from .export import make_model, read_state, save_onnx
 from .graph import Graph
-from .spec import CONTEXT, FACTORIES, LOCAL, RETRIEVAL, SCHEMA, SOURCE_SHA256, sha256
+from .spec import (
+    CONTEXT,
+    FACTORIES,
+    LOCAL,
+    RETRIEVAL,
+    ROUTING,
+    SCHEMA,
+    SOURCE_SHA256,
+    routed_parts,
+    sha256,
+)
 
 END = np.iinfo(np.int64).max
 
 
 class DynamicGraph(Graph):
-    def __init__(self, arch, channels, alignment):
+    def __init__(self, arch, channels, alignment, routing_na=False):
         """alignment: every trunk size the engine will see is a multiple of it, so
-        unshifted windows that divide it are regular (no gathers)."""
+        unshifted windows that divide it are regular (no gathers); routing_na: as
+        Graph's (its plugin reads the trunk's size at run time)."""
         key = f"c{channels}"
         super().__init__(
             arch,
@@ -56,6 +69,7 @@ class DynamicGraph(Graph):
             local_na=True,
             retrieval_na=True,
             row_sums=True,
+            routing_na=routing_na,
         )
         self.alignment = alignment
         # The tail's current scale against the network input, while in the tail.
@@ -355,10 +369,19 @@ class DynamicGraph(Graph):
 
 
 def export_dynamic(
-    factory, scale, alignment, checkpoint, output, *, state_key=None, folded=False
+    factory,
+    scale,
+    alignment,
+    checkpoint,
+    output,
+    *,
+    state_key=None,
+    folded=False,
+    routing_na=False,
 ):
-    """export.py's export_checkpoint for a dynamic-shape graph (same checks); every
-    input size the engine will see must be a multiple of `alignment`."""
+    """export.py's export_checkpoint for a dynamic-shape graph (same checks and
+    options); every input size the engine will see must be a multiple of
+    `alignment`."""
     import onnx
 
     checkpoint, output = Path(checkpoint).resolve(), Path(output).resolve()
@@ -380,7 +403,10 @@ def export_dynamic(
         # stride-2 downsample and the slot packs need an even trunk.
         raise ValueError("The input alignment must be a multiple of 4")
     graph = DynamicGraph(
-        arch, model.embed_dim, alignment // (2 if model.unshuffle else 1)
+        arch,
+        model.embed_dim,
+        alignment // (2 if model.unshuffle else 1),
+        routing_na=routing_na,
     )
     with torch.inference_mode():
         onnx_model = graph.build(model)
@@ -411,6 +437,11 @@ def export_dynamic(
         "context": CONTEXT,
         "local": LOCAL,
         "retrieval": RETRIEVAL,
+        **(
+            {"routing": ROUTING, "routed_parts": routed_parts(model)}
+            if graph.routing_sites
+            else {}
+        ),
         "precision": "FP32_IO_BF16_FP32_BODY",
         "dynamic_sites": graph.dynamic_sites,
         "plugin_names": [
@@ -420,7 +451,8 @@ def export_dynamic(
         + ([f"DualNA_{key}_TRT"] if graph.na_sites else [])
         + ([f"DualLocalNA_{key}_TRT"] if graph.local_sites else [])
         + ([f"DualXR_{key}_TRT"] if graph.retrieval_sites else [])
-        + ([f"DualRowSum_{key}_TRT"] if graph.row_sum_sites else []),
+        + ([f"DualRowSum_{key}_TRT"] if graph.row_sum_sites else [])
+        + ([f"DualBoxMean_{key}_TRT"] if graph.box_mean_sites else []),
         "files": {
             p.name: sha256(p)
             for p in (output / "model.onnx", output / "weights.bin")
@@ -442,6 +474,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--state-key")
     parser.add_argument("--folded", action="store_true")
+    parser.add_argument("--routing-na", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     print(json.dumps(export_dynamic(**vars(parser.parse_args())), indent=2))
 

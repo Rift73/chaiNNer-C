@@ -16,6 +16,7 @@ works on the export's copy."""
 from __future__ import annotations
 
 import copy
+from typing import Callable, cast
 
 import torch
 from spandrel import ModelDescriptor
@@ -37,9 +38,6 @@ class _Fp32Convolution(nn.Module):
     """The convolution in FP32 and an FP16 output. Its weights are buffers: they are the
     only FP32 tensors of the copy, and the copy's type is its parameters'."""
 
-    weight: torch.Tensor
-    bias: torch.Tensor | None
-
     def __init__(self, source: nn.Conv2d) -> None:
         # Its forward takes the stride and padding alone
         if (
@@ -53,6 +51,8 @@ class _Fp32Convolution(nn.Module):
             )
         super().__init__()
         bias = source.bias
+        self.weight: torch.Tensor
+        self.bias: torch.Tensor | None
         self.register_buffer("weight", source.weight.detach().float())
         self.register_buffer("bias", None if bias is None else bias.detach().float())
         self.stride = source.stride
@@ -68,7 +68,7 @@ class _Fp32Convolution(nn.Module):
 class _Fp16Repeat(nn.Module):
     """PLKSR's image skip, which would turn the sum after it and the output to FP32."""
 
-    def __init__(self, source: nn.Module) -> None:
+    def __init__(self, source: Callable[[torch.Tensor], torch.Tensor]) -> None:
         super().__init__()
         self.source = source
 
@@ -89,7 +89,7 @@ def fp32_first_convolution(model: ModelDescriptor) -> _Fp32Convolution | None:
         module = copy.deepcopy(module).float()
         module.update_params()
         module = module.eval_conv
-    return _Fp32Convolution(module)
+    return _Fp32Convolution(cast(nn.Conv2d, module))
 
 
 def take_fp32_input(model: ModelDescriptor, first: _Fp32Convolution | None) -> None:

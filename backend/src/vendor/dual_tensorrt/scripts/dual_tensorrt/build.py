@@ -155,12 +155,18 @@ def engine(export_dir, plugins_file, output, *, trtexec="trtexec", execute=False
         lambda p: Path(p).resolve(), (export_dir, plugins_file, output)
     )
     export = read_verified(export_dir, "export.json")
-    aot_only = ("DualNA_", "DualLocalNA_", "DualXR_", "DualRowSum_")
+    aot_only = (
+        "DualNA_",
+        "DualLocalNA_",
+        "DualXR_",
+        "DualRowSum_",
+        "DualBoxMean_",
+    )
     if any(name.startswith(aot_only) for name in export["plugin_names"]):
         raise ValueError(
             "The native plugin bundle has no neighborhood-attention (DualNA,"
-            " DualLocalNA, DualXR) or DualRowSum plugin; chaiNNer-C builds these exports"
-            " with its AOT plugins"
+            " DualLocalNA, DualXR), DualRowSum or DualBoxMean plugin; chaiNNer-C builds"
+            " these exports with its AOT plugins"
         )
     plugins = json.loads(plugins_file.read_text(encoding="utf-8"))
     if (

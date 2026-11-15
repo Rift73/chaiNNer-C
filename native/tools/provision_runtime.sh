@@ -49,7 +49,7 @@ jet_index="https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple"
 # ROCm's meta package, bundled (see --rocm); the ROCm version its kernel wheels have.
 rocm_pin="rocm==10.0.0+chainner"
 rocm_version="10.0.0"
-spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c21/spandrel-0.4.2%2Bc21-py3-none-any.whl#sha256=470a105f33470f1a2cd5a3b6900f3b00329875e9ab20a473e02298d0295df362"
+spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c22/spandrel-0.4.2%2Bc22-py3-none-any.whl#sha256=a989c94501afa50121bbcab9090bf672020541aa986fc3ff14d197cad1eb082b"
 
 die() {
     echo "error: $*" >&2

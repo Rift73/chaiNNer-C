@@ -20,6 +20,10 @@ CONTEXT = "na-v1"
 # earlier exports (local windows, 96 px retrieval blocks).
 LOCAL = "na-v1"
 RETRIEVAL = "na-v1"
+# The expert routing per position (the manifest's "routing"): the source's routing_na,
+# an export option off by default. A manifest holds the key only when its graph has
+# those sites; without it the router takes the global mean.
+ROUTING = "na-v1"
 
 
 def sha256(path: Path) -> str:
@@ -48,11 +52,7 @@ class Specialization:
             raise ValueError("Static B1 export requires H/W >=4 and multiples of 4")
         if self.channels not in (128, 160, 192, 224, 256):
             raise ValueError("Unsupported canonical factory width")
-        h, w = self.trunk
-        if 3 * h * w * self.channels >= 2**31:
-            raise ValueError(
-                "Specialization exceeds the kernels' 32-bit indexing bound"
-            )
+        check_indexing(*self.trunk, self.channels)
 
     @property
     def trunk(self):
@@ -76,6 +76,25 @@ class Specialization:
             "internal_scale": self.internal_scale,
             "plugin_key": self.plugin_key,
         }
+
+
+def check_indexing(height, width, channels, parts=3):
+    """Refuse a trunk whose largest per-position tensor, [1, H, W, parts * C], passes the
+    kernels' and TensorRT's 32-bit element indexing: the qkv (parts = 3), or with
+    routing_na the routed convolution's base and experts but the last (parts = the
+    experts, `routed_parts`)."""
+    if parts * height * width * channels >= 2**31:
+        raise ValueError("Specialization exceeds the kernels' 32-bit indexing bound")
+
+
+def routed_parts(model):
+    """The channel blocks (of C) the routed convolution writes: the base and each
+    expert but the last, as many as the model's experts."""
+    return max(
+        m.experts.shape[0]
+        for m in model.modules()
+        if hasattr(m, "experts") and hasattr(m, "router")
+    )
 
 
 def from_model(model, factory, scale, height, width):

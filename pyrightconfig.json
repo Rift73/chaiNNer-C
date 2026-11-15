@@ -14,6 +14,7 @@
 	"venv": "cpython-3.14.8",
 	"extraPaths": [
 		"backend/src",
+		"backend/tests",
 		"native/tools",
 		"native/.venv/Lib/site-packages"
 	],

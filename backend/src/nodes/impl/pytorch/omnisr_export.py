@@ -110,5 +110,5 @@ def for_export(model: _Descriptor) -> _Descriptor:
         elif isinstance(module, Channel_Attention_grid):
             net.set_submodule(name, ChannelAttentionGrid(module))
         elif isinstance(module, SqueezeExcitation):
-            module.get_submodule("gate")[0] = _ImageMean()
+            module.gate[0] = _ImageMean()
     return model

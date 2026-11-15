@@ -1,5 +1,5 @@
-"""RDUAL's TensorRT engine sets: whether a model may have one here, its key, and the
-set itself through the Engine Cache (build_cache.cached_engine, one entry per set). A
+"""RDUAL's TensorRT engine sets: a set's key, and the set itself through the Engine
+Cache (build_cache.cached_engine, one entry per set). A
 set is built in two child processes as dual.py builds DUAL's engines: the export
 (rdual_export.py) and the build of every part with its plugins (rdual_engine_worker.py,
 which needs Triton); the parts are then packed into one container (rdual_engine_set.py).
@@ -57,23 +57,6 @@ _RECIPE_SOURCES = (
 )
 
 
-def unavailable(model: ImageModelDescriptor, device: torch.device) -> str | None:
-    """Why this model has no engine set on this machine, or None if it may ("" for a
-    machine without NVIDIA's TensorRT, which is no surprise worth a warning)."""
-    from ..pytorch.auto_engine import migraphx_here, no_engine_here
-
-    if model.architecture.id != "RDUAL":
-        return f"{model.architecture.name} is not a temporal model."
-    if model.scale not in CHECKED_SCALES:
-        return f"RDUAL's engines are checked for {CHECKED_SCALES} scale only."
-    reason = no_engine_here(device)
-    if reason is not None:
-        return reason
-    if migraphx_here():
-        return ""
-    return None
-
-
 @cache
 def recipe_identity() -> str:
     """The SHA-256 of the code a set is exported and built with: these modules, DUAL's
@@ -114,7 +97,7 @@ def engine_key(
     the flow's precision recipe included."""
     import tensorrt as trt
 
-    from ..pytorch.auto_engine import weights_digest
+    from ..pytorch.utils import weights_digest
     from .build_cache import FORMAT_VERSION
     from .memory import get_cuda_compute_capability, get_cuda_device_name
 
@@ -163,11 +146,13 @@ def export(
     gpu_index: int | None,
     context: NodeContext | None = None,
     flow: str | None = None,
+    routing_na: bool = False,
 ) -> dict:
     """rdual_export.py's parts of the model for frames of height x width in `folder`;
     returns their manifest. The flow part is traced on the GPU `gpu_index` (the one the
     build uses), else on the CPU, which takes minutes at video sizes (the graphs are the
-    same either way)."""
+    same either way). routing_na: the expert routing per position (the manifest's
+    "routing"; Convert To ONNX's High Quality), whatever the model's own switches."""
     on_gpu = gpu_index is not None and torch.cuda.is_available()
     device = f"cuda:{gpu_index}" if on_gpu else "cpu"
     with tempfile.TemporaryDirectory(prefix="chaiNNer-rdual-weights-") as temporary:
@@ -182,6 +167,7 @@ def export(
                 str(width),
                 device,
                 flow or "",
+                "1" if routing_na else "",
             ],
             "RDUAL export",
             SOURCE,
@@ -295,9 +281,11 @@ def build_set(
     timing_cache_directory: str | None = None,
     flow: str | None = None,
 ) -> TensorRTEngine:
-    """Export, build and pack the model's set for frames of height x width; with the
-    Timing Cache folder, its build keeps its timing cache there. `flow` names the flow's
-    precision recipe; None lets the size choose it."""
+    """Export, build and pack the model's three-site set (no expert routing per
+    position: that is Convert To ONNX's High Quality, which Build Engine builds from its
+    bundle) for frames of height x width; with the Timing Cache folder, its build keeps
+    its timing cache there. `flow` names the flow's precision recipe; None lets the size
+    choose it."""
     with tempfile.TemporaryDirectory(prefix="chaiNNer-rdual-engines-") as temporary:
         root = Path(temporary)
         manifest = export(
@@ -365,6 +353,5 @@ __all__ = [
     "recipe_identity",
     "set_info",
     "timing_cache_file",
-    "unavailable",
     "write_weights",
 ]

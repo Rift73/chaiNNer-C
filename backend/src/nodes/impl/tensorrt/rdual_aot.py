@@ -629,7 +629,7 @@ def lower(model: onnx.ModelProto, key: str | None) -> dual_aot.Lowered:
         lowered.plugins.insert(position, plugin)
     # DUAL's chain sites last, so that a tensor RDUAL's plugins read stays outside them
     if key is not None:
-        dual_aot.fuse_chains(lowered, key)
+        dual_aot.fuse_chains(lowered, key, dual=False)
     return lowered
 
 

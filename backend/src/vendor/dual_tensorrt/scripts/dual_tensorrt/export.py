@@ -12,10 +12,13 @@ from .spec import (
     FACTORIES,
     LOCAL,
     RETRIEVAL,
+    ROUTING,
     SCHEMA,
     SOURCE,
     SOURCE_SHA256,
+    check_indexing,
     from_model,
+    routed_parts,
     sha256,
 )
 
@@ -136,8 +139,19 @@ def save_onnx(model, output):
 
 
 def export_checkpoint(
-    factory, scale, height, width, checkpoint, output, *, state_key=None, folded=False
+    factory,
+    scale,
+    height,
+    width,
+    checkpoint,
+    output,
+    *,
+    state_key=None,
+    folded=False,
+    routing_na=False,
 ):
+    """routing_na: the source's expert routing per position (Graph's option of that
+    name), off by default."""
     import onnx
     import torch
     from .graph import Graph
@@ -152,6 +166,8 @@ def export_checkpoint(
     torch.set_num_threads(1)
     arch, model = make_model(factory, scale)
     spec = from_model(model, factory, scale, height, width)
+    if routing_na:
+        check_indexing(*spec.trunk, spec.channels, routed_parts(model))
     if folded:
         model.prepare_for_export()
     model.load_state_dict(read_state(checkpoint, state_key), strict=True)
@@ -164,6 +180,7 @@ def export_checkpoint(
         local_na=model.local_na,
         retrieval_na=model.retrieval_na,
         row_sums=True,
+        routing_na=routing_na,
     )
     with torch.inference_mode():
         onnx_model = graph.build(model)
@@ -182,6 +199,11 @@ def export_checkpoint(
         "context": CONTEXT,
         "local": LOCAL,
         "retrieval": RETRIEVAL,
+        **(
+            {"routing": ROUTING, "routed_parts": routed_parts(model)}
+            if graph.routing_sites
+            else {}
+        ),
         "precision": "FP32_IO_BF16_FP32_BODY",
         "dynamic_sites": graph.dynamic_sites,
         "plugin_names": [
@@ -191,7 +213,8 @@ def export_checkpoint(
         + ([f"DualNA_{spec.plugin_key}_TRT"] if graph.na_sites else [])
         + ([f"DualLocalNA_{spec.plugin_key}_TRT"] if graph.local_sites else [])
         + ([f"DualXR_{spec.plugin_key}_TRT"] if graph.retrieval_sites else [])
-        + ([f"DualRowSum_{spec.plugin_key}_TRT"] if graph.row_sum_sites else []),
+        + ([f"DualRowSum_{spec.plugin_key}_TRT"] if graph.row_sum_sites else [])
+        + ([f"DualBoxMean_{spec.plugin_key}_TRT"] if graph.box_mean_sites else []),
         "files": {
             p.name: sha256(p)
             for p in (output / "model.onnx", output / "weights.bin")
@@ -214,6 +237,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--state-key")
     parser.add_argument("--folded", action="store_true")
+    parser.add_argument("--routing-na", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(export_checkpoint(**vars(args)), indent=2))

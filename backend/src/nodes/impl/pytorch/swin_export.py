@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import torch
 from spandrel import ModelDescriptor
@@ -51,6 +51,7 @@ from spandrel.architectures.SwinIR.__arch.SwinIR import (
     SwinTransformerBlock as SwinirBlock,
 )
 from torch import nn
+from typing_extensions import override
 
 from .omnisr_export import unit_length
 
@@ -93,9 +94,11 @@ class _RgtAttention(L_SA):
     def __init__(self, source: L_SA) -> None:
         _adopt(self, source)
 
-    def calculate_mask(self, height: int, width: int) -> tuple[torch.Tensor, ...]:
+    @override
+    def calculate_mask(self, H: int, W: int) -> tuple[torch.Tensor, torch.Tensor]:
         dtype = self.proj.weight.dtype
-        return tuple(mask.to(dtype) for mask in super().calculate_mask(height, width))
+        first, second = super().calculate_mask(H, W)
+        return first.to(dtype), second.to(dtype)
 
 
 _MASKED: dict[type[nn.Module], type[nn.Module]] = {
@@ -115,8 +118,9 @@ class _UnitLengthAttention(Swin2srAttention):
     ) -> torch.Tensor:
         b, n, c = x.shape
         bias = None
-        if self.q_bias is not None:
-            bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias), self.v_bias))
+        q_bias, v_bias = self.q_bias, self.v_bias
+        if q_bias is not None and v_bias is not None:
+            bias = torch.cat((q_bias, torch.zeros_like(v_bias), v_bias))
         qkv = nn.functional.linear(x, self.qkv.weight, bias)
         qkv = qkv.reshape(b, n, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
@@ -126,7 +130,9 @@ class _UnitLengthAttention(Swin2srAttention):
 
         table = self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads)
         side = self.window_size[0] * self.window_size[1]
-        position = table[self.relative_position_index.view(-1)].view(side, side, -1)
+        position = table[self.get_buffer("relative_position_index").view(-1)].view(
+            side, side, -1
+        )
         attn = attn + 16 * torch.sigmoid(position.permute(2, 0, 1)).unsqueeze(0)
 
         if mask is not None:
@@ -139,7 +145,7 @@ class _UnitLengthAttention(Swin2srAttention):
         return self.proj_drop(self.proj((attn @ v).transpose(1, 2).reshape(b, n, c)))
 
 
-def _keep_last_group_end_in_fp32(arch: str, net: nn.Module) -> None:
+def _keep_last_group_end_in_fp32(arch: str, net: Any) -> None:
     group = net.layers[-1]
     if arch == "DRCT":
         group.adjust5 = FP32Conv2d(group.adjust5)

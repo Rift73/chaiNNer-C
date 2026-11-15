@@ -57,6 +57,7 @@ _DUAL_PLUGIN_SOURCES = (
     Path(__file__).with_name("dual_na_kernel.py"),
     Path(__file__).with_name("dual_local_na_kernel.py"),
     Path(__file__).with_name("dual_retrieval_na_kernel.py"),
+    Path(__file__).with_name("dual_box_mean_kernel.py"),
     Path(__file__).with_name("dual_row_sum_kernel.py"),
     Path(__file__).with_name("dual_engine_worker.py"),
     dual.VENDOR / "scripts" / "dual_tensorrt" / "kernels.py",

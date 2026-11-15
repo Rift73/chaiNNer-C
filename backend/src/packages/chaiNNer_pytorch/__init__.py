@@ -193,12 +193,12 @@ package = add_package(
             # The fork's build of 0.4.2: adds DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR,
             # GFISRv2 and RDUAL, FP16-safe and faster inference and exports, and HIP
             # kernels under ROCm.
-            version="0.4.2+c21",
+            version="0.4.2+c22",
             size_estimate=600 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c21/"
-                "spandrel-0.4.2%2Bc21-py3-none-any.whl"
-                "#sha256=470a105f33470f1a2cd5a3b6900f3b00329875e9ab20a473e02298d0295df362"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c22/"
+                "spandrel-0.4.2%2Bc22-py3-none-any.whl"
+                "#sha256=a989c94501afa50121bbcab9090bf672020541aa986fc3ff14d197cad1eb082b"
             ),
         ),
         Dependency(

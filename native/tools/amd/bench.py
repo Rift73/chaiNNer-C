@@ -175,6 +175,7 @@ class Bench:
                 DualShape.DYNAMIC,
                 512,
                 512,
+                False,
             )[0]
         return self.onnx_models[role]
 
@@ -194,7 +195,16 @@ class Bench:
             context_out.append(context)
             model = self.pytorch_model(route.model)
             return lambda img: upscale_image_node(
-                context, img, model, False, 4, NO_TILING, 0, PaddingType.NONE, False
+                context,
+                img,
+                model,
+                False,
+                4,
+                NO_TILING,
+                0,
+                PaddingType.NONE,
+                False,
+                False,
             )[0]
         if name.startswith("ONNX Runtime"):
             from nodes.impl.upscale.auto_split_tiles import NO_TILING
@@ -236,6 +246,7 @@ class Bench:
                 else build_program.ProgramPrecision.FP16,
                 size,
                 size,
+                False,
                 False,
             )
             context = self.context(settings)

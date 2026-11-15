@@ -237,6 +237,25 @@ FP16_ARCH_NAMES = ", ".join(
             .with_id(5)
             .with_docs("The fixed input width (for DUAL a multiple of 4)."),
         ),
+        if_group(IS_DUAL)(
+            BoolInput("High Quality", default=False)
+            .with_id(8)
+            .with_docs(
+                "On: the export also computes the model's expert routing per position"
+                " (DUAL and RDUAL): four neighborhood sites instead of three. PyTorch on"
+                " NVIDIA GPUs runs this site and the regional channel attention per"
+                " position, for DUAL and RDUAL. The engine is slower: a 2x DUAL Light at"
+                " 960x540 in a fixed-size engine on an RTX 5090 takes 27.2 ms against"
+                " 24.2 ms (about an eighth more) with 569 MiB against 525 MiB of"
+                " activations; a 2x RDUAL at 960x540 in its fixed-size engine set on"
+                " the same GPU takes 57.8 ms against 50.5 ms per frame (about a seventh"
+                " more) with 381 MiB against 613 MiB of shared working memory.",
+                "Off: the three-site engine (local, context and retrieval"
+                " neighborhoods), as Upscale Image's Use TensorRT Engine always builds"
+                " it.",
+                hint=True,
+            ),
+        ),
     ],
     outputs=[
         OnnxModelOutput(
@@ -292,6 +311,7 @@ def convert_to_onnx_node(
     dual_shape: DualShape,
     dual_height: int,
     dual_width: int,
+    dual_high_quality: bool,
 ) -> tuple[OnnxGeneric, str, str]:
     if model.architecture.id == "DUAL":
         size = None
@@ -301,7 +321,8 @@ def convert_to_onnx_node(
                     "DUAL's TensorRT height and width must be multiples of 4."
                 )
             size = (dual_height, dual_width)
-        key = ("DUAL", model.dtype, size)
+        # High Quality: the expert routing per position too
+        key = ("DUAL", model.dtype, size, dual_high_quality)
         kept = _kept_export(model, context.node_id, key)
         if kept is not None:
             return kept.result
@@ -310,6 +331,7 @@ def convert_to_onnx_node(
             model.tags,
             model.scale,
             size,
+            routing_na=dual_high_quality,
             context=context,
         )
         onnx_model = load_onnx_model(onnx_bytes)
@@ -319,7 +341,9 @@ def convert_to_onnx_node(
         return result
 
     if model.architecture.id == "RDUAL":
-        return _rdual_onnx(context, model, dual_shape, (dual_height, dual_width))
+        return _rdual_onnx(
+            context, model, dual_shape, (dual_height, dual_width), dual_high_quality
+        )
 
     if drft_export.is_legacy_drft(model):
         key = ("DRFT", model.dtype)
@@ -435,9 +459,11 @@ def _rdual_onnx(
     model: ImageModelDescriptor,
     shape: DualShape,
     size: tuple[int, int],
+    high_quality: bool,
 ) -> tuple[OnnxGeneric, str, str]:
     """RDUAL's ONNX bundle (rdual_bundle.py) of rdual_export.py's parts for frames of
-    `size` (height, width); the flow part is traced on the settings' GPU if there is one."""
+    `size` (height, width), with `high_quality` the expert routing per position; the flow
+    part is traced on the settings' GPU if there is one."""
     # The model's spandrel holds RDUAL, which rdual_export imports.
     from nodes.impl.tensorrt import rdual, rdual_export
 
@@ -446,7 +472,7 @@ def _rdual_onnx(
             "RDUAL converts to ONNX for one frame size: set TensorRT Shape to Fixed with"
             " the video's height and width."
         )
-    key = ("RDUAL", model.dtype, size)
+    key = ("RDUAL", model.dtype, size, high_quality)
     kept = _kept_export(model, context.node_id, key)
     if kept is not None:
         return kept.result
@@ -460,6 +486,7 @@ def _rdual_onnx(
             folder,
             gpu_index,
             context,
+            routing_na=high_quality,
         )
         onnx_model = load_onnx_model(rdual_bundle.pack(folder, rdual_export.OPSET))
     assert onnx_model.sub_type == "Generic"

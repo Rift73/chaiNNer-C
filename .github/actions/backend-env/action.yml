@@ -17,8 +17,8 @@ runs:
           shell: pwsh
           run: python -m venv native/runtime/cpython-3.14.8
         # CPU builds of the lock: PyPI's Windows torch and torchvision wheels are CPU builds,
-        # onnxruntime stands in for onnxruntime-gpu, and chainner-pip (the backend's bundled
-        # wheel, not on PyPI) is left out, since no checked file imports it.
+        # onnxruntime stands in for onnxruntime-gpu, and chainner-pip (not on PyPI) comes from
+        # the backend's bundled wheel, which run_chainner_pip.py imports.
         - name: Write the lock's CPU requirements
           shell: pwsh
           run: |
@@ -28,4 +28,4 @@ runs:
               Set-Content "$env:RUNNER_TEMP/lock-cpu.txt"
         - name: Install the lock and requirements.txt
           shell: pwsh
-          run: ./native/runtime/cpython-3.14.8/Scripts/python -m pip install -r requirements.txt -r "$env:RUNNER_TEMP/lock-cpu.txt"
+          run: ./native/runtime/cpython-3.14.8/Scripts/python -m pip install -r requirements.txt -r "$env:RUNNER_TEMP/lock-cpu.txt" backend/src/dependencies/whls/chainner-pip/chainner_pip-23.2.0-py3-none-any.whl

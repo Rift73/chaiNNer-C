@@ -20,11 +20,14 @@ It holds no all-pairs correlation volume: each lookup is a window and a sample p
 over the two feature maps, and the global matching an online-softmax plugin
 (rdual_aot.py), so its working memory stays small at video sizes.
 
-    python -m nodes.impl.tensorrt.rdual_export WEIGHTS OUTPUT HEIGHT WIDTH [DEVICE [FLOW]]
+    python -m nodes.impl.tensorrt.rdual_export WEIGHTS OUTPUT HEIGHT WIDTH [DEVICE [FLOW
+        [ROUTING]]]
 
 DEVICE (a torch device, default cpu) is where the flow part is traced; the graphs do not
 depend on it. FLOW names the flow's precision recipe (FLOW_RECIPES); empty or absent,
-flow_precision chooses it by the input size. WEIGHTS is a safetensors file of the folded model's state dict whose metadata holds the
+flow_precision chooses it by the input size. ROUTING "1" gives the trunk parts the expert
+routing per position (TrunkGraph's routing_na; the manifest's "routing"); empty or
+absent, the routers take the global mean. WEIGHTS is a safetensors file of the folded model's state dict whose metadata holds the
 model's hyperparameters (HYPERPARAMETERS_KEY, JSON); each part goes to OUTPUT/<part>
 (model.onnx and weights.bin), the manifest to OUTPUT/export.json."""
 
@@ -94,9 +97,13 @@ def neighborhoods(model: Any) -> tuple[bool, bool]:
 class TrunkGraph(_graph.Graph):
     """The vendored DUAL graph with RDUAL's state fusion before group 1 and the cuts
     between the parts recorded, with the model's neighborhoods (neighborhoods) and the
-    routers' row sums, as DUAL's export builds it."""
+    routers' row sums, as DUAL's export builds it; routing_na: the expert routing per
+    position (the vendored Graph's option, spec.ROUTING), which the caller decides, not
+    the model."""
 
-    def __init__(self, model: Any, spec: Any, donors: list[str]) -> None:
+    def __init__(
+        self, model: Any, spec: Any, donors: list[str], routing_na: bool
+    ) -> None:
         local_na, retrieval_na = neighborhoods(model)
         super().__init__(
             rdual_arch,
@@ -104,6 +111,7 @@ class TrunkGraph(_graph.Graph):
             local_na=local_na,
             retrieval_na=retrieval_na,
             row_sums=True,
+            routing_na=routing_na,
         )
         self.model, self.donors = model, donors
         self.cut: dict[str, str | None] = {
@@ -343,10 +351,13 @@ def save(model: onnx.ModelProto, folder: Path) -> None:
     onnx.save_model(model, str(folder / "model.onnx"))
 
 
-def trunk_parts(model: Any, size: Size) -> dict[str, onnx.ModelProto]:
-    """The prefix, revcore and fwdcore parts. The vendored graph builder reads DUAL's
-    attributes, which RDUAL keeps as constants or names otherwise: the model (the
-    child's own copy) gets them first."""
+def trunk_parts(
+    model: Any, size: Size, routing_na: bool = False
+) -> dict[str, onnx.ModelProto]:
+    """The prefix, revcore and fwdcore parts, with routing_na the expert routing per
+    position (TrunkGraph). The vendored graph builder reads DUAL's attributes, which
+    RDUAL keeps as constants or names otherwise: the model (the child's own copy) gets
+    them first."""
     if list(model.hyperparameters["c_windows"]) != CONTEXT_WINDOWS:
         raise ValueError(
             f"RDUAL's TensorRT export supports the context windows {CONTEXT_WINDOWS}"
@@ -377,10 +388,19 @@ def trunk_parts(model: Any, size: Size) -> dict[str, onnx.ModelProto]:
         tuple(len(group) for group in rdual_arch.GROUP_INDICES),
         tuple(rdual_arch.GROUP_INDICES),
     )
+    if routing_na:
+        # The qkv or the routed convolution's output, [1, Ht, Wt, experts * C], is the
+        # largest per-position tensor, as dual.check_profile bounds DUAL's.
+        _spec.check_indexing(
+            size.trunk_height,
+            size.trunk_width,
+            channels,
+            max(3, _spec.routed_parts(model)),
+        )
     with torch.no_grad():
-        reverse = TrunkGraph(model, spec, ["future"])
+        reverse = TrunkGraph(model, spec, ["future"], routing_na)
         reverse_full = reverse.build(model)
-        forward = TrunkGraph(model, spec, ["past", "future"])
+        forward = TrunkGraph(model, spec, ["past", "future"], routing_na)
         forward_full = forward.build(model)
     trunk = [1, size.trunk_height, size.trunk_width, channels]
     infos: dict[str, tuple[int, list[int]]] = {
@@ -735,11 +755,13 @@ def main(
     width: str,
     device: str = "cpu",
     flow: str = "",
+    routing: str = "",
 ) -> None:
     model = load(Path(weights))
     size = Size(int(height), int(width))
     recipe = flow_precision(size, flow)
-    parts = trunk_parts(model, size)
+    routing_na = routing == "1"
+    parts = trunk_parts(model, size, routing_na)
     parts["flow"] = flow_part(model, size, device, recipe)
     root = Path(output)
     local_na, retrieval_na = neighborhoods(model)
@@ -756,6 +778,9 @@ def main(
         "context": _spec.CONTEXT,
         **({"local": _spec.LOCAL} if local_na else {}),
         **({"retrieval": _spec.RETRIEVAL} if retrieval_na else {}),
+        # The expert routing per position (Convert To ONNX's High Quality); a manifest
+        # without it routes by the global mean.
+        **({"routing": _spec.ROUTING} if routing_na else {}),
         "parts": {},
     }
     for name in PARTS:

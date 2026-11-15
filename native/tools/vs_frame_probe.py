@@ -24,6 +24,7 @@ Only the standard library, NumPy and VapourSynth are imported outside `cases`.""
 
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 import sys
@@ -597,7 +598,7 @@ def measure_case(case: dict, vs: Any) -> dict:
 
 
 def _child(cases_path: str, events_path: str) -> None:
-    import vapoursynth as vs
+    vs: Any = importlib.import_module("vapoursynth")
 
     vs.core.num_threads = 4
     vs.core.max_cache_size = 1024

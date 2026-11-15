@@ -25,7 +25,13 @@ from api import Aborted, NodeContext
 from ..upscale.basic_upscale import PAD_SIZE, PaddingType
 from ..upscale.temporal_window import Fit, temporal_upscale
 from ..upscale.tile_report import TileReport
-from .auto_engine import cache_folder, hold_engine, release_engine
+from .auto_engine import (
+    cache_folder,
+    hold_engine,
+    migraphx_here,
+    no_engine_here,
+    release_engine,
+)
 from .rdual_window import RDUALWindows
 
 if TYPE_CHECKING:
@@ -59,6 +65,23 @@ def _on_pytorch(context: NodeContext, model: ImageModelDescriptor, reason: str) 
         )
 
 
+def unavailable(model: ImageModelDescriptor, device: torch.device) -> str | None:
+    """Why this model has no engine set on this machine, or None if it may ("" for a
+    machine without NVIDIA's TensorRT, which is no surprise worth a warning)."""
+    from ..tensorrt.rdual import CHECKED_SCALES
+
+    if model.architecture.id != "RDUAL":
+        return f"{model.architecture.name} is not a temporal model."
+    if model.scale not in CHECKED_SCALES:
+        return f"RDUAL's engines are checked for {CHECKED_SCALES} scale only."
+    reason = no_engine_here(device)
+    if reason is not None:
+        return reason
+    if migraphx_here():
+        return ""
+    return None
+
+
 def temporal_upscale_through_engine(
     context: NodeContext,
     img: np.ndarray,
@@ -86,7 +109,7 @@ def temporal_upscale_through_engine(
         failed = model in _failed
     if failed:
         return pytorch()
-    reason = rdual.unavailable(model, device)
+    reason = unavailable(model, device)
     if reason is not None:
         _on_pytorch(context, model, reason)
         return pytorch()

@@ -148,11 +148,13 @@ def export_onnx(
     scale: int,
     size: tuple[int, int] | None,
     *,
+    routing_na: bool = False,
     context: NodeContext | None = None,
 ) -> bytes:
     """The TensorRT-specific ONNX of a folded DUAL model (spandrel folds on load), with
     its weights embedded and the exporter's manifest in its metadata: for one input
-    size (height, width), or for every size (None; scripts/dual_tensorrt/dynamic.py)."""
+    size (height, width), or for every size (None; scripts/dual_tensorrt/dynamic.py).
+    routing_na: the expert routing per position (the manifest's "routing")."""
     import onnx
     from safetensors.torch import save_file
 
@@ -171,6 +173,8 @@ def export_onnx(
                 f"--height={height}",
                 f"--width={width}",
             ]
+        if routing_na:
+            exporter.append("--routing-na")
         run_child(
             [
                 "-m",
@@ -242,11 +246,13 @@ def check_profile(manifest: dict[str, Any], low: Size, opt: Size, high: Size) ->
             "A dynamic DUAL engine needs minimum <= optimal <= maximum sizes."
         )
     # The plugins' kernels index the trunk's QKV with 32-bit offsets, as the fixed
-    # exporter's Specialization checks for its one size.
+    # exporter's Specialization checks for its one size; a routed export's largest
+    # tensor is its convolution's routed_parts * C channels (spec.check_indexing).
     spec = manifest["specialization"]
     divisor = 2 if spec["unshuffle"] else 1
+    parts = max(3, manifest["routed_parts"]) if "routing" in manifest else 3
     h, w = high
-    if 3 * (h // divisor) * (w // divisor) * spec["channels"] >= 2**31:
+    if parts * (h // divisor) * (w // divisor) * spec["channels"] >= 2**31:
         raise ValueError(
             f"A DUAL engine's maximum size {h}x{w} is too large for its kernels'"
             " 32-bit indexing; choose a smaller maximum (images are tiled to it)."

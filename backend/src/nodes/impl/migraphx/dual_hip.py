@@ -49,6 +49,7 @@ TENSORRT_ONLY = {
     "DualLocalNA": "local neighborhood attention",
     "DualXR": "retrieval neighborhood attention",
     "DualRowSum": "router row sums",
+    "DualBoxMean": "routing neighborhood means",
 }
 
 

@@ -42,7 +42,7 @@ The loaded model is not changed: the rewrite works on the export's copy."""
 from __future__ import annotations
 
 import copy
-from typing import TypeVar
+from typing import TypeVar, cast
 
 import torch
 from einops import rearrange
@@ -57,6 +57,7 @@ from spandrel.architectures.FDAT.__arch.fdat import FastChannelAttention
 from spandrel.architectures.RetinexFormer.__arch.retinexformer_arch import IG_MSA
 from torch import nn
 from torch.nn import functional
+from typing_extensions import override
 
 from .omnisr_export import unit_length
 
@@ -97,7 +98,8 @@ class _UnitLengthChannelAttention(FastChannelAttention):
         nn.Module.__init__(self)
         self.__dict__.update(source.__dict__)
 
-    def forward(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    @override
+    def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         b, n, c = x.shape
         qkv = self.qkv(x).view(b, n, 3, self.nh, c // self.nh).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
@@ -123,15 +125,16 @@ class _RowProductChannelAttention(Adaptive_Channel_Attention):
         nn.Module.__init__(self)
         self.__dict__.update(source.__dict__)
 
-    def forward(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    @override
+    def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         b, n, c = x.shape
         head = c // self.num_heads
         qkv = self.qkv(x).reshape(b, n, 3, self.num_heads, head)
         q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        rows = (b, self.num_heads, height, width, head)
+        rows = (b, self.num_heads, H, W, head)
         q, k = _unit_rows(q.reshape(rows)), _unit_rows(k.reshape(rows))
         v = v.transpose(-2, -1)
-        v_ = v.reshape(b, c, n).contiguous().view(b, c, height, width)
+        v_ = v.reshape(b, c, n).contiguous().view(b, c, H, W)
         attn = (q.transpose(-2, -1) @ k).float().sum(2) / _ROW_PRODUCT_SCALE**2
         attn = attn.to(x.dtype) * self.temperature
         attn = self.attn_drop(attn.softmax(dim=-1))
@@ -141,9 +144,7 @@ class _RowProductChannelAttention(Adaptive_Channel_Attention):
         else:
             attened_x = (attn @ v).permute(0, 3, 1, 2).reshape(b, n, c)
         conv_x = self.dwconv(v_)
-        attention_map = (
-            attened_x.transpose(-2, -1).contiguous().view(b, c, height, width)
-        )
+        attention_map = attened_x.transpose(-2, -1).contiguous().view(b, c, H, W)
         channel_map = self.channel_interaction(attention_map)
         spatial_map = self.spatial_interaction(conv_x).permute(0, 2, 3, 1)
         spatial_map = spatial_map.contiguous().view(b, n, 1)
@@ -162,25 +163,31 @@ class _TokenSpatialAttention(Adaptive_Spatial_Attention):
         """spatial_interaction on B, L, C: its 1x1 convolutions as linear layers, with its
         batch norm folded into the first."""
         conv_0, norm, activation, conv_1 = self.spatial_interaction
-        scale = norm.weight.float() / (norm.running_var.float() + norm.eps).sqrt()
-        offset = norm.bias.float() - norm.running_mean.float() * scale
+        conv_0, conv_1 = cast(nn.Conv2d, conv_0), cast(nn.Conv2d, conv_1)
+        norm = cast(nn.BatchNorm2d, norm)
+        scale = (
+            norm.weight.float()
+            / (norm.get_buffer("running_var").float() + norm.eps).sqrt()
+        )
+        offset = norm.bias.float() - norm.get_buffer("running_mean").float() * scale
         weight = (conv_0.weight[:, :, 0, 0].float() * scale[:, None]).to(tokens.dtype)
-        bias = (conv_0.bias.float() * scale + offset).to(tokens.dtype)
+        bias = (conv_0.get_parameter("bias").float() * scale + offset).to(tokens.dtype)
         x = activation(functional.linear(tokens, weight, bias))
         return functional.linear(x, conv_1.weight[:, :, 0, 0], conv_1.bias)
 
-    def forward(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    @override
+    def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         b, n, c = x.shape
         d = c // self.num_heads
-        qkv = self.qkv(x).reshape(b, height, width, 3, self.num_heads, -1)
-        v = qkv[:, :, :, 2, :, :d].permute(0, 3, 4, 1, 2).reshape(b, c, height, width)
+        qkv = self.qkv(x).reshape(b, H, W, 3, self.num_heads, -1)
+        v = qkv[:, :, :, 2, :, :d].permute(0, 3, 4, 1, 2).reshape(b, c, H, W)
         half = self.num_heads * qkv.shape[-1] // 2
-        qkv = qkv.reshape(b, height, width, 3, 2 * half).permute(3, 0, 1, 2, 4)
+        qkv = qkv.reshape(b, H, W, 3, 2 * half).permute(3, 0, 1, 2, 4)
         split = max(self.split_size)
-        pad_r = (split - width % split) % split
-        pad_b = (split - height % split) % split
+        pad_r = (split - W % split) % split
+        pad_b = (split - H % split) % split
         qkv = functional.pad(qkv, (0, 0, 0, pad_r, 0, pad_b))
-        full_h, full_w = height + pad_b, width + pad_r
+        full_h, full_w = H + pad_b, W + pad_r
         first, second = qkv[..., :half], qkv[..., half:]
         if (self.rg_idx % 2 == 0 and self.b_idx > 0 and (self.b_idx - 2) % 4 == 0) or (
             self.rg_idx % 2 != 0 and self.b_idx % 4 == 0
@@ -201,8 +208,8 @@ class _TokenSpatialAttention(Adaptive_Spatial_Attention):
         heads = self.num_heads // 2
         attened = torch.cat(
             [
-                part[:, :height, :width]
-                .reshape(b, height, width, heads, -1)[..., :d]
+                part[:, :H, :W]
+                .reshape(b, H, W, heads, -1)[..., :d]
                 .reshape(b, n, c // 2)
                 for part in (x_0, x_1)
             ],
@@ -264,5 +271,7 @@ def for_opset(model: _Descriptor, opset_version: int) -> _Descriptor:
     model = copy.deepcopy(model)
     net = model.model
     for name in norms:
-        net.set_submodule(name, FP32LayerNorm(net.get_submodule(name)))
+        net.set_submodule(
+            name, FP32LayerNorm(cast(nn.LayerNorm, net.get_submodule(name)))
+        )
     return model

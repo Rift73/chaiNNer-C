@@ -42,7 +42,7 @@ from gpu import amd, nvidia
 from ..image_op import ImageOp
 from ..onnx.model import FP16_ARCHS_NAVI, converts_in_fp16
 from ..upscale.auto_split_tiles import TileSize
-from .utils import is_finite, safe_cuda_cache_empty
+from .utils import is_finite, safe_cuda_cache_empty, weights_digest
 
 if TYPE_CHECKING:
     # Annotations only: no import at runtime.
@@ -189,19 +189,6 @@ def no_engine_here(device: torch.device) -> str | None:
     if find_spec("tensorrt") is None:
         return "The TensorRT package is not installed (see the Dependency Manager)."
     return None
-
-
-def weights_digest(model: ImageModelDescriptor) -> bytes:
-    """An ESRGAN's in FP16, as export_copy exports them, so PyTorch's FP16 setting makes no
-    second engine of a byte-identical ONNX."""
-    digest = hashlib.sha256()
-    as_exported = model.architecture.name == "ESRGAN"
-    for name, value in model.model.state_dict().items():
-        rounded = value.half() if as_exported and value.is_floating_point() else value
-        array = np.ascontiguousarray(rounded.detach().cpu().numpy())
-        digest.update(repr((name, array.dtype.str, array.shape)).encode())
-        digest.update(array.tobytes())
-    return digest.digest()
 
 
 @cache
@@ -398,6 +385,7 @@ def _build(
         DualShape.DYNAMIC,
         tile,
         tile,
+        False,  # the three-site engine; High Quality is Convert To ONNX's only
     )[0]
     context.check_aborted()
     recipe = _recipe(model)
@@ -480,6 +468,7 @@ def _build_program(
         DualShape.DYNAMIC,
         size,
         size,
+        False,
     )[0]
     context.check_aborted()
     program = build_program_node(

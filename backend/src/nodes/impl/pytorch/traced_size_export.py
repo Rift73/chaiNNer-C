@@ -126,16 +126,17 @@ class _TracedPickMoeLayer(MoELayer):
 
 
 class _TracedReductionsRgSa(RG_SA):
-    def forward(self, x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    @override
+    def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         b, n, c = x.shape
-        two = x.permute(0, 2, 1).reshape(b, c, h, w).contiguous()
+        two = x.permute(0, 2, 1).reshape(b, c, H, W).contiguous()
         two = self.reduction1(self.reduction1(two))
         h2, w2 = two.shape[-2:]
         # The third's kernel of 4 has to fit whether it is picked or not
         padding = (0, (w2 < 4) * (4 - w2), 0, (h2 < 4) * (4 - h2))
         three = self.reduction1(functional.pad(two, padding))
         h3, w3 = three.shape[-2:]
-        third = (h >= 1024) | (w >= 1024)
+        third = (H >= 1024) | (W >= 1024)
         rows, columns = h2 + third * (h3 - h2), w2 + third * (w3 - w2)
         start = third * h2 * w2
         reduced = torch.cat((two.flatten(2), three.flatten(2)), dim=2)

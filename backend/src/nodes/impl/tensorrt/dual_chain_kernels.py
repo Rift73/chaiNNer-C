@@ -6,8 +6,13 @@ dual_aot.lower puts in their place (static 128-channel engines only):
   (BF16, 128 channels) and the GELU output (BF16, 256 channels).
 - chain C: chain A after a DualCore layer, whose output projection is DualProject's
   (no bias) instead of a matmul + bias.
+- chain E: chain A after a gated attention layer: its input is the attention output
+  gated as chain D gates it, gate [P, 128] x [128, 128] + bias -> sigmoid -> x the
+  attention output, each rounded to BF16 as the graph rounds it.
 - chain B: FFN contraction [P, 256] x [256, 128] + bias -> residual add -> the next
   layer's Norm. Writes the new residual and the Norm output (both BF16, 128 channels).
+- chain F: chain B before an attention layer: also the attention's qkv [128, 384] +
+  bias from the Norm output, which the layer's gate reads as well.
 - chain D: the attention layers' tail: gate [P, 128] x [128, 128] + bias -> sigmoid ->
   x the attention output -> projection + bias -> residual add -> Norm -> the next
   core's qkv [128, 384] (no bias). Writes the new residual and qkv (BF16). Its gate
@@ -28,6 +33,27 @@ from __future__ import annotations
 
 import triton
 import triton.language as tl
+
+
+@triton.jit
+def _gated(
+    a_ptr: tl.tensor,
+    wg_ptr: tl.tensor,
+    bg_ptr: tl.tensor,
+    na_ptr: tl.tensor,
+    rows: tl.tensor,
+    c: tl.tensor,
+    mask: tl.tensor,
+) -> tl.tensor:
+    """na * sigmoid(a Wg + bg), with the graph's BF16 roundings (chains D and E)."""
+    a = tl.load(a_ptr + rows[:, None] * 128 + c[None, :], mask, 0)
+    pre = (
+        tl.dot(a, tl.load(wg_ptr + c[:, None] * 128 + c[None, :]))
+        + tl.load(bg_ptr + c).to(tl.float32)[None, :]
+    )
+    gate = tl.sigmoid(pre.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16)
+    na = tl.load(na_ptr + rows[:, None] * 128 + c[None, :], mask, 0)
+    return (na.to(tl.float32) * gate.to(tl.float32)).to(tl.bfloat16)
 
 
 @triton.jit
@@ -70,6 +96,95 @@ def chain_a(
         proj = (tl.dot(g, w1) + tl.load(b1_ptr + c).to(tl.float32)[None, :]).to(
             tl.bfloat16
         )
+    _expand(
+        proj,
+        rows,
+        c,
+        mask,
+        r_ptr,
+        gamma_ptr,
+        beta_ptr,
+        w2_ptr,
+        b2_ptr,
+        res_ptr,
+        out_ptr,
+        eps,
+        c_div,
+        c_add,
+        c_mul,
+        bn,
+    )
+
+
+@triton.jit
+def chain_e(
+    a_ptr: tl.tensor,
+    wg_ptr: tl.tensor,
+    bg_ptr: tl.tensor,
+    na_ptr: tl.tensor,
+    r_ptr: tl.tensor,
+    w1_ptr: tl.tensor,
+    b1_ptr: tl.tensor,
+    gamma_ptr: tl.tensor,
+    beta_ptr: tl.tensor,
+    w2_ptr: tl.tensor,
+    b2_ptr: tl.tensor,
+    res_ptr: tl.tensor,
+    out_ptr: tl.tensor,
+    pixels: tl.constexpr,
+    eps: tl.constexpr,
+    c_div: tl.constexpr,
+    c_add: tl.constexpr,
+    c_mul: tl.constexpr,
+    bm: tl.constexpr,
+    bn: tl.constexpr,
+) -> None:
+    rows = tl.program_id(0) * bm + tl.arange(0, bm)
+    c = tl.arange(0, 128)
+    mask = (rows < pixels)[:, None]
+    g = _gated(a_ptr, wg_ptr, bg_ptr, na_ptr, rows, c, mask)
+    w1 = tl.load(w1_ptr + c[:, None] * 128 + c[None, :])
+    proj = (tl.dot(g, w1) + tl.load(b1_ptr + c).to(tl.float32)[None, :]).to(tl.bfloat16)
+    _expand(
+        proj,
+        rows,
+        c,
+        mask,
+        r_ptr,
+        gamma_ptr,
+        beta_ptr,
+        w2_ptr,
+        b2_ptr,
+        res_ptr,
+        out_ptr,
+        eps,
+        c_div,
+        c_add,
+        c_mul,
+        bn,
+    )
+
+
+@triton.jit
+def _expand(
+    proj: tl.tensor,
+    rows: tl.tensor,
+    c: tl.tensor,
+    mask: tl.tensor,
+    r_ptr: tl.tensor,
+    gamma_ptr: tl.tensor,
+    beta_ptr: tl.tensor,
+    w2_ptr: tl.tensor,
+    b2_ptr: tl.tensor,
+    res_ptr: tl.tensor,
+    out_ptr: tl.tensor,
+    eps: tl.constexpr,
+    c_div: tl.constexpr,
+    c_add: tl.constexpr,
+    c_mul: tl.constexpr,
+    bn: tl.constexpr,
+) -> None:
+    """Chains A, C and E after the projection: residual add, Norm, FFN expand, GELU."""
     r = tl.load(r_ptr + rows[:, None] * 128 + c[None, :], mask, 0)
     s = (proj.to(tl.float32) + r.to(tl.float32)).to(tl.bfloat16)
     tl.store(res_ptr + rows[:, None] * 128 + c[None, :], s, mask)
@@ -109,6 +224,54 @@ def chain_b(
     rows = tl.program_id(0) * bm + tl.arange(0, bm)
     c = tl.arange(0, 128)
     mask = (rows < pixels)[:, None]
+    y = _contract(
+        g_ptr, r_ptr, w_ptr, b_ptr, gamma_ptr, beta_ptr, res_ptr, rows, c, mask, eps
+    )
+    tl.store(y_ptr + rows[:, None] * 128 + c[None, :], y, mask)
+
+
+@triton.jit
+def chain_f(
+    g_ptr: tl.tensor,
+    r_ptr: tl.tensor,
+    w_ptr: tl.tensor,
+    b_ptr: tl.tensor,
+    gamma_ptr: tl.tensor,
+    beta_ptr: tl.tensor,
+    wq_ptr: tl.tensor,
+    bq_ptr: tl.tensor,
+    res_ptr: tl.tensor,
+    y_ptr: tl.tensor,
+    qkv_ptr: tl.tensor,
+    pixels: tl.constexpr,
+    eps: tl.constexpr,
+    bm: tl.constexpr,
+) -> None:
+    rows = tl.program_id(0) * bm + tl.arange(0, bm)
+    c = tl.arange(0, 128)
+    mask = (rows < pixels)[:, None]
+    y = _contract(
+        g_ptr, r_ptr, w_ptr, b_ptr, gamma_ptr, beta_ptr, res_ptr, rows, c, mask, eps
+    )
+    tl.store(y_ptr + rows[:, None] * 128 + c[None, :], y, mask)
+    _qkv(y, rows, c, mask, wq_ptr, bq_ptr, qkv_ptr, True)
+
+
+@triton.jit
+def _contract(
+    g_ptr: tl.tensor,
+    r_ptr: tl.tensor,
+    w_ptr: tl.tensor,
+    b_ptr: tl.tensor,
+    gamma_ptr: tl.tensor,
+    beta_ptr: tl.tensor,
+    res_ptr: tl.tensor,
+    rows: tl.tensor,
+    c: tl.tensor,
+    mask: tl.tensor,
+    eps: tl.constexpr,
+) -> tl.tensor:
+    """Chains B and F up to the Norm: stores the residual, returns the Norm output."""
     g0 = tl.load(g_ptr + rows[:, None] * 256 + c[None, :], mask, 0)
     acc = tl.dot(g0, tl.load(w_ptr + c[:, None] * 128 + c[None, :]))
     g1 = tl.load(g_ptr + rows[:, None] * 256 + 128 + c[None, :], mask, 0)
@@ -125,7 +288,27 @@ def chain_b(
     y = (tl.load(gamma_ptr + c)[None, :] * centered) * inv[:, None] + tl.load(
         beta_ptr + c
     )[None, :]
-    tl.store(y_ptr + rows[:, None] * 128 + c[None, :], y.to(tl.bfloat16), mask)
+    return y.to(tl.bfloat16)
+
+
+@triton.jit
+def _qkv(
+    y: tl.tensor,
+    rows: tl.tensor,
+    c: tl.tensor,
+    mask: tl.tensor,
+    wq_ptr: tl.tensor,
+    bq_ptr: tl.tensor,
+    qkv_ptr: tl.tensor,
+    bias: tl.constexpr,
+) -> None:
+    """y [P, 128] x Wq [128, 384] (+ bq with `bias`, else bq_ptr is not read), BF16."""
+    for n0 in tl.static_range(0, 384, 128):
+        nn = n0 + c
+        q = tl.dot(y, tl.load(wq_ptr + c[:, None] * 384 + nn[None, :]))
+        if bias:
+            q += tl.load(bq_ptr + nn).to(tl.float32)[None, :]
+        tl.store(qkv_ptr + rows[:, None] * 384 + nn[None, :], q.to(tl.bfloat16), mask)
 
 
 @triton.jit
@@ -149,14 +332,7 @@ def chain_d(
     rows = tl.program_id(0) * bm + tl.arange(0, bm)
     c = tl.arange(0, 128)
     mask = (rows < pixels)[:, None]
-    a = tl.load(a_ptr + rows[:, None] * 128 + c[None, :], mask, 0)
-    pre = (
-        tl.dot(a, tl.load(wg_ptr + c[:, None] * 128 + c[None, :]))
-        + tl.load(bg_ptr + c).to(tl.float32)[None, :]
-    )
-    gate = tl.sigmoid(pre.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16)
-    na = tl.load(na_ptr + rows[:, None] * 128 + c[None, :], mask, 0)
-    m = (na.to(tl.float32) * gate.to(tl.float32)).to(tl.bfloat16)
+    m = _gated(a_ptr, wg_ptr, bg_ptr, na_ptr, rows, c, mask)
     proj = (
         tl.dot(m, tl.load(wp_ptr + c[:, None] * 128 + c[None, :]))
         + tl.load(bp_ptr + c).to(tl.float32)[None, :]
@@ -173,14 +349,12 @@ def chain_d(
         (tl.load(gamma_ptr + c)[None, :] * centered) * inv[:, None]
         + tl.load(beta_ptr + c)[None, :]
     ).to(tl.bfloat16)
-    for n0 in tl.static_range(0, 384, 128):
-        nn = n0 + c
-        q = tl.dot(y, tl.load(wq_ptr + c[:, None] * 384 + nn[None, :]))
-        tl.store(qkv_ptr + rows[:, None] * 384 + nn[None, :], q.to(tl.bfloat16), mask)
+    _qkv(y, rows, c, mask, wq_ptr, wq_ptr, qkv_ptr, False)
 
 
 # The fastest launch shapes inside the AOT plugins' shared-memory limit (measured in
-# the engines: chain A 32 x 128, chains B and D 32; 4 warps each)
+# the engines: chain A 32 x 128, chains B and D 32; 4 warps each; chain E as chain A,
+# chain F as chain B)
 CHAIN_A_LAUNCH = {"bm": 32, "bn": 128}
 CHAIN_B_LAUNCH = {"bm": 32}
 CHAIN_D_LAUNCH = {"bm": 32}

@@ -1,7 +1,7 @@
 import copy
 import json
 from io import BytesIO
-from typing import TypeVar
+from typing import TypeVar, cast
 
 import onnx
 import torch
@@ -96,7 +96,7 @@ def _example_side(model: ModelDescriptor) -> int:
     padded = side + model.size_requirements.get_padding(side, side)[0]
     for module in net.modules():
         if isinstance(module, (SwinirBlock, Swin2srBlock, DrctBlock)):
-            stored, multiple = module.input_resolution[0], net.window_size
+            stored, multiple = module.input_resolution[0], cast(int, net.window_size)
         elif isinstance(module, (L_SA, Adaptive_Spatial_Attention)):
             stored, multiple = module.patches_resolution, max(module.split_size)
         else:

@@ -94,7 +94,11 @@ class FP32GraphOracle(Graph):
         elif kind == "Transpose":
             result = x[0].permute(attrs["perm"])
         elif kind == "Reshape":
-            result = x[0].reshape(tuple(x[1].tolist()))
+            # ONNX: a 0 keeps the input's dimension unless allowzero
+            shape = x[1].tolist()
+            if not attrs.get("allowzero", 0):
+                shape = [x[0].shape[i] if v == 0 else v for i, v in enumerate(shape)]
+            result = x[0].reshape(tuple(shape))
         elif kind == "Concat":
             result = torch.cat(x, dim=attrs["axis"])
         elif kind == "Expand":
@@ -134,9 +138,17 @@ class FP32GraphOracle(Graph):
             if mode == "replicate":
                 while len(pads) > 4 and pads[-2:] == [0, 0]:
                     pads = pads[:-2]
-            result = F.pad(x[0], pads, mode=mode)
+            if mode == "constant":
+                value = float(x[2]) if len(x) > 2 else 0.0
+                result = F.pad(x[0], pads, value=value)
+            else:
+                result = F.pad(x[0], pads, mode=mode)
         elif kind == "ReduceMean":
             result = x[0].mean(tuple(x[1].tolist()), keepdim=bool(attrs["keepdims"]))
+        elif kind == "ReduceSum":
+            result = x[0].sum(tuple(x[1].tolist()), keepdim=bool(attrs["keepdims"]))
+        elif kind == "AveragePool":
+            result = F.avg_pool2d(x[0], attrs["kernel_shape"], attrs["strides"])
         elif kind == "LayerNormalization":
             result = F.layer_norm(x[0], (x[0].shape[-1],), x[1], x[2], attrs["epsilon"])
         elif kind == "DepthToSpace":
@@ -173,6 +185,14 @@ class FP32GraphOracle(Graph):
             return inputs[0] @ inputs[1] + inputs[2]
         if kind.startswith("DualNA_"):
             return neighborhood_attention(*inputs, attrs["window"])
+        if kind.startswith("DualBoxMean_"):
+            # FP32 mean over each position's clamped K x K neighborhood, NHWC
+            x = inputs[0].permute(0, 3, 1, 2).float()
+            k = attrs["neighbourhood"]
+            ky, kx = min(k, x.shape[2]), min(k, x.shape[3])
+            mean = F.avg_pool2d(F.avg_pool2d(x, (ky, 1), 1), (1, kx), 1)
+            pads = (kx // 2, kx - 1 - kx // 2, ky // 2, ky - 1 - ky // 2)
+            return F.pad(mean, pads, mode="replicate").permute(0, 2, 3, 1)
         raise AssertionError(kind)
 
     def build(self, model):

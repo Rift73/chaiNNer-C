@@ -55,11 +55,14 @@ BUILD_SOURCES = (
 # the automatic route keys its programs by the weights, not by the ONNX, so a program of
 # an earlier exporter's graph is not read for a later one.
 EXPORTER_SOURCES = tuple(sorted(VENDOR.rglob("*.py")))
-# The manifest keys of the exporter's local and retrieval sites' operators (vendor/
-# dual_tensorrt/scripts/dual_tensorrt/spec.py): TensorRT plugins only, for which the
-# library has no op (dual_hip.TENSORRT_ONLY). Manifests without them are earlier exports
-# (local windows, 96 px retrieval blocks), which lower as before.
-TENSORRT_ONLY_KEYS = ("local", "retrieval")
+# The manifest keys of the exporter's local, retrieval and routing sites' operators
+# (vendor/dual_tensorrt/scripts/dual_tensorrt/spec.py): TensorRT plugins only, for which
+# the library has no op (dual_hip.TENSORRT_ONLY). Manifests without the first two are
+# earlier exports (local windows, 96 px retrieval blocks), which lower as before. The
+# exporter writes "routing" only for a graph with routing_na (REQUESTED_KEYS), whose
+# neighborhood means are DualBoxMean.
+TENSORRT_ONLY_KEYS = ("local", "retrieval", "routing")
+REQUESTED_KEYS = ("routing",)
 
 Size = tuple[int, int]
 
@@ -114,22 +117,28 @@ def refusal(keys: list[str]) -> str:
     return (
         f"This DUAL ONNX's {' and '.join(keys)} neighborhood attention runs only as"
         " TensorRT plugins, which MIGraphX has no operators for, so it has no MIGraphX"
-        " program. Run the model with PyTorch's Upscale Image."
+        " program. Run the model with PyTorch's Upscale Image"
+        + (", or convert it with High Quality unticked." if "routing" in keys else ".")
     )
 
 
 @cache
 def exported_tensorrt_only_keys() -> list[str]:
     """The TENSORRT_ONLY_KEYS every manifest of the vendored exporter holds (its spec's
-    LOCAL and RETRIEVAL, which export.py and dynamic.py write whatever the model), so the
-    automatic route knows before exporting that build_program would refuse the ONNX."""
+    LOCAL and RETRIEVAL, which export.py and dynamic.py write whatever the model; not the
+    REQUESTED_KEYS), so the automatic route knows before exporting that build_program
+    would refuse the ONNX."""
     path = VENDOR / "scripts" / "dual_tensorrt" / "spec.py"
     spec = importlib.util.spec_from_file_location("dual_tensorrt_spec", path)
     if spec is None or spec.loader is None:
         raise ImportError(path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return [key for key in TENSORRT_ONLY_KEYS if hasattr(module, key.upper())]
+    return [
+        key
+        for key in TENSORRT_ONLY_KEYS
+        if key not in REQUESTED_KEYS and hasattr(module, key.upper())
+    ]
 
 
 def op_library() -> Path:
@@ -160,7 +169,8 @@ def build_program(
     check_profile(manifest, size, size, size) accepts, and made one of that size first
     (dual_hip.fix_size). The program's input is named for the ONNX's alignment
     (aligned_input_name), as a TensorRT engine's. An ONNX with local or retrieval
-    neighborhood attention (TENSORRT_ONLY_KEYS) has no program."""
+    neighborhood attention or routing per position (TENSORRT_ONLY_KEYS) has no
+    program."""
     tensorrt_only = [key for key in TENSORRT_ONLY_KEYS if key in manifest]
     if tensorrt_only:
         raise ValueError(refusal(tensorrt_only))

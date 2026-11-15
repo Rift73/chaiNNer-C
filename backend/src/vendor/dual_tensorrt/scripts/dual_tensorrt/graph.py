@@ -45,15 +45,28 @@ def phase_weight(w: np.ndarray, scale: int, grandchildren: bool = False) -> np.n
 
 # The retrieval neighborhood on the coarse grid (the source's pack_qk)
 NEIGHBORHOOD = 48
+# The routing neighborhood of a dynamic convolution's router (the source's routing_na)
+ROUTING_NEIGHBORHOOD = 96
 
 
 class Graph:
-    def __init__(self, arch, spec, local_na=False, retrieval_na=False, row_sums=False):
+    def __init__(
+        self,
+        arch,
+        spec,
+        local_na=False,
+        retrieval_na=False,
+        row_sums=False,
+        routing_na=False,
+    ):
         """local_na, retrieval_na: the source's local and retrieval neighborhoods (the
         model's flags of those names, spec.LOCAL and spec.RETRIEVAL); row_sums: the
-        router means of NHWC trunks as DualRowSum. All off: the earlier graph."""
+        router means of NHWC trunks as DualRowSum (with routing_na, DualBoxMean);
+        routing_na: the source's expert routing per position (spec.ROUTING). All off:
+        the earlier graph."""
         self.arch, self.spec = arch, spec
         self.local_na, self.retrieval_na, self.row_sums = local_na, retrieval_na, row_sums
+        self.routing_na = routing_na
         channels = spec.channels
         self.height, self.width = spec.trunk
         self.dynamic_sites = 0
@@ -65,6 +78,8 @@ class Graph:
         self.local_sites = 0
         self.retrieval_sites = 0
         self.row_sum_sites = 0
+        self.routing_sites = 0
+        self.box_mean_sites = 0
 
     def name(self, label):
         self.counter += 1
@@ -540,6 +555,8 @@ class Graph:
 
     def dynamic_conv(self, x, mod, nhwc):
         self.dynamic_sites += 1
+        if self.routing_na:
+            return self.routed_conv(x, mod, nhwc)
         k = mod.experts.shape[0]
         if nhwc and self.row_sums:
             pooled = self.router_row_mean(x)
@@ -595,6 +612,106 @@ class Graph:
             kernel_shape=[3, 3],
         )
         return self.trans(output, [0, 2, 3, 1]) if nhwc else output
+
+    def routed_conv(self, x, mod, nhwc):
+        """The dynamic convolution with expert routing per position (the source's
+        routing_na): the router's input at p is the FP32 mean over p's clamped K x K
+        neighborhood (K = min(96, L) per axis; of NHWC trunks with row_sums
+        DualBoxMean, otherwise two separable average pools, edge padded), then the
+        router's LayerNorm and MLP per position; the base and each expert but the last
+        less the last one as one 3x3 convolution to experts * C channels, blended per
+        position in FP32."""
+        self.routing_sites += 1
+        h, w, c, k = self.height, self.width, self.c, mod.experts.shape[0]
+        if nhwc and self.row_sums:
+            self.box_mean_sites += 1
+            pooled = self.plugin(
+                f"DualBoxMean_{self.spec.plugin_key}_TRT",
+                [x],
+                neighbourhood=ROUTING_NEIGHBORHOOD,
+            )
+            x = self.trans(x, [0, 3, 1, 2])
+        else:
+            if nhwc:
+                x = self.trans(x, [0, 3, 1, 2])
+            ky, kx = min(ROUTING_NEIGHBORHOOD, h), min(ROUTING_NEIGHBORHOOD, w)
+            pooled = self.op(
+                "AveragePool",
+                [self.cast(x, T.FLOAT)],
+                kernel_shape=[ky, 1],
+                strides=[1, 1],
+            )
+            pooled = self.op(
+                "AveragePool", [pooled], kernel_shape=[1, kx], strides=[1, 1]
+            )
+            pads = [0, 0, ky // 2, kx // 2, 0, 0, ky - 1 - ky // 2, kx - 1 - kx // 2]
+            pooled = self.op("Pad", [pooled, self.const(pads, T.INT64)], mode="edge")
+            pooled = self.trans(pooled, [0, 2, 3, 1])
+        normalized = self.op(
+            "LayerNormalization",
+            [
+                pooled,
+                self.const(np.ones(c), T.FLOAT),
+                self.const(np.zeros(c), T.FLOAT),
+            ],
+            axis=-1,
+            epsilon=1e-5,
+        )
+
+        def linear(z, layer):
+            return self.op(
+                "Add",
+                [
+                    self.op("MatMul", [z, self.const(layer.weight.T, T.FLOAT)]),
+                    self.const(layer.bias, T.FLOAT),
+                ],
+            )
+
+        logits = linear(
+            self.gelu(linear(normalized, mod.router.fc1), T.FLOAT), mod.router.fc2
+        )
+        coefficients = self.op(
+            "Sub", [self.op("Softmax", [logits], axis=-1), self.const(1.0 / k, T.FLOAT)]
+        )
+        # The coefficients sum to zero, so the last expert's term folds into the others:
+        # sum over e of c_e * W_e = sum over e < K - 1 of c_e * (W_e - W_last).
+        # (1 for the base, c_0 .. c_{K-2}), as a pad so that no size is written in;
+        # reshapes keep the leading dimensions (0) for the same reason.
+        coefficients = self.op(
+            "Pad",
+            [
+                self.slice(coefficients, [0], [k - 1], [3]),
+                self.const([0, 0, 0, 1, 0, 0, 0, 0], T.INT64),
+                self.const(1.0, T.FLOAT),
+            ],
+        )
+        coefficients = self.reshape(coefficients, [0, 0, 0, k, 1])
+        experts = mod.experts.detach().reshape(k, c, c, 3, 3)
+        weight = torch.cat(
+            [
+                mod.base.weight.detach(),
+                (experts[:-1] - experts[-1:]).reshape((k - 1) * c, c, 3, 3),
+            ]
+        )
+        bias = torch.cat([mod.base.bias.detach(), torch.zeros((k - 1) * c)])
+        y = self.op(
+            "Conv",
+            [x, self.const(weight, T.BFLOAT16), self.const(bias, T.BFLOAT16)],
+            pads=[1, 1, 1, 1],
+            kernel_shape=[3, 3],
+        )
+        # The blend reads and writes channels last, the convolution's own layout: an
+        # NCHW blend output became strided writes in TensorRT's fused kernel.
+        y = self.reshape(
+            self.cast(self.trans(y, [0, 2, 3, 1]), T.FLOAT), [0, 0, 0, k, c]
+        )
+        y = self.op(
+            "ReduceSum",
+            [self.op("Mul", [y, coefficients]), self.const([3], T.INT64)],
+            keepdims=0,
+        )
+        output = self.cast(y, T.BFLOAT16)
+        return output if nhwc else self.trans(output, [0, 3, 1, 2])
 
     def shuffle(self, x, scale):
         return self.op("DepthToSpace", [x], blocksize=scale, mode="CRD")

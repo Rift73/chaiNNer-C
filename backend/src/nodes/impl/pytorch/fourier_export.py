@@ -137,7 +137,7 @@ class _Fp32DivisionNorm(nn.Module):
     """RMSNorm with its division in FP32, in whichever precision `x` comes, and its scale and
     offset in the copy's."""
 
-    def __init__(self, source: nn.Module) -> None:
+    def __init__(self, source: figsr_arch.RMSNorm | gfisrv2.RMSNorm) -> None:
         super().__init__()
         self.scale = nn.Parameter(source.scale.detach().view(-1, 1, 1))
         self.offset = nn.Parameter(source.offset.detach().view(-1, 1, 1))
@@ -150,11 +150,11 @@ class _Fp32DivisionNorm(nn.Module):
         return unit * self.scale + self.offset
 
 
-class _Fp16FourierUnit(nn.Module):
+class _Fp16FourierUnit(gfisrv2.FourierUnit):
     """A Fourier unit that hands its norms the transforms' FP32, not a rounding of it."""
 
     def __init__(self, source: nn.Module) -> None:
-        super().__init__()
+        nn.Module.__init__(self)
         self.__dict__.update(source.__dict__)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -438,4 +438,15 @@ These sources explain API behavior and portability; they do not substitute for l
   manifest records `"local": "na-v1"` and `"retrieval": "na-v1"`. Only chaiNNer-C's AOT
   plugins build these nodes.
   `cpu_graph_oracle.py` evaluates the node as a dense per-query FP32 reference.
+- Expert routing per position (`Graph`, `export_checkpoint` and `export_dynamic` option
+  `routing_na`, `--routing-na` of `export.py` and `dynamic.py`; off by default; the
+  plugin takes K = min(96, L) per axis at run time): each dynamic convolution's router
+  input at p is the FP32 mean over p's clamped K x K neighbourhood
+  (`DualBoxMean_<key>_TRT(x)` of the NHWC trunk, attribute `neighbourhood` = 96, in place
+  of the row sums; graphs without row sums use two separable `AveragePool`s and an edge
+  `Pad`), then the router's LayerNorm and MLP per position. The coefficients sum to zero,
+  so the base and each expert but the last less the last are one 3x3 `Conv` to experts *
+  C channels, blended per position in FP32, channels last. The manifest records
+  `"routing": "na-v1"` and `"routed_parts"` (the experts) only for a graph with those
+  sites. Only chaiNNer-C's AOT plugins build the box-mean node.
 - This guide: the author's local paths are placeholders (`<traiNNer-redux>`, `<workspace>`, `<research>`).

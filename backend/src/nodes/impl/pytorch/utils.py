@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 from threading import Lock
 from typing import TypeVar, cast
@@ -8,7 +9,7 @@ from weakref import WeakKeyDictionary
 
 import numpy as np
 import torch
-from spandrel import ModelDescriptor
+from spandrel import ImageModelDescriptor, ModelDescriptor
 from torch import Tensor
 
 from ..image_utils import MAX_VALUES_BY_DTYPE, as_3d
@@ -128,3 +129,16 @@ def safe_cuda_cache_empty():
             torch.cuda.empty_cache()
     except Exception:
         pass
+
+
+def weights_digest(model: ImageModelDescriptor) -> bytes:
+    """An ESRGAN's in FP16, as export_copy exports them, so PyTorch's FP16 setting makes no
+    second engine of a byte-identical ONNX."""
+    digest = hashlib.sha256()
+    as_exported = model.architecture.name == "ESRGAN"
+    for name, value in model.model.state_dict().items():
+        rounded = value.half() if as_exported and value.is_floating_point() else value
+        array = np.ascontiguousarray(rounded.detach().cpu().numpy())
+        digest.update(repr((name, array.dtype.str, array.shape)).encode())
+        digest.update(array.tobytes())
+    return digest.digest()
