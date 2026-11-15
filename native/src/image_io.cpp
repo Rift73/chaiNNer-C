@@ -11,6 +11,7 @@
 #include "image_preview.hpp"
 #include "numpy_pool.hpp"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "save_path.hpp"
 #include <pybind11/numpy.h>
 #include <pybind11/stl/filesystem.h>
@@ -433,12 +434,13 @@ O full_path(O base,O relative,O filename,O format_type,O node,O name_label) {
 // formats (GIF, TGA, AVIF) and lossless WebP with alpha get a uint8 image in
 // RGB(A) order and their save options; OpenCV formats get their parameters and
 // the precision conversion.
-struct Encoding {O image; bool pillow=false,exact_webp=false; py::dict options; py::list params;};
-// Save Image's inputs in order: 0-11 as upstream's, 12-22 the DDS inputs (save_dds_inputs),
-// then AVIF's chroma subsampling, EXR's depth and compression, skip existing files and the
-// metadata.
-constexpr size_t save_inputs=28,avif_subsampling=23,exr_depth=24,exr_compression=25,skip_existing=26,
-    save_metadata=save_inputs-1;
+// png_effort: the 8-bit PNG encoder's effort (cn::image_encode::png).
+struct Encoding {O image; bool pillow=false,exact_webp=false; int png_effort=0; py::dict options; py::list params;};
+// Save Image's inputs in order: 0-5 as upstream's, 6 PNG's Compression, 7-12 upstream's 6-11,
+// 13-23 the DDS inputs (save_dds_inputs), then AVIF's chroma subsampling, EXR's depth and
+// compression, skip existing files and the metadata.
+constexpr size_t save_inputs=29,png_compression=6,avif_subsampling=24,exr_depth=25,exr_compression=26,
+    skip_existing=27,save_metadata=save_inputs-1;
 bool pillow_format(const py::dict& g,const O& format_type) {
     return option(g,format_type,"ImageFormat","GIF")||option(g,format_type,"ImageFormat","TGA")||option(g,format_type,"ImageFormat","AVIF");
 }
@@ -450,18 +452,25 @@ void check_channels(const O& image,const O& action) {
     if(channels!=1&&channels!=3&&channels!=4)
         raise(PyExc_RuntimeError,format("Unsupported number of channels. {} is only supported for grayscale, RGB, and RGBA images.",action));
 }
+// PNG's Compression preset (1 to CN_PNG_EFFORTS) as the encoder's effort, preset 1 being effort 0; a value outside,
+// which the slider's enforce never gives, raises.
+int png_effort(const O& preset) {
+    const long long value=py::cast<long long>(preset);
+    if(value<1||value>CN_PNG_EFFORTS)raise(PyExc_ValueError,format("PNG Compression takes 1 to {}, not {}.",CN_PNG_EFFORTS,value));
+    return int(value-1);
+}
 Encoding encoding(py::dict g,O image,py::tuple args) {
     O format_type=args[4];
     check_channels(image,format("Saving .{} images",format_type.attr("extension")));
     Encoding result;
     // OpenCV's lossless WebP lets libwebp change the colour under alpha 0; Pillow's
     // exact=True keeps every sample (an RGB image has no such pixels).
-    const bool exact_webp=option(g,format_type,"ImageFormat","WEBP") && truth(args[6]) &&
+    const bool exact_webp=option(g,format_type,"ImageFormat","WEBP") && truth(args[7]) &&
         equal(index(name(g,"get_h_w_c")(image),2),py::int_(4));
     if(pillow_format(g,format_type) || exact_webp) {
         image=name(g,"to_uint8")(image,py::arg("normalized")=true);
         if(option(g,format_type,"ImageFormat","AVIF")) {
-            result.options["quality"]=args[7];result.options["subsampling"]=O(args[avif_subsampling]).attr("value");
+            result.options["quality"]=args[8];result.options["subsampling"]=O(args[avif_subsampling]).attr("value");
             if(!O(args[save_metadata]).is_none())result.options.attr("update")(name(g,"avif_tag_options")(args[save_metadata],image,result.options["subsampling"]));
         }
         if(exact_webp){result.options["lossless"]=py::bool_(true);result.options["exact"]=py::bool_(true);}
@@ -473,21 +482,23 @@ Encoding encoding(py::dict g,O image,py::tuple args) {
     }
     O cv=name(g,"cv2");py::list& params=result.params;
     if(option(g,format_type,"ImageFormat","JPG")) {
-        params.append(cv.attr("IMWRITE_JPEG_QUALITY"));params.append(args[7]);
-        params.append(cv.attr("IMWRITE_JPEG_SAMPLING_FACTOR"));params.append(O(args[8]).attr("value"));
-        params.append(cv.attr("IMWRITE_JPEG_PROGRESSIVE"));params.append(graphpy::builtin("int")(args[9]));
-    } else if(option(g,format_type,"ImageFormat","WEBP")) {params.append(cv.attr("IMWRITE_WEBP_QUALITY"));params.append(truth(args[6])?O(py::int_(101)):O(args[7]));}
-    else if(option(g,format_type,"ImageFormat","TIFF")&&!option(g,args[10],"TiffColorDepth","F32")) {params.append(cv.attr("IMWRITE_TIFF_COMPRESSION"));params.append(O(args[11]).attr("cv2_code"));}
+        params.append(cv.attr("IMWRITE_JPEG_QUALITY"));params.append(args[8]);
+        params.append(cv.attr("IMWRITE_JPEG_SAMPLING_FACTOR"));params.append(O(args[9]).attr("value"));
+        params.append(cv.attr("IMWRITE_JPEG_PROGRESSIVE"));params.append(graphpy::builtin("int")(args[10]));
+    } else if(option(g,format_type,"ImageFormat","WEBP")) {params.append(cv.attr("IMWRITE_WEBP_QUALITY"));params.append(truth(args[7])?O(py::int_(101)):O(args[8]));}
+    else if(option(g,format_type,"ImageFormat","TIFF")&&!option(g,args[11],"TiffColorDepth","F32")) {params.append(cv.attr("IMWRITE_TIFF_COMPRESSION"));params.append(O(args[12]).attr("cv2_code"));}
     else if(option(g,format_type,"ImageFormat","EXR")) {
         params.append(cv.attr("IMWRITE_EXR_TYPE"));params.append(O(args[exr_depth]).attr("value"));
         params.append(cv.attr("IMWRITE_EXR_COMPRESSION"));params.append(O(args[exr_compression]).attr("value"));
     }
     int precision=8;
     if(option(g,format_type,"ImageFormat","EXR"))precision=32;
-    else if(option(g,format_type,"ImageFormat","PNG")){if(option(g,args[5],"PngColorDepth","U16"))precision=16;}
-    else if(option(g,format_type,"ImageFormat","TIFF")) {
-        if(option(g,args[10],"TiffColorDepth","U16"))precision=16;
-        else if(option(g,args[10],"TiffColorDepth","F32"))precision=32;
+    else if(option(g,format_type,"ImageFormat","PNG")) {
+        if(option(g,args[5],"PngColorDepth","U16"))precision=16;
+        else result.png_effort=png_effort(args[png_compression]);
+    } else if(option(g,format_type,"ImageFormat","TIFF")) {
+        if(option(g,args[11],"TiffColorDepth","U16"))precision=16;
+        else if(option(g,args[11],"TiffColorDepth","F32"))precision=32;
     }
     if(precision!=32)image=name(g,precision==8?"to_uint8":"to_uint16")(image,py::arg("normalized")=true);
     result.image=image;
@@ -534,11 +545,12 @@ O run_encoder(const std::function<cn_codec_status(cn_codec_output&)>& encoder) {
     out.data=nullptr; // The capsule owns the buffer only after its construction succeeds.
     return py::array_t<uint8_t>({py::ssize_t(out.size)},{py::ssize_t(1)},owner.get_pointer<uint8_t>(),owner);
 }
-// The default PNG (cn::image_encode::png) of a uint8 grey (2-D, or one channel), grey + alpha, BGR or BGRA array, as
+// The PNG at an effort (cn::image_encode::png; 0 the default PNG) of a uint8 grey (2-D, or one channel), grey + alpha,
+// BGR or BGRA array, as
 // run_encoder's array, so a batch's files reuse one warm block; None when the encoder declines. All codec dispatch
 // decisions happen before compression; a failure in the selected encoder is reported, never retried through another
 // codec. Other dtypes/channels/options retain OpenCV semantics.
-O encode_png(const O& image) {
+O encode_png(const O& image,int effort) {
     if (!py::isinstance<py::array>(image)) return py::none();
     py::array input=py::reinterpret_borrow<py::array>(image);
     if ((input.ndim()!=2 && input.ndim()!=3) || input.itemsize()!=1 || input.dtype().kind()!='u') return py::none();
@@ -549,7 +561,7 @@ O encode_png(const O& image) {
     const ptrdiff_t row_stride=input.strides(0),pixel_stride=input.strides(1),channel_stride=grey?1:input.strides(2);
     cn::image_encode::Png result;
     O encoded=run_encoder([&](cn_codec_output& out){
-        result=cn::image_encode::png(source,height,width,channels,row_stride,pixel_stride,channel_stride,out);
+        result=cn::image_encode::png(source,height,width,channels,row_stride,pixel_stride,channel_stride,effort,out);
         return result==cn::image_encode::Png::encoded?CN_CODEC_OK:CN_CODEC_FALLBACK;
     });
     if(result==cn::image_encode::Png::out_of_memory)throw std::bad_alloc();
@@ -636,16 +648,16 @@ O native_exact_webp(const Encoding& encoded) {
     if(!encoded.exact_webp || !cn::image_decode::enabled() || !codec_image(encoded.image,view))return py::none();
     return run_encoder([&](cn_codec_output& out){return cn_webp_encode_exact(&view,&out);});
 }
-// The codec of cv_save for a file extension: chaiNNer-C's PNG encoder for a default 8-bit PNG, else the vendored
-// encoder of OpenCV's (native_encode), else OpenCV's imencode; a TIFF then gets add_extra_samples. Returns bytes, or
-// the encoder's buffer array.
-O encode(py::dict g,O extension,O image,O params) {
+// The codec of cv_save for a file extension: chaiNNer-C's PNG encoder at png_effort for an 8-bit PNG without
+// parameters, else the vendored encoder of OpenCV's (native_encode), else OpenCV's imencode; a TIFF then gets
+// add_extra_samples. Returns bytes, or the encoder's buffer array.
+O encode(py::dict g,O extension,O image,O params,int png_effort) {
     O buffer=py::none();
     // Explicit codec parameters are a distinct OpenCV contract (compression,
     // bilevel, strategy). Only default PNG encoding takes chaiNNer-C's encoder.
     if(equal(extension.attr("lower")(),py::str(".png")) &&
         (PyList_CheckExact(params.ptr()) || PyTuple_CheckExact(params.ptr())) && py::len(params)==0)
-        buffer=encode_png(image);
+        buffer=encode_png(image,png_effort);
     if(buffer.is_none())buffer=native_encode(g,extension,image,params);
     if(buffer.is_none()) {
         O result=name(g,"cv2").attr("imencode")(format(".{}",extension),image,params);
@@ -737,7 +749,7 @@ void save_image(py::dict g,py::tuple args,O prepared) {
         return;
     }
     if(option(g,format_type,"ImageFormat","DDS")) {
-        save_dds_inputs(g,path,image,py::str("array"),args[py::slice(12,23,1)]);
+        save_dds_inputs(g,path,image,py::str("array"),args[py::slice(13,24,1)]);
         return;
     }
     Encoding encoded=encoding(g,image,args);
@@ -746,10 +758,12 @@ void save_image(py::dict g,py::tuple args,O prepared) {
         return;
     }
     if(O(args[save_metadata]).is_none()) {
-        name(g,"cv_save_image")(path,encoded.image,encoded.params);
+        // PNG's Compression above 1 alone passes the effort: every other save makes upstream's call.
+        if(encoded.png_effort)name(g,"cv_save_image")(path,encoded.image,encoded.params,py::arg("png_effort")=encoded.png_effort);
+        else name(g,"cv_save_image")(path,encoded.image,encoded.params);
         return;
     }
-    write_file(path,tagged(g,args,encode(g,index(name(g,"split_file_path")(path),2),encoded.image,encoded.params),image));
+    write_file(path,tagged(g,args,encode(g,index(name(g,"split_file_path")(path),2),encoded.image,encoded.params,encoded.png_effort),image));
 }
 // Save Image's prepare phase: the bytes save_image writes for these
 // inputs (input 0 the image itself) to a path with the format's own extension,
@@ -763,7 +777,7 @@ O save_prepare(py::dict g,py::tuple args) {
     if(skipped(args,target_type(name(g,"get_full_path")(args[1],args[2],args[3],format_type))))return py::none();
     O extension=add(py::str("."),format_type.attr("extension"));
     Encoding encoded=encoding(g,args[0],args);
-    return tagged(g,args,encoded.pillow?pillow_bytes(g,encoded,extension):encode(g,extension,encoded.image,encoded.params),args[0]);
+    return tagged(g,args,encoded.pillow?pillow_bytes(g,encoded,extension):encode(g,extension,encoded.image,encoded.params,encoded.png_effort),args[0]);
 }
 // LargeImageOutput.get_broadcast_data's previews of an enforced image (cn::image_preview, without the GIL): a list
 // of {"width", "height", "url"}, or None when the native path declines and the Python loop runs.
@@ -796,7 +810,7 @@ void view_image(py::dict g,O image) {
     O filename=format("{}.png",name(g,"time").attr("time")());
     O path=name(g,"os").attr("path").attr("join")(temporary,filename);
     O pixels=name(g,"to_uint8")(image,py::arg("normalized")=true);
-    O buffer=encode_png(pixels);
+    O buffer=encode_png(pixels,0);
     bool saved=false;
     if(buffer.is_none())saved=truth(name(g,"cv2").attr("imwrite")(path,pixels));
     else {
@@ -815,8 +829,8 @@ void view_image(py::dict g,O image) {
         else name(g,"subprocess").attr("call")(py::make_tuple("xdg-open",path));
     }
 }
-void cv_save(py::dict g,O path,O image,O params) {
-    write_file(path,encode(g,index(name(g,"split_file_path")(path),2),image,params));
+void cv_save(py::dict g,O path,O image,O params,int png_effort) {
+    write_file(path,encode(g,index(name(g,"split_file_path")(path),2),image,params,png_effort));
 }
 O decode_bytes(O bytes) {
     try{return bytes.attr("decode")(py::arg("encoding")="iso8859-1");}
@@ -1218,6 +1232,7 @@ void cn_bind_image_io(py::module_& module) {
         return asked?O(py::make_tuple(shape.height,shape.width,shape.channels)):O(py::none());
     });
     module.attr("image_io_max_pixels")=py::int_(CN_MAX_IMAGE_PIXELS);
+    module.attr("image_io_png_efforts")=py::int_(CN_PNG_EFFORTS);
     // A file's EXIF block as the orientation reads it (image_decode.hpp), or None: Pillow has a PNG's eXIf after IDAT
     // only once it decoded the pixels.
     module.def("image_io_exif_block",[](py::bytes data)->O {
@@ -1228,7 +1243,9 @@ void cn_bind_image_io(py::module_& module) {
     module.def("image_io_for_ext",&for_ext);module.def("image_io_load",&load_image);
     module.def("image_io_full_path",&full_path);module.def("image_io_save",&save_image);module.def("image_io_view",&view_image);
     module.def("image_io_save_prepare",&save_prepare);module.def("image_io_orient",&orient_tag);
-    module.def("image_io_cv_save",&cv_save);module.def("image_io_previews",&previews);
+    module.def("image_io_cv_save",&cv_save,py::arg("g"),py::arg("path"),py::arg("image"),py::arg("params"),
+        py::arg("png_effort")=0);
+    module.def("image_io_previews",&previews);
     module.def("image_io_decode_bytes",&decode_bytes);module.def("image_io_run_texconv",&run_texconv);
     module.def("image_io_dds_read",&dds_read);module.def("image_io_save_dds",&save_dds);module.def("image_io_dds_info",&dds_info);
     module.def("image_io_dds_read_all",&dds_read_all);module.def("image_io_save_dds_inputs",&save_dds_inputs);

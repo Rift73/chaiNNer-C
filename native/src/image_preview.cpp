@@ -87,7 +87,7 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
     if (image.channels > 3 || lossless) {
         const ptrdiff_t c = ptrdiff_t(image.channels);
         cn::codecs::Output png;
-        switch (cn::image_encode::png(pixels.data(), image.height, image.width, c, ptrdiff_t(image.width) * c, c, 1, png.value)) {
+        switch (cn::image_encode::png(pixels.data(), image.height, image.width, c, ptrdiff_t(image.width) * c, c, 1, 0, png.value)) {
         case cn::image_encode::Png::encoded:
             url = "data:image/png;base64," + base64({png.value.data, png.value.size});
             return true;

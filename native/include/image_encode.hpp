@@ -15,17 +15,17 @@ namespace cn::image_encode {
 
 enum class Png { declined, encoded, out_of_memory, failed };
 
-/* The default PNG (cn_png_encode_u8, png_encode.c) of an 8-bit grey, grey + alpha, BGR or BGRA image (strides in
- * bytes, any sign), written to the buffer allocate(size) returns once the file's size is known (on the calling
- * thread; it does not throw, and returns nullptr when it cannot allocate): `declined` (allocate not called) beyond the
- * encoder's range (each side at most 2^31 - 1, rows of fewer than 2^29 samples), so another encoder runs;
- * `out_of_memory` when an allocation failed; `failed` for any other error, which none of the encoder's inputs here
- * gives. */
+/* The PNG (cn_png_encode_u8_effort, png_encode.c) of an 8-bit grey, grey + alpha, BGR or BGRA image (strides in
+ * bytes, any sign) at an effort from 0 to CN_PNG_EFFORTS - 1, 0 being the default PNG (cn_png_encode_u8's), written to
+ * the buffer allocate(size) returns once the file's size is known (on the calling thread; it does not throw, and
+ * returns nullptr when it cannot allocate): `declined` (allocate not called) beyond the encoder's range (each side at
+ * most 2^31 - 1, rows of fewer than 2^29 samples), so another encoder runs; `out_of_memory` when an allocation failed;
+ * `failed` for any other error, which none of the encoder's inputs here gives with an effort in that range. */
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, const std::function<uint8_t *(size_t)> &allocate);
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int effort, const std::function<uint8_t *(size_t)> &allocate);
 /* The same into a buffer from `out`'s allocator, not zeroed: the encoder writes every byte (`out.size` the file's). */
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, cn_codec_output &out);
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int effort, cn_codec_output &out);
 
 /* OpenCV writes 4-sample RGB TIFFs without ExtraSamples (tag 338), which TIFF 6.0 requires, so readers may take the
  * fourth sample for an unknown one (upstream chaiNNer #2950). Adds 338 = SHORT 2 (unassociated alpha: chaiNNer's

@@ -101,6 +101,11 @@ class PngColorDepth(Enum):
     U16 = "u16"
 
 
+# Compression's presets: the 8-bit PNG encoder's efforts (CN_PNG_EFFORTS in
+# native/include/run_kernels.h), preset N being effort N - 1.
+PNG_COMPRESSION_PRESETS = 5
+
+
 class TiffColorDepth(Enum):
     U8 = "u8"
     U16 = "u16"
@@ -411,6 +416,15 @@ def dds_inputs() -> list[BaseInput | NestedGroup]:
                     PngColorDepth.U16: "16 Bits/Channel",
                 },
             ).with_id(15),
+            if_enum_group(15, PngColorDepth.U8)(
+                SliderInput(
+                    "Compression", min=1, max=PNG_COMPRESSION_PRESETS, default=1
+                )
+                .with_id(28)
+                .with_docs(
+                    "1 is the fastest and is the method used until now; higher values give smaller files and take longer. Every value is lossless."
+                ),
+            ),
         ),
         if_enum_group(4, ImageFormat.WEBP)(
             BoolInput("Lossless", default=False).with_id(14),
@@ -526,6 +540,7 @@ def save_image_node(
     filename: str,
     image_format: ImageFormat,
     png_color_depth: PngColorDepth,
+    png_compression: int,
     webp_lossless: bool,
     quality: int,
     jpeg_chroma_subsampling: JpegSubsampling,
@@ -558,6 +573,7 @@ def save_image_node(
             filename,
             image_format,
             png_color_depth,
+            png_compression,
             webp_lossless,
             quality,
             jpeg_chroma_subsampling,

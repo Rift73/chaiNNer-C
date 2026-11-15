@@ -56,8 +56,9 @@ else()
 endif()
 set_target_properties(_chainner_trt PROPERTIES SUFFIX "${chainner_c_module_suffix}")
 
-if(WIN32)
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tests/trt_runner_faults/faults.cpp")
     # runner.cpp over stand-ins of CUDA and TensorRT that fail on demand; backend/tests/test_tensorrt_runner.py runs it.
+    # Built only when the test files are there (they are packed in tests.tar).
     add_executable(trt_runner_faults ../tests/trt_runner_faults/faults.cpp runner.cpp frame.cpp plan.cpp)
     target_include_directories(trt_runner_faults BEFORE PRIVATE
         ../tests/trt_runner_faults/stand_ins "${CMAKE_CURRENT_SOURCE_DIR}")

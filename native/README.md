@@ -165,6 +165,8 @@ the NCNN optimizer with its recorded corrections. Rerun one only when its pinned
 
 ## Test
 
+The test files are packed in `tests.tar` at the repository root and are unpacked there with `tar -xf tests.tar`.
+
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = '1'; $env:CUDA_VISIBLE_DEVICES = '-1'
 $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"

@@ -32,6 +32,10 @@
         },
         {
           "type": "value",
+          "value": 1
+        },
+        {
+          "type": "value",
           "value": 0
         },
         {

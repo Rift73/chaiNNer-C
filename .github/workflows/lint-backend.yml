@@ -21,6 +21,7 @@ on:
             - 'pyrightconfig.json'
             - 'requirements.txt'
             - 'native/python-stack.lock.txt'
+            - 'tests.tar'
     push:
         branches: [main, chaiNNer-C]
 
@@ -33,6 +34,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v5
+            - run: tar -xf tests.tar
             - uses: actions/setup-python@v6
               with:
                   python-version: '3.14'
@@ -44,6 +46,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v5
+            - run: tar -xf tests.tar
             - uses: actions/setup-python@v6
               with:
                   python-version: '3.14'
@@ -60,6 +63,7 @@ jobs:
         runs-on: windows-latest
         steps:
             - uses: actions/checkout@v5
+            - run: tar -xf tests.tar
             - uses: ./.github/actions/backend-env
             - name: pyright
               run: ./native/runtime/cpython-3.14.8/Scripts/pyright
@@ -68,6 +72,7 @@ jobs:
         runs-on: windows-latest
         steps:
             - uses: actions/checkout@v5
+            - run: tar -xf tests.tar
             - uses: ./.github/actions/backend-env
             - name: pytest backend/tests
               run: ./native/runtime/cpython-3.14.8/Scripts/python -m pytest backend/tests

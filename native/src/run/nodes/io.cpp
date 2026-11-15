@@ -246,13 +246,13 @@ void quantized(const Image &image, int bits, cn_codec_output &out)
 
 /* Save Image's file bytes for the formats whose encoders are native (save_image.py encoding() and image_io.cpp
  * encode()), held by `out`, or by `fixed` for a TIFF that took the ExtraSamples fix: PNG (chaiNNer-C's encoder for 8
- * bits, OpenCV's PngEncoder for 16), JPG, WEBP (lossless with alpha as Pillow's exact save), BMP, TIFF (8/16-bit with
+ * bits at Compression's effort, OpenCV's PngEncoder for 16), JPG, WEBP (lossless with alpha as Pillow's exact save), BMP, TIFF (8/16-bit with
  * its compression, or float32 as it is; then the ExtraSamples fix), EXR (float32 as it is, or half). */
 std::span<const uint8_t> save_bytes(const Image &image, std::span<const Value> inputs, cn_codec_output &out,
                                     std::vector<uint8_t> &fixed)
 {
     const std::string &format = std::get<std::string>(inputs[4]);
-    const std::string &depth = std::get<std::string>(inputs[format == "tiff" ? 10 : 5]);
+    const std::string &depth = std::get<std::string>(inputs[format == "tiff" ? 11 : 5]);
     const uint32_t height = uint32_t(image.height), width = uint32_t(image.width), channels = uint32_t(image.channels);
     const bool floats = format == "exr" || (format == "tiff" && depth == "f32");
     const bool sixteen = (format == "png" || format == "tiff") && depth == "u16";
@@ -262,27 +262,32 @@ std::span<const uint8_t> save_bytes(const Image &image, std::span<const Value> i
     const cn_codec_image view{floats ? reinterpret_cast<const uint8_t *>(image.data) : pixels.value.data, height, width,
                               channels, sample_bytes, size_t(width) * channels * sample_bytes};
     if (format == "png" && !sixteen) {
+        // Compression's preset N is effort N - 1; a value outside, which its enforce never gives, takes the Python
+        // body's error.
+        const int64_t preset = std::get<int64_t>(inputs[6]);
+        if (preset < 1 || preset > CN_PNG_EFFORTS) throw RunPython{};
         const ptrdiff_t c = ptrdiff_t(channels);
-        const auto result = cn::image_encode::png(pixels.value.data, height, width, c, ptrdiff_t(width) * c, c, 1, out);
+        const auto result =
+            cn::image_encode::png(pixels.value.data, height, width, c, ptrdiff_t(width) * c, c, 1, int(preset - 1), out);
         if (result == cn::image_encode::Png::encoded) return {out.data, out.size};
         // The Python body raises the same encoder's error (MemoryError or RuntimeError).
         if (result != cn::image_encode::Png::declined) throw RunPython{};
     }
-    const bool webp_lossless = std::get<bool>(inputs[6]);
-    const int64_t quality = std::get<int64_t>(inputs[7]), compression = std::get<int64_t>(inputs[11]);
+    const bool webp_lossless = std::get<bool>(inputs[7]);
+    const int64_t quality = std::get<int64_t>(inputs[8]), compression = std::get<int64_t>(inputs[12]);
     if (format == "webp" && webp_lossless && channels == 4)
         for (size_t i = 0; i < pixels.value.size; i += 4) std::swap(pixels.value.data[i], pixels.value.data[i + 2]); // BGRA2RGBA for Pillow
     cn_codec_status status = CN_CODEC_FALLBACK;
     if (format == "png") status = cn_png_encode(&view, &out);
     else if (format == "jpg" && quality >= 0 && quality <= 100)
-        status = cn_jpeg_encode(&view, int(quality), uint32_t(std::get<int64_t>(inputs[8])), std::get<bool>(inputs[9]) ? 1 : 0, &out);
+        status = cn_jpeg_encode(&view, int(quality), uint32_t(std::get<int64_t>(inputs[9])), std::get<bool>(inputs[10]) ? 1 : 0, &out);
     else if (format == "webp" && webp_lossless && channels == 4) status = cn_webp_encode_exact(&view, &out);
     else if (format == "webp" && quality <= 100) status = cn_webp_encode(&view, webp_lossless ? 101 : int(quality), &out);
     else if (format == "bmp") status = cn_bmp_encode(&view, &out);
     else if (format == "tiff" && (floats || compression == 1 || compression == 5 || compression == 8))
         status = cn_tiff_encode(&view, floats ? 0 : int(compression), &out);
     else if (format == "exr")
-        status = cn_exr_encode(&view, int(std::get<int64_t>(inputs[24])), int(std::get<int64_t>(inputs[25])), &out);
+        status = cn_exr_encode(&view, int(std::get<int64_t>(inputs[25])), int(std::get<int64_t>(inputs[26])), &out);
     if (status != CN_CODEC_OK) throw RunPython{};
     if (format == "tiff" && cn::image_encode::tiff_extra_samples({out.data, out.size}, fixed)) return fixed;
     return {out.data, out.size};
@@ -349,7 +354,7 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
         if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) throw RunPython{};
         // A folder in the way takes today's path, whose write raises (Skip existing files skips files only).
         if (attributes & FILE_ATTRIBUTE_DIRECTORY) throw RunPython{};
-        if (std::get<bool>(inputs[26])) return; // skip existing files
+        if (std::get<bool>(inputs[27])) return; // skip existing files
         // Path.resolve() names an existing file by its on-disk spelling, which an overwrite keeps.
         WIN32_FIND_DATAW found;
         const HANDLE search = FindFirstFileW(path.c_str(), &found);
@@ -372,7 +377,7 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
         // A folder in the way takes today's path, whose write raises; Linux names keep their case, so an overwrite
         // keeps the path's.
         if (std::filesystem::is_directory(status)) throw RunPython{};
-        if (std::get<bool>(inputs[26])) return; // skip existing files (full_path declined a link)
+        if (std::get<bool>(inputs[27])) return; // skip existing files (full_path declined a link)
     } else {
         std::filesystem::create_directories(path.parent_path(), error);
         if (error) throw RunPython{};

@@ -9,7 +9,7 @@
 namespace cn::image_encode {
 
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, const std::function<uint8_t *(size_t)> &allocate) {
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int effort, const std::function<uint8_t *(size_t)> &allocate) {
     if (channels < 1 || channels > 4 || height < 1 || width < 1 || size_t(height) > CN_PNG_MAX_SIDE ||
         size_t(width) > CN_PNG_MAX_SIDE || size_t(width) > CN_PNG_MAX_ROW_SAMPLES / size_t(channels))
         return Png::declined;
@@ -17,16 +17,16 @@ Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t chan
     const cn_png_allocate trampoline = [](void *context, size_t size) {
         return (*static_cast<const std::function<uint8_t *(size_t)> *>(context))(size);
     };
-    const cn_status status = cn_png_encode_u8(source, size_t(height), size_t(width), size_t(channels), row_stride,
-                                              pixel_stride, channel_stride, 1, trampoline,
-                                              const_cast<std::function<uint8_t *(size_t)> *>(&allocate));
+    const cn_status status = cn_png_encode_u8_effort(source, size_t(height), size_t(width), size_t(channels),
+                                                     row_stride, pixel_stride, channel_stride, 1, effort, trampoline,
+                                                     const_cast<std::function<uint8_t *(size_t)> *>(&allocate));
     if (status == CN_ALLOCATION_FAILED) return Png::out_of_memory;
     return status == CN_OK ? Png::encoded : Png::failed;
 }
 
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, cn_codec_output &out) {
-    return png(source, height, width, channels, row_stride, pixel_stride, channel_stride,
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int effort, cn_codec_output &out) {
+    return png(source, height, width, channels, row_stride, pixel_stride, channel_stride, effort,
                [&](size_t size) -> uint8_t * {
                    cn_codec_output_reserve(&out, size);
                    if (out.failed) return nullptr;

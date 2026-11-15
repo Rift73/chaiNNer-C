@@ -246,8 +246,22 @@ typedef uint8_t *(*cn_png_allocate)(void *context, size_t size);
 CN_RUN_KERNEL cn_status cn_png_encode_u8(const uint8_t *source, size_t height, size_t width, size_t channels,
     ptrdiff_t row_stride, ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int bgr, cn_png_allocate allocate,
     void *context);
+/* cn_png_encode_u8 at an effort from 0 to CN_PNG_EFFORTS - 1 (CN_INVALID_ARGUMENT outside): 0 writes cn_png_encode_u8's
+ * file; each higher one a smaller file of the same pixels, in more time (png_encode.c's png_efforts says how): 1
+ * level 10 in bands, 2 level 11 in bands with a better filter choice, 3 one level-12 stream, 4 its blocks refined. */
+#define CN_PNG_EFFORTS 5
+CN_RUN_KERNEL cn_status cn_png_encode_u8_effort(const uint8_t *source, size_t height, size_t width, size_t channels,
+    ptrdiff_t row_stride, ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int bgr, int effort,
+    cn_png_allocate allocate, void *context);
 /* Frees the compressors and buffers idle between calls; a call in flight keeps its own. */
 CN_RUN_KERNEL void cn_png_encode_release(void);
+/* Test-only: effort 3's segment and lead-in sizes (filtered bytes) for the calls that start afterwards, so that small
+ * images take its segmented path; segment_bytes 0 restores the shipped sizes. Both test switches are plain statics read
+ * several times per call: change them only while no encode runs in the process. */
+CN_RUN_KERNEL void cn_png_encode_test_segments(size_t segment_bytes, size_t lead_bytes);
+/* Test-only, as above: effort 4's restarts per block, their noise (per mille, at most 1000) and rounds (0: from the
+ * plan's size). */
+CN_RUN_KERNEL void cn_png_encode_test_refine(unsigned restarts, unsigned noise, unsigned rounds);
 /* procedural_complete_ops.c */
 CN_RUN_KERNEL cn_status cn_create_procedural(void *out, size_t height, size_t width,
     uint64_t seed, int method, double scale, double brightness,

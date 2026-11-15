@@ -463,6 +463,33 @@ struct libdeflate_compressor {
 	/* The compression level with which this compressor was created */
 	unsigned compression_level;
 
+	/*
+	 * chaiNNer-C patch (PROVENANCE.md): during a call of
+	 * libdeflate_deflate_compress_history(), the bytes before the input that
+	 * matches may reach, and whether the near-optimal compressor parses them
+	 * first as blocks it does not write ('warm'); 0 and false otherwise
+	 */
+	size_t history_nbytes;
+	bool history_warm;
+
+	/*
+	 * chaiNNer-C patch (PROVENANCE.md): during a call of
+	 * libdeflate_deflate_compress_matches(), the matches found ahead for every
+	 * input position; NULL otherwise
+	 */
+	const struct libdeflate_matches *ext;
+
+	/*
+	 * chaiNNer-C patch (PROVENANCE.md): during libdeflate_plan_blocks(), the
+	 * blocks' plans and match caches are recorded instead of written; during
+	 * libdeflate_write_blocks(), the plans written
+	 */
+	struct libdeflate_block_plan *plan;
+	size_t plan_count, plan_max, plan_cache_used, plan_cache_max;
+	uint32_t *plan_cache;
+	const u8 *plan_in;
+	bool plan_overflow;
+
 	/* Anything of this size or less we won't bother trying to compress. */
 	size_t max_passthrough_size;
 
@@ -2635,6 +2662,12 @@ deflate_compress_lazy_generic(struct libdeflate_compressor * restrict c,
 	u32 next_hashes[2] = {0, 0};
 
 	hc_matchfinder_init(&c->p.g.hc_mf);
+	if (c->history_nbytes) {
+		in_cur_base = in - c->history_nbytes;
+		hc_matchfinder_skip_bytes(&c->p.g.hc_mf, &in_cur_base,
+					  in_cur_base, in_end,
+					  c->history_nbytes, next_hashes);
+	}
 
 	do {
 		/* Starting a new DEFLATE block */
@@ -3345,6 +3378,248 @@ deflate_set_initial_costs(struct libdeflate_compressor *c,
  * end node is computed and the match/literal choice that begins that path is
  * saved.
  */
+#if defined(ARCH_X86_64) && (defined(__GNUC__) || defined(__clang__))
+#include "x86/cpu_features.h"
+#include <immintrin.h>
+#define MIN_COST_AVX2 1
+/*
+ * chaiNNer-C patch (PROVENANCE.md): all lengths of one position's matches in
+ * deflate_find_min_cost_path(), 8 lengths at a time, each lane priced with the
+ * offset of the first (nearest) match that reaches its length.  If some length
+ * costs less than *best_cost, lowers *best_cost to the lowest cost and returns
+ * the item of its first (shortest) length; else returns 0: the choice the
+ * scalar loops make.
+ */
+static forceinline _target_attribute("avx2") __m256i
+node_costs_avx2(const struct deflate_optimum_node *node)
+{
+	const __m256i n0 = _mm256_loadu_si256((const __m256i *)&node[0]);
+	const __m256i n1 = _mm256_loadu_si256((const __m256i *)&node[4]);
+
+	return _mm256_permute4x64_epi64(_mm256_castps_si256(_mm256_shuffle_ps(
+		_mm256_castsi256_ps(n0), _mm256_castsi256_ps(n1), 0x88)), 0xD8);
+}
+
+static forceinline _target_attribute("avx2") u32
+min_cost_matches_avx2(const struct libdeflate_compressor *c,
+		      const struct deflate_optimum_node *node,
+		      const struct lz_match *match, unsigned num_matches,
+		      __m256i first_ends, u32 *best_cost)
+{
+	const __m256i ones = _mm256_set1_epi32(-1);
+	const __m256i lanes = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+	const u32 longest = match[num_matches - 1].length;
+	__m256i vmin = ones, vidx = ones;
+	u32 offset_cost[DEFLATE_MAX_MATCH_LEN + 1];
+	unsigned k = 0, i;
+	u32 base, m, len, best = *best_cost;
+	__m128i h;
+
+	for (i = 0; i < num_matches; i++)
+		offset_cost[i] = c->p.n.costs.offset_slot[
+			c->p.n.offset_slot_full[match[i].offset]];
+	for (base = DEFLATE_MIN_MATCH_LEN; base <= longest; base += 8) {
+		const __m256i vlen = _mm256_add_epi32(
+			_mm256_set1_epi32((int)base), lanes);
+		const __m256i ends = base == DEFLATE_MIN_MATCH_LEN ? first_ends :
+				     node_costs_avx2(&node[base]);
+		__m256i voc, cand, lower;
+		unsigned j;
+
+		while (match[k].length < base)
+			k++;
+		voc = _mm256_set1_epi32((int)offset_cost[k]);
+		for (j = k; j + 1 < num_matches &&
+			    match[j].length < base + 7; j++)
+			voc = _mm256_blendv_epi8(voc,
+				_mm256_set1_epi32((int)offset_cost[j + 1]),
+				_mm256_cmpgt_epi32(vlen, _mm256_set1_epi32(
+					(int)match[j].length)));
+		cand = _mm256_add_epi32(_mm256_add_epi32(_mm256_loadu_si256(
+			(const __m256i *)&c->p.n.costs.length[base]), voc),
+			ends);
+		cand = _mm256_or_si256(cand, _mm256_cmpgt_epi32(vlen,
+			_mm256_set1_epi32((int)longest)));
+		lower = _mm256_xor_si256(_mm256_cmpeq_epi32(
+			_mm256_min_epu32(cand, vmin), vmin), ones);
+		vmin = _mm256_min_epu32(cand, vmin);
+		vidx = _mm256_blendv_epi8(vidx, vlen, lower);
+	}
+	{
+		const __m256i sign = _mm256_set1_epi32((int)0x80000000);
+
+		if (!_mm256_movemask_epi8(_mm256_cmpgt_epi32(
+			_mm256_xor_si256(_mm256_set1_epi32((int)best), sign),
+			_mm256_xor_si256(vmin, sign))))
+			return 0;
+	}
+	h = _mm_min_epu32(_mm256_castsi256_si128(vmin),
+			  _mm256_extracti128_si256(vmin, 1));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0x4E));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0xB1));
+	m = (u32)_mm_cvtsi128_si32(h);
+	if (m >= best)
+		return 0;
+	vidx = _mm256_or_si256(vidx, _mm256_xor_si256(_mm256_cmpeq_epi32(
+		vmin, _mm256_set1_epi32((int)m)), ones));
+	h = _mm_min_epu32(_mm256_castsi256_si128(vidx),
+			  _mm256_extracti128_si256(vidx, 1));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0x4E));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0xB1));
+	len = (u32)_mm_cvtsi128_si32(h);
+	*best_cost = m;
+	for (k = 0; match[k].length < len; k++)
+		;
+	return len | ((u32)match[k].offset << OPTIMUM_OFFSET_SHIFT);
+}
+
+/*
+ * chaiNNer-C patch (PROVENANCE.md): min_cost_matches_avx2() without branches
+ * for a position with at most 8 matches whose lengths are at most 10 (one
+ * vector of lengths 3 to 10): each length lane counts the matches shorter than
+ * it to find the match that prices it, and the offsets' slots are computed
+ * (2 * floor(log2(d - 1)) plus the next bit, below 5 d - 1) instead of loaded.
+ * Returns the item of the first lowest-cost length and its cost in *cost.
+ */
+static forceinline _target_attribute("avx2") u32
+min_cost_short_avx2(const struct libdeflate_compressor *c,
+		    const struct lz_match *match, unsigned num_matches,
+		    __m256i ends, u32 *cost)
+{
+	const __m256i lanes = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+	const __m256i ones = _mm256_set1_epi32(-1);
+	const __m256i valid = _mm256_cmpgt_epi32(
+		_mm256_set1_epi32((int)num_matches), lanes);
+	const __m256i v = _mm256_maskload_epi32((const int *)match, valid);
+	const __m256i lens = _mm256_or_si256(_mm256_and_si256(v,
+		_mm256_set1_epi32(0xFFFF)), _mm256_andnot_si256(valid,
+		_mm256_set1_epi32(0xFFFF)));
+	const __m256i offsets = _mm256_srli_epi32(v, 16);
+	const __m256i d1 = _mm256_sub_epi32(offsets, _mm256_set1_epi32(1));
+	const __m256i e = _mm256_sub_epi32(_mm256_srli_epi32(
+		_mm256_castps_si256(_mm256_cvtepi32_ps(d1)), 23),
+		_mm256_set1_epi32(127));
+	const __m256i big = _mm256_cmpgt_epi32(d1, _mm256_set1_epi32(3));
+	const __m256i slot = _mm256_blendv_epi8(d1, _mm256_add_epi32(
+		_mm256_slli_epi32(e, 1), _mm256_and_si256(_mm256_srlv_epi32(d1,
+		_mm256_sub_epi32(e, _mm256_set1_epi32(1))),
+		_mm256_set1_epi32(1))), big);
+	const u32 *table = c->p.n.costs.offset_slot;
+	const __m256i hi = _mm256_srli_epi32(slot, 3);
+	__m256i oc = _mm256_permutevar8x32_epi32(
+		_mm256_loadu_si256((const __m256i *)&table[0]), slot);
+	const __m256i vlen = _mm256_add_epi32(lanes,
+		_mm256_set1_epi32(DEFLATE_MIN_MATCH_LEN));
+	__m256i k = _mm256_setzero_si256(), voc, cand, at, vmin;
+	__m128i h;
+	u32 m, len, pick;
+	int j;
+
+	oc = _mm256_blendv_epi8(oc, _mm256_permutevar8x32_epi32(
+		_mm256_loadu_si256((const __m256i *)&table[8]), slot),
+		_mm256_cmpeq_epi32(hi, _mm256_set1_epi32(1)));
+	oc = _mm256_blendv_epi8(oc, _mm256_permutevar8x32_epi32(
+		_mm256_loadu_si256((const __m256i *)&table[16]), slot),
+		_mm256_cmpeq_epi32(hi, _mm256_set1_epi32(2)));
+	oc = _mm256_blendv_epi8(oc, _mm256_permutevar8x32_epi32(
+		_mm256_loadu_si256((const __m256i *)&table[24]), slot),
+		_mm256_cmpeq_epi32(hi, _mm256_set1_epi32(3)));
+	for (j = 0; j < 8; j++)
+		k = _mm256_sub_epi32(k, _mm256_cmpgt_epi32(vlen,
+			_mm256_permutevar8x32_epi32(lens,
+						    _mm256_set1_epi32(j))));
+	voc = _mm256_permutevar8x32_epi32(oc, k);
+	cand = _mm256_add_epi32(_mm256_add_epi32(_mm256_loadu_si256(
+		(const __m256i *)&c->p.n.costs.length[DEFLATE_MIN_MATCH_LEN]),
+		voc), ends);
+	cand = _mm256_or_si256(cand, _mm256_cmpgt_epi32(k,
+		_mm256_set1_epi32((int)num_matches - 1)));
+	h = _mm_min_epu32(_mm256_castsi256_si128(cand),
+			  _mm256_extracti128_si256(cand, 1));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0x4E));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0xB1));
+	m = (u32)_mm_cvtsi128_si32(h);
+	vmin = _mm256_set1_epi32((int)m);
+	at = _mm256_or_si256(lanes, _mm256_xor_si256(
+		_mm256_cmpeq_epi32(cand, vmin), ones));
+	h = _mm_min_epu32(_mm256_castsi256_si128(at),
+			  _mm256_extracti128_si256(at, 1));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0x4E));
+	h = _mm_min_epu32(h, _mm_shuffle_epi32(h, 0xB1));
+	pick = (u32)_mm_cvtsi128_si32(h);
+	len = pick + DEFLATE_MIN_MATCH_LEN;
+	*cost = m;
+	return len | ((u32)match[_mm256_cvtsi256_si32(_mm256_permutevar8x32_epi32(
+		k, _mm256_set1_epi32((int)pick)))].offset << OPTIMUM_OFFSET_SHIFT);
+}
+#endif
+
+#ifdef MIN_COST_AVX2
+/*
+ * chaiNNer-C patch (PROVENANCE.md): deflate_find_min_cost_path()'s loop with
+ * AVX2, the same choices.  The costs to the end of the 16 nodes after the
+ * current one stay in two registers (w0: +1 to +8, w1: +9 to +16), so that the
+ * nodes just written are not loaded back from memory.
+ */
+static _target_attribute("avx2") void
+min_cost_path_avx2(struct libdeflate_compressor *c, const u32 block_length,
+		   const struct lz_match *cache_ptr)
+{
+	struct deflate_optimum_node *cur_node =
+		&c->p.n.optimum_nodes[block_length];
+	const __m256i rotate = _mm256_setr_epi32(7, 0, 1, 2, 3, 4, 5, 6);
+	/*
+	 * For the current node: b1, b2 the costs to the end of the nodes +1 and
+	 * +2, w3 those of +3 to +10.  The matches' side depends on w3 alone,
+	 * whose newest cost is three nodes old, so that only the literal's
+	 * addition and one comparison wait for the node just finished.
+	 */
+	u32 b1, b2;
+	__m256i w3;
+
+	cur_node->cost_to_end = 0;
+	b1 = 0;
+	b2 = cur_node[1].cost_to_end;
+	w3 = node_costs_avx2(cur_node + 2);
+	do {
+		unsigned num_matches;
+		u32 literal;
+		u32 best_cost_to_end;
+		u32 item;
+
+		cur_node--;
+		cache_ptr--;
+		num_matches = cache_ptr->length;
+		literal = cache_ptr->offset;
+		item = (literal << OPTIMUM_OFFSET_SHIFT) | 1;
+		best_cost_to_end = c->p.n.costs.literal[literal] + b1;
+		if (num_matches) {
+			u32 match_cost = UINT32_MAX;
+			const u32 match_item = num_matches <= 8 &&
+				cache_ptr[-1].length <= 10 ?
+				min_cost_short_avx2(c, cache_ptr - num_matches,
+						    num_matches, w3,
+						    &match_cost) :
+				min_cost_matches_avx2(
+				c, cur_node, cache_ptr - num_matches,
+				num_matches, w3, &match_cost);
+
+			if (match_item && match_cost < best_cost_to_end) {
+				best_cost_to_end = match_cost;
+				item = match_item;
+			}
+			cache_ptr -= num_matches;
+		}
+		cur_node->item = item;
+		cur_node->cost_to_end = best_cost_to_end;
+		w3 = _mm256_blend_epi32(_mm256_permutevar8x32_epi32(w3, rotate),
+					_mm256_set1_epi32((int)b2), 1);
+		b2 = b1;
+		b1 = best_cost_to_end;
+	} while (cur_node != &c->p.n.optimum_nodes[0]);
+}
+#endif
+
 static void
 deflate_find_min_cost_path(struct libdeflate_compressor *c,
 			   const u32 block_length,
@@ -3354,6 +3629,12 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 		&c->p.n.optimum_nodes[block_length];
 	struct deflate_optimum_node *cur_node = end_node;
 
+#ifdef MIN_COST_AVX2
+	if (HAVE_AVX2(get_x86_cpu_features())) {
+		min_cost_path_avx2(c, block_length, cache_ptr);
+		goto tally;
+	}
+#endif
 	cur_node->cost_to_end = 0;
 	do {
 		unsigned num_matches;
@@ -3414,6 +3695,9 @@ deflate_find_min_cost_path(struct libdeflate_compressor *c,
 		cur_node->cost_to_end = best_cost_to_end;
 	} while (cur_node != &c->p.n.optimum_nodes[0]);
 
+#ifdef MIN_COST_AVX2
+tally:
+#endif
 	deflate_reset_symbol_frequencies(c);
 	deflate_tally_item_list(c, block_length);
 	deflate_make_huffman_codes(&c->freqs, &c->codes);
@@ -3440,7 +3724,7 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 				 const u8 *block_begin, u32 block_length,
 				 const struct lz_match *cache_ptr,
 				 bool is_first_block, bool is_final_block,
-				 bool *used_only_literals)
+				 bool *used_only_literals, bool emit)
 {
 	unsigned num_passes_remaining = c->p.n.max_optim_passes;
 	u32 best_true_cost = UINT32_MAX;
@@ -3546,8 +3830,32 @@ deflate_optimize_and_flush_block(struct libdeflate_compressor *c,
 		deflate_find_min_cost_path(c, block_length, cache_ptr);
 		deflate_set_costs_from_codes(c, &c->codes.lens);
 	}
-	deflate_flush_block(c, os, block_begin, block_length, seq,
-			    is_final_block);
+	if (emit && c->plan) {
+		struct libdeflate_block_plan *p = &c->plan[c->plan_count];
+		const size_t entries = cache_ptr - c->p.n.match_cache;
+
+		if (c->plan_count == c->plan_max ||
+		    c->plan_cache_used + entries > c->plan_cache_max) {
+			c->plan_overflow = true;
+			return;
+		}
+		p->begin = block_begin - c->plan_in;
+		p->length = block_length;
+		p->mode = *used_only_literals ? 1 : seq ? 1 :
+			  (MIN(only_lits_cost, static_cost) < best_true_cost) ? 2 : 0;
+		p->cache_begin = c->plan_cache_used;
+		p->cache_end = c->plan_cache_used + entries;
+		p->bits = best_true_cost;
+		memcpy(p->costs, &c->p.n.costs_saved, sizeof(p->costs));
+		memcpy(c->plan_cache + c->plan_cache_used, c->p.n.match_cache,
+		       entries * sizeof(*cache_ptr));
+		c->plan_cache_used += entries;
+		c->plan_count++;
+		return;
+	}
+	if (emit)
+		deflate_flush_block(c, os, block_begin, block_length, seq,
+				    is_final_block);
 }
 
 static void
@@ -3615,25 +3923,44 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			      const u8 *in, size_t in_nbytes,
 			      struct deflate_output_bitstream *os)
 {
-	const u8 *in_next = in;
+	const u8 *in_start = c->history_warm ? in - c->history_nbytes : in;
+	const u8 *in_next = in_start;
 	const u8 *in_block_begin = in_next;
-	const u8 *in_end = in_next + in_nbytes;
-	const u8 *in_cur_base = in_next;
-	const u8 *in_next_slide =
-		in_next + MIN(in_end - in_next, MATCHFINDER_WINDOW_SIZE);
+	const u8 *in_end = in + in_nbytes;
+	const u8 *in_cur_base = in - c->history_nbytes;
+	const u8 *in_next_slide = in_cur_base +
+		MIN(in_end - in_cur_base, MATCHFINDER_WINDOW_SIZE);
 	u32 max_len = DEFLATE_MAX_MATCH_LEN;
 	u32 nice_len = MIN(c->nice_match_length, max_len);
 	struct lz_match *cache_ptr = c->p.n.match_cache;
 	u32 next_hashes[2] = {0, 0};
 	bool prev_block_used_only_literals = false;
+	/* With c->ext: the lists of positions [.., ext_end) */
+	const uint32_t *ext_start = NULL;
+	const uint16_t *ext_count = NULL;
+	const struct lz_match *ext_list = NULL;
+	ptrdiff_t ext_base = 0, ext_end = PTRDIFF_MIN;
 
+	if (c->ext && !c->ext->window) {
+		ext_start = c->ext->start;
+		ext_count = c->ext->count;
+		ext_list = c->ext->list;
+		ext_end = PTRDIFF_MAX;
+	}
 	bt_matchfinder_init(&c->p.n.bt_mf);
+	for (const u8 *p = in_cur_base; !c->ext && p < in_start; p++)
+		bt_matchfinder_skip_byte(&c->p.n.bt_mf, in_cur_base,
+					 p - in_cur_base, nice_len,
+					 c->max_search_depth, next_hashes);
 	deflate_near_optimal_init_stats(c);
 
 	do {
 		/* Starting a new DEFLATE block */
-		const u8 * const in_max_block_end = choose_max_block_end(
-				in_block_begin, in_end, SOFT_MAX_BLOCK_LENGTH);
+		const u8 * const in_max_block_end = in_block_begin < in ?
+			MIN(in, choose_max_block_end(in_block_begin, in_end,
+						     SOFT_MAX_BLOCK_LENGTH)) :
+			choose_max_block_end(in_block_begin, in_end,
+					     SOFT_MAX_BLOCK_LENGTH);
 		const u8 *prev_end_block_check = NULL;
 		bool change_detected = false;
 		const u8 *next_observation = in_next;
@@ -3698,7 +4025,40 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			matches = cache_ptr;
 			best_len = 0;
 			adjust_max_and_nice_len(&max_len, &nice_len, remaining);
-			if (likely(max_len >= BT_MATCHFINDER_REQUIRED_NBYTES)) {
+			if (c->ext) {
+				/*
+				 * The matches found ahead, but none longer than
+				 * the input left (they were found in a longer
+				 * one): the first that reaches past it ends
+				 * there, and the rest are dropped.
+				 */
+				const ptrdiff_t p = in_next - in;
+				const struct lz_match *found;
+				u32 n, i;
+
+				if (p >= ext_end) {
+					const void *list;
+
+					c->ext->window(c->ext->context, p,
+						       &ext_start, &ext_count,
+						       &list, &ext_base, &ext_end);
+					ext_list = list;
+				}
+				found = ext_list + ext_start[p - ext_base];
+				n = max_len >= BT_MATCHFINDER_REQUIRED_NBYTES ?
+					ext_count[p - ext_base] : 0;
+
+				for (i = 0; i < n; i++) {
+					matches[i] = found[i];
+					if (found[i].length >= max_len) {
+						matches[i].length = max_len;
+						n = i + 1;
+					}
+				}
+				cache_ptr = matches + n;
+				if (n)
+					best_len = cache_ptr[-1].length;
+			} else if (likely(max_len >= BT_MATCHFINDER_REQUIRED_NBYTES)) {
 				cache_ptr = bt_matchfinder_get_matches(
 						&c->p.n.bt_mf,
 						in_cur_base,
@@ -3743,8 +4103,13 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			 */
 			if (best_len >= DEFLATE_MIN_MATCH_LEN &&
 			    best_len >= nice_len) {
-				--best_len;
-				do {
+				/*
+				 * A block of the history, which is not written,
+				 * ends where the input starts: skip no further.
+				 */
+				if (in_next <= in && best_len > in - in_next + 1)
+					best_len = in - in_next + 1;
+				if (--best_len) do {
 					remaining = in_end - in_next;
 					if (in_next == in_next_slide) {
 						bt_matchfinder_slide_window(
@@ -3757,7 +4122,7 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 					adjust_max_and_nice_len(&max_len,
 								&nice_len,
 								remaining);
-					if (max_len >=
+					if (!c->ext && max_len >=
 					    BT_MATCHFINDER_REQUIRED_NBYTES) {
 						bt_matchfinder_skip_byte(
 							&c->p.n.bt_mf,
@@ -3818,7 +4183,7 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			struct lz_match *orig_cache_ptr = cache_ptr;
 			const u8 *in_block_end = prev_end_block_check;
 			u32 block_length = in_block_end - in_block_begin;
-			bool is_first = (in_block_begin == in);
+			bool is_first = (in_block_begin == in_start);
 			bool is_final = false;
 			u32 num_bytes_to_rewind = in_next - in_block_end;
 			size_t cache_len_rewound;
@@ -3834,7 +4199,8 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 						c, os, in_block_begin,
 						block_length, cache_ptr,
 						is_first, is_final,
-						&prev_block_used_only_literals);
+						&prev_block_used_only_literals,
+						in_block_begin >= in);
 			memmove(c->p.n.match_cache, cache_ptr,
 				cache_len_rewound * sizeof(*cache_ptr));
 			cache_ptr = &c->p.n.match_cache[cache_len_rewound];
@@ -3852,7 +4218,7 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 			 * all; just end the block at the current position.
 			 */
 			u32 block_length = in_next - in_block_begin;
-			bool is_first = (in_block_begin == in);
+			bool is_first = (in_block_begin == in_start);
 			bool is_final = (in_next == in_end);
 
 			deflate_near_optimal_merge_stats(c);
@@ -3860,7 +4226,8 @@ deflate_compress_near_optimal(struct libdeflate_compressor * restrict c,
 						c, os, in_block_begin,
 						block_length, cache_ptr,
 						is_first, is_final,
-						&prev_block_used_only_literals);
+						&prev_block_used_only_literals,
+						in_block_begin >= in);
 			cache_ptr = &c->p.n.match_cache[0];
 			deflate_near_optimal_save_stats(c);
 			deflate_near_optimal_init_stats(c);
@@ -3938,6 +4305,10 @@ libdeflate_alloc_compressor_ex(int compression_level,
 		       options->free_func : libdeflate_default_free_func;
 
 	c->compression_level = compression_level;
+	c->history_nbytes = 0;
+	c->history_warm = false;
+	c->ext = NULL;
+	c->plan = NULL;
 
 	/*
 	 * The higher the compression level, the more we should bother trying to
@@ -4131,6 +4502,270 @@ libdeflate_deflate_compress_nonfinal(struct libdeflate_compressor *c,
 {
 	return deflate_compress_ending(c, in, in_nbytes, out, out_nbytes_avail,
 				       false);
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress_history(struct libdeflate_compressor *c,
+				    const void *in, size_t in_nbytes,
+				    size_t history_nbytes, int warm,
+				    void *out, size_t out_nbytes_avail,
+				    int final)
+{
+	size_t written;
+
+	c->history_nbytes = MIN(history_nbytes, MATCHFINDER_WINDOW_SIZE);
+	c->history_warm = warm != 0;
+	written = deflate_compress_ending(c, in, in_nbytes, out,
+					  out_nbytes_avail, final != 0);
+	c->history_nbytes = 0;
+	c->history_warm = false;
+	return written;
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_find_matches(const struct libdeflate_compressor *c,
+			const void *in_, size_t in_nbytes,
+			size_t begin, size_t end, size_t prime,
+			uint32_t *start, uint16_t *count,
+			void *list_, uint32_t list_base, size_t list_capacity)
+{
+	const u8 *in = in_;
+	struct lz_match *list = list_;
+	const size_t first = begin > prime ? begin - prime : 0;
+	const u8 *base = in + first;
+	u32 next_hashes[2] = {0, 0};
+	size_t used = 0;
+	size_t p;
+	/* its own match finder, so that one compressor serves any number of pieces at once */
+	struct bt_matchfinder *mf;
+
+	if (c->compression_level < 10)
+		return 0;
+	mf = libdeflate_aligned_malloc(libdeflate_default_malloc_func,
+				       MATCHFINDER_MEM_ALIGNMENT, sizeof(*mf));
+	if (!mf)
+		return SIZE_MAX;
+	bt_matchfinder_init(mf);
+	for (p = first; p < end; p++) {
+		const size_t remaining = in_nbytes - p;
+		const u32 max_len = MIN(remaining, DEFLATE_MAX_MATCH_LEN);
+		const u32 nice_len = MIN(c->nice_match_length, max_len);
+
+		if (in + p - base == MATCHFINDER_WINDOW_SIZE) {
+			bt_matchfinder_slide_window(mf);
+			base += MATCHFINDER_WINDOW_SIZE;
+		}
+		if (p < begin) {
+			if (max_len >= BT_MATCHFINDER_REQUIRED_NBYTES)
+				bt_matchfinder_skip_byte(mf, base,
+							 in + p - base, nice_len,
+							 c->max_search_depth,
+							 next_hashes);
+			continue;
+		}
+		start[p - begin] = list_base + (u32)used;
+		count[p - begin] = 0;
+		if (max_len >= BT_MATCHFINDER_REQUIRED_NBYTES) {
+			struct lz_match *got;
+
+			if (used + DEFLATE_MAX_MATCH_LEN > list_capacity) {
+				used = 0;
+				break;
+			}
+			got = bt_matchfinder_get_matches(mf, base,
+							 in + p - base, max_len,
+							 nice_len,
+							 c->max_search_depth,
+							 next_hashes,
+							 list + used);
+			count[p - begin] = (u16)(got - (list + used));
+			used += got - (list + used);
+		}
+	}
+	libdeflate_aligned_free(libdeflate_default_free_func, mf);
+	return used || p == end ? (used ? used : 1) : 0;
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress_matches(struct libdeflate_compressor *c,
+				    const void *in, size_t in_nbytes,
+				    size_t history_nbytes, int warm,
+				    const struct libdeflate_matches *matches,
+				    void *out, size_t out_nbytes_avail,
+				    int final)
+{
+	size_t written;
+
+	c->ext = c->compression_level >= 10 ? matches : NULL;
+	c->history_nbytes = warm ? history_nbytes :
+		MIN(history_nbytes, MATCHFINDER_WINDOW_SIZE);
+	c->history_warm = warm != 0;
+	written = deflate_compress_ending(c, in, in_nbytes, out,
+					  out_nbytes_avail, final != 0);
+	c->ext = NULL;
+	c->history_nbytes = 0;
+	c->history_warm = false;
+	return written;
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_plan_blocks(struct libdeflate_compressor *c,
+		       const void *in, size_t in_nbytes,
+		       const struct libdeflate_matches *matches,
+		       struct libdeflate_block_plan *plans, size_t max_plans,
+		       uint32_t *cache, size_t cache_max)
+{
+	/* Nothing is written in plan mode but the stream's ending: a few bytes. */
+	u8 scratch[64];
+	size_t count = 0;
+
+	STATIC_ASSERT(sizeof(struct deflate_costs) ==
+		      LIBDEFLATE_COST_WORDS * sizeof(uint32_t));
+	if (c->compression_level < 10 || in_nbytes <= c->max_passthrough_size)
+		return 0;
+	c->plan = plans;
+	c->plan_count = 0;
+	c->plan_max = max_plans;
+	c->plan_cache = cache;
+	c->plan_cache_used = 0;
+	c->plan_cache_max = cache_max;
+	c->plan_in = in;
+	c->plan_overflow = false;
+	libdeflate_deflate_compress_matches(c, in, in_nbytes, 0, 0, matches,
+					    scratch, sizeof(scratch), 1);
+	if (!c->plan_overflow)
+		count = c->plan_count;
+	c->plan = NULL;
+	return count;
+}
+
+/* The block's cache into the compressor; returns the cache's end. */
+static const struct lz_match *
+deflate_load_plan(struct libdeflate_compressor *c,
+		  const struct libdeflate_block_plan *p, const uint32_t *cache)
+{
+	u32 i;
+
+	memcpy(c->p.n.match_cache, cache + p->cache_begin,
+	       (p->cache_end - p->cache_begin) * sizeof(uint32_t));
+	for (i = p->length;
+	     i <= MIN(p->length - 1 + DEFLATE_MAX_MATCH_LEN,
+		      ARRAY_LEN(c->p.n.optimum_nodes) - 1); i++)
+		c->p.n.optimum_nodes[i].cost_to_end = 0x80000000;
+	return c->p.n.match_cache + (p->cache_end - p->cache_begin);
+}
+
+LIBDEFLATEAPI int
+libdeflate_refine_block(struct libdeflate_compressor *c,
+			const struct libdeflate_block_plan *p,
+			const uint32_t *cache, const uint32_t *start,
+			uint64_t seed, unsigned first_restart,
+			unsigned restarts, unsigned noise, uint32_t *bits,
+			uint32_t *costs)
+{
+	const struct lz_match *cache_ptr;
+	struct deflate_costs keep, best_costs;
+	u32 best = p->bits;
+	unsigned r;
+
+	if (p->mode != 0 || c->compression_level < 10)
+		return 0;
+	noise = MIN(noise, 1000);
+	cache_ptr = deflate_load_plan(c, p, cache);
+	memcpy(&keep, start ? start : p->costs, sizeof(keep));
+	best_costs = keep;
+	/* From other costs, the start itself is tried first (as restart 0 with no change). */
+	for (r = first_restart; r < first_restart + restarts; r++) {
+		u64 rng = seed * 0x9E3779B97F4A7C15ull + (r + 1) * 0xBF58476D1CE4E5B9ull;
+		u32 *v = (u32 *)&c->p.n.costs, k, prev = UINT32_MAX;
+		unsigned passes = c->p.n.max_optim_passes;
+
+		c->p.n.costs = keep;
+		for (k = start && r == 0 ? sizeof(keep) / 4 : 0;
+		     k < sizeof(keep) / 4; k++) {
+			rng ^= rng << 13;
+			rng ^= rng >> 7;
+			rng ^= rng << 17;
+			v[k] = (u32)((u64)v[k] * (1000 - noise +
+				     (u32)(rng % (2 * noise + 1))) / 1000);
+		}
+		do {
+			const struct deflate_costs used = c->p.n.costs;
+			u32 t;
+
+			deflate_find_min_cost_path(c, p->length, cache_ptr);
+			t = deflate_compute_true_cost(c);
+			if (t < best) {
+				best = t;
+				best_costs = used;
+			}
+			if (t + c->p.n.min_improvement_to_continue > prev)
+				break;
+			prev = t;
+			deflate_set_costs_from_codes(c, &c->codes.lens);
+		} while (--passes);
+	}
+	if (best >= p->bits)
+		return 0;
+	*bits = best;
+	memcpy(costs, &best_costs, sizeof(best_costs));
+	return 1;
+}
+
+/* libdeflate_write_blocks()'s compressor: each plan written as the original parse would choose it. */
+static void
+deflate_write_planned(struct libdeflate_compressor *restrict c, const u8 *in,
+		      size_t in_nbytes, struct deflate_output_bitstream *os)
+{
+	size_t k;
+
+	(void)in_nbytes;
+	for (k = 0; k < c->plan_count && !os->overflow; k++) {
+		const struct libdeflate_block_plan *p = &c->plan[k];
+		const u8 *block_begin = in + p->begin;
+		const struct lz_match *cache_ptr =
+			deflate_load_plan(c, p, c->plan_cache);
+		const bool is_final = k + 1 == c->plan_count;
+		struct deflate_sequence seq_;
+
+		if (p->mode == 1) {
+			deflate_choose_all_literals(c, block_begin, p->length);
+			seq_.litrunlen_and_length = p->length;
+			deflate_flush_block(c, os, block_begin, p->length, &seq_,
+					    is_final);
+			continue;
+		}
+		if (p->mode == 2)
+			deflate_set_costs_from_codes(c, &c->static_codes.lens);
+		else
+			memcpy(&c->p.n.costs, p->costs, sizeof(p->costs));
+		deflate_find_min_cost_path(c, p->length, cache_ptr);
+		deflate_flush_block(c, os, block_begin, p->length, NULL,
+				    is_final);
+	}
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_write_blocks(struct libdeflate_compressor *c,
+			const void *in, size_t in_nbytes,
+			struct libdeflate_block_plan *plans, size_t count,
+			uint32_t *cache, void *out, size_t out_nbytes_avail,
+			int final)
+{
+	void (*impl)(struct libdeflate_compressor *restrict c, const u8 *in,
+		     size_t in_nbytes, struct deflate_output_bitstream *os) =
+		c->impl;
+	size_t written;
+
+	c->plan = plans;
+	c->plan_count = count;
+	c->plan_cache = cache;
+	c->impl = deflate_write_planned;
+	written = deflate_compress_ending(c, in, in_nbytes, out,
+					  out_nbytes_avail, final != 0);
+	c->impl = impl;
+	c->plan = NULL;
+	return written;
 }
 
 LIBDEFLATEAPI void

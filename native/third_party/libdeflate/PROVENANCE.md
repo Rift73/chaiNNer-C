@@ -92,3 +92,139 @@ OpenEXRCore and the serial PNG path make decodes as before. SHA-256 before (the 
 `04daa6741e597a48d72832f988ab048a27d1a00f2b679b9344d203c31fc7e80e`, `lib/x86/decompress_impl.h`
 `81ab9fd7d4723fdc7ae81dca82f817bcecb7baf5bdfffde0ccfbba70569ac2f1` /
 `1ae72be1edd9da70fae2715e377ac071259de54da66ff664a992b2415e58d3ac`.
+
+## chaiNNer-C patch: compressing a piece with a history (2026-11-15)
+
+Purpose: the default PNG encoder's higher efforts compress each band of rows with the 32 KiB of filtered rows before
+it as a history its matches may reach, so that a band costs no more than the same rows in one stream would, and
+optionally let the near-optimal parser fit its costs on that history before the band's first block. The patch adds
+`libdeflate_deflate_compress_history()` (declared in `libdeflate.h`), which compresses as
+`libdeflate_deflate_compress()` (with `final`) or `libdeflate_deflate_compress_nonfinal()` does, with up to 32768
+bytes before the input as history.
+
+The changes, all in `lib/deflate_compress.c` but the declaration:
+
+- `struct libdeflate_compressor` gains `history_nbytes` and `history_warm`, zero and false outside the new function,
+  which sets them around its call to `deflate_compress_ending()`.
+- `deflate_compress_lazy_generic()` (levels 5 to 9) inserts the history into its hash chains before the input
+  (`hc_matchfinder_skip_bytes`).
+- `deflate_compress_near_optimal()` (levels 10 to 12) inserts it into its binary trees, one position at a time
+  (`bt_matchfinder_skip_byte`); with `warm` it instead parses the history as blocks of its own, which end at the
+  input's start (a long match's skip stops there) and which `deflate_optimize_and_flush_block()` (a new `emit` flag)
+  optimizes but does not write.
+- The fastest and greedy compressors (levels 1 to 4) ignore the history.
+
+Every other call compresses as before: without the new function the fields are zero, the history loops run no
+iteration, every block is written and the skip's bound is never reached. SHA-256 before (the previous patches') /
+after: `libdeflate.h` `807b43576b11609665d1bb69949e95e93803be83fdc7c6fa1f83d57db6c3e169` / `32fc9f299bf3619981b2d3fd2d3b1311a4c5c38689ba38b286c92f63428bc6b3`,
+`lib/deflate_compress.c` `245eae0a7eaf45c4f80454fb3b916ad1084f67fe3fa1ea032808ba59f4e3d675` / `14e4d04c4efcd14654c6c31b6a4e55116564a2832d6f97feab44032508d7096e`.
+
+## chaiNNer-C patch: matches found ahead, and the minimum-cost path with AVX2 (2026-11-15)
+
+Purpose: the default PNG encoder's top effort writes one stream at level 12 in about a third of the time: the
+near-optimal compressor's match finding runs in parallel pieces of the input, and its parse, which stays on one thread,
+finds each block's minimum-cost path with AVX2.
+
+The changes, all in `lib/deflate_compress.c` but the declarations:
+
+- `libdeflate_find_matches()` writes, for each position of a piece, the matches the binary-tree match finder returns
+  there, its trees primed with the bytes before the piece (`bt_matchfinder_skip_byte`); primed with 32768 bytes it
+  gives the matches of one search over the whole input (on the PNG encoder's test image, no position differs).
+  `libdeflate_deflate_compress_matches()` compresses the whole input as `libdeflate_deflate_compress()` does at levels
+  10 to 12, but `deflate_compress_near_optimal()` copies each position's matches from them (a new `ext` field of
+  the compressor, NULL outside the call) instead of searching; with one search's matches the output is the same.
+- `deflate_find_min_cost_path()` runs `min_cost_path_avx2()` where the CPU has AVX2 (`HAVE_AVX2`, libdeflate's own
+  check): the same choices (the literal first, then the lowest cost, ties to the shorter length), with the costs of
+  the 10 nodes after the current one kept in registers and, for a position of at most 8 matches no longer than 10, a
+  path without branches in which each length lane counts the matches shorter than it and the offset slots are
+  computed. Positions with more or longer matches take `min_cost_matches_avx2()`, 8 lengths at a time.
+
+Every other call compresses as before, and the AVX2 path writes the same bytes as the scalar one (checked on the
+encoder's test images and its random sweep). SHA-256 before (the previous patches') / after: `libdeflate.h`
+`32fc9f299bf3619981b2d3fd2d3b1311a4c5c38689ba38b286c92f63428bc6b3` / `d6befea3e8f7f5b9fb12beab128c94cd9ce7050e27adb51d56dfd15318339f31`, `lib/deflate_compress.c`
+`14e4d04c4efcd14654c6c31b6a4e55116564a2832d6f97feab44032508d7096e` / `84af80ba5bf794ef4b8d778e0c39199ea8ff5ab30c4b5b48a0be5c46dcf43846`.
+
+## chaiNNer-C patch: matches found ahead for a piece of a stream (2026-11-16)
+
+Purpose: the PNG encoder's top effort parses a large image as a few segments on their own threads from the matches
+found once for the whole image, each segment first parsing a lead-in before it (not written) to fit its costs.
+`libdeflate_deflate_compress_matches()` gains `history_nbytes`, `warm` and `final` as
+`libdeflate_deflate_compress_history()` has them (the matches of the history's positions come from the same lists,
+indexed below the input's start; with `warm` the history may be longer than 32768 bytes), and a position's matches that
+reach past the input's end are cut there, as the search would have found them. With one segment and no history the
+output is as before. SHA-256 before (the previous patch's) / after: `libdeflate.h`
+`d6befea3e8f7f5b9fb12beab128c94cd9ce7050e27adb51d56dfd15318339f31` / `8962028e1eced93dd63687692d76b69a1bafc06ea2350f5d77f7713101b36f35`, `lib/deflate_compress.c`
+`84af80ba5bf794ef4b8d778e0c39199ea8ff5ab30c4b5b48a0be5c46dcf43846` / `f1ba168e1c9fba69c34578b9974e23b120e0d8cd57e394398e26e2b5e7149905`.
+
+## chaiNNer-C patch: a stream's blocks planned, refined and written in three steps (2026-11-16)
+
+Purpose: the PNG encoder's smallest effort leaves the near-optimal parse's local optimum with the threads the serial
+parse leaves idle: once the serial parse has fixed every block and the costs it came from, each block is parsed again
+from those costs changed at random, on any thread, and the smallest parse of each block is written.
+
+The changes, all in `lib/deflate_compress.c` but the declarations (`struct libdeflate_block_plan` and three functions
+in `libdeflate.h`):
+
+- `libdeflate_plan_blocks()` runs `libdeflate_deflate_compress_matches()` with a plan array set in the compressor:
+  `deflate_optimize_and_flush_block()` then records each block (its place, its mode: the costs' parse, literals only or
+  the static codes, the costs that gave its best parse, its size in bits) and copies its match cache, instead of
+  writing it.
+- `libdeflate_refine_block()` loads a block's cache into any level-10-to-12 compressor and runs restarts from its costs,
+  each changed by an xorshift generator seeded by the caller's seed and the restart's number, each to convergence as
+  the passes of `deflate_optimize_and_flush_block()` are, keeping the smallest true cost.
+- `libdeflate_write_blocks()` writes the plans through `deflate_compress_ending()` with a compressor function that
+  parses each block once from its costs (or chooses its literals, or the static codes) and flushes it.
+
+No other call changes. SHA-256 before (the previous patch's) / after: `libdeflate.h` `8962028e1eced93dd63687692d76b69a1bafc06ea2350f5d77f7713101b36f35` / `373c6fc49b65dcd4af8108363aa3875214ff5474e75e2eaccd40a449c39bddf0`,
+`lib/deflate_compress.c` `f1ba168e1c9fba69c34578b9974e23b120e0d8cd57e394398e26e2b5e7149905` / `8c14815bdbbe74c4382066c0430794c70fac2b8c2c4d37e2a68a1072b0264e40`.
+
+## chaiNNer-C patch: libdeflate_find_matches() with its own match finder (2026-11-16)
+
+Purpose: the PNG encoder's pieces of match finding each took a whole level-12 compressor (about 10 MB, mostly its
+match cache and optimum nodes) where only the binary trees are used. `libdeflate_find_matches()` now takes the
+compressor as `const` for its settings and allocates a `struct bt_matchfinder` of its own, so that one compressor
+serves every piece at once; the matches are the same. SHA-256 before (the previous patch's) / after: `libdeflate.h`
+`373c6fc49b65dcd4af8108363aa3875214ff5474e75e2eaccd40a449c39bddf0` / `6486dd2db70873b64019c35983479c8b0eee3ddc22b1a8c5799f8825260495ce`, `lib/deflate_compress.c` `8c14815bdbbe74c4382066c0430794c70fac2b8c2c4d37e2a68a1072b0264e40` / `a909596f87bfd4ba8c3396b94994ab378db336902d54e5a0f997321b39015b46`.
+
+## chaiNNer-C patch: refining a block from other costs (2026-11-16)
+
+Purpose: rounds of refinement in which each block also starts from the costs its predecessor's best parse came from,
+as the serial parse's chain of blocks does. `libdeflate_refine_block()` gains `start`: when not NULL its restarts
+change those costs instead of the plan's, and its restart 0 tries them unchanged. SHA-256 before (the previous
+patch's) / after: `libdeflate.h` `6486dd2db70873b64019c35983479c8b0eee3ddc22b1a8c5799f8825260495ce` / `d80f77f769214c1db4a211ff173942950780524611c1f5d1bc29e60fba246df1`, `lib/deflate_compress.c` `a909596f87bfd4ba8c3396b94994ab378db336902d54e5a0f997321b39015b46` / `2258840b6ff5bef85cb8536dad683b8e6e774d6752026bf0ea46e761c20840e0`.
+
+## chaiNNer-C patch: match lists from a window (2026-11-16)
+
+Purpose: the PNG encoder keeps only a few chunks of match lists ahead of each parse instead of the whole image's.
+`struct libdeflate_matches` gains `window` and `context`: when `window` is set, `deflate_compress_near_optimal()`
+asks it for the lists of the position it reaches (positions only increase) and uses them until the end the call
+gives. The lists, and so the output, are the same as from whole arrays. SHA-256 before (the previous patch's) /
+after: `libdeflate.h` `d80f77f769214c1db4a211ff173942950780524611c1f5d1bc29e60fba246df1` / `a099418cac18c226cfdff5986cd8e320458615c88e1e4b801099b67fbbcf890b`, `lib/deflate_compress.c` `2258840b6ff5bef85cb8536dad683b8e6e774d6752026bf0ea46e761c20840e0` / `d64254930dc08ad20709371565eebbeabf0c010fa629fa115b73bb6b7317fecf`.
+
+## chaiNNer-C patch: libdeflate_find_matches' allocation failure told apart (2026-11-16)
+
+`libdeflate_find_matches()` returns SIZE_MAX, no longer 0, when its own match finder cannot be allocated, so that a
+caller can tell a failure from lists that need more room. SHA-256 before (the previous patch's) / after:
+`libdeflate.h` `a099418cac18c226cfdff5986cd8e320458615c88e1e4b801099b67fbbcf890b` / `09f3b05f11c1a4f4751bd38e32b74b4a357e7469b5535b6c579c936cbf80f39d`, `lib/deflate_compress.c` `d64254930dc08ad20709371565eebbeabf0c010fa629fa115b73bb6b7317fecf` / `d5f28b78e7f9f6d691e6de9cd31a8cdabdad429b054d9eca47a7818cfb7add5a`.
+
+## chaiNNer-C patch: libdeflate_plan_blocks() allocates nothing (2026-11-16)
+
+`libdeflate_plan_blocks()` writes no block, so it now gives `deflate_compress_ending()` a 64-byte buffer on its stack
+for the stream's ending instead of allocating one and a half times the input; it can no longer fail for memory, and
+its 0 means only an input too short to plan or plans and cache too small. SHA-256 before (the previous patch's) /
+after: `libdeflate.h` `09f3b05f11c1a4f4751bd38e32b74b4a357e7469b5535b6c579c936cbf80f39d` / `09f3b05f11c1a4f4751bd38e32b74b4a357e7469b5535b6c579c936cbf80f39d`, `lib/deflate_compress.c` `d5f28b78e7f9f6d691e6de9cd31a8cdabdad429b054d9eca47a7818cfb7add5a` / `ed7dcc0d6757283f94e454238c8cd2d8daa004b375413966ce7f5191350ef0fd`.
+
+## chaiNNer-C patch: the branch-free AVX2 kernel inside its guard (2026-11-16)
+
+`min_cost_short_avx2()` moves inside the `#if defined(ARCH_X86_64) && (defined(__GNUC__) || defined(__clang__))` block
+that includes `<immintrin.h>` and defines `MIN_COST_AVX2`, as its only caller already was, so that a build where the
+guard is false compiles the scalar path alone. SHA-256 before (the previous patch's) / after: `libdeflate.h` `09f3b05f11c1a4f4751bd38e32b74b4a357e7469b5535b6c579c936cbf80f39d`
+/ HEADER_AFTER, `lib/deflate_compress.c` `ed7dcc0d6757283f94e454238c8cd2d8daa004b375413966ce7f5191350ef0fd` / `5b1d3c51326372cc25502b75fd8a1baf55c409f35ec3824f6458f4561821ede2`.
+
+## chaiNNer-C patch: the window's base position, and the refine's noise range (2026-11-16)
+
+The `window` callback of `struct libdeflate_matches` gains `base`: it hands the arrays of the window's own positions
+and their first position, and `deflate_compress_near_optimal()` indexes them from it, so that no caller has to form a
+pointer outside its arrays. `libdeflate_refine_block()` counts a `noise` above 1000 as 1000 (an unsigned `1000 -
+noise` wrapped before). SHA-256 before (the previous patch's) / after: `libdeflate.h` `09f3b05f11c1a4f4751bd38e32b74b4a357e7469b5535b6c579c936cbf80f39d` / `c10d516934cdb39a0909b47f6b1ae8c9176502f90f460e8ab6a1823b59326109`,
+`lib/deflate_compress.c` `5b1d3c51326372cc25502b75fd8a1baf55c409f35ec3824f6458f4561821ede2` / `510ed6b6dbf3861e5af6cd1b3563f972211c936b0e675c3a689c94b97f006e2c`.

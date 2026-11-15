@@ -102,6 +102,127 @@ libdeflate_deflate_compress_nonfinal(struct libdeflate_compressor *compressor,
 				     void *out, size_t out_nbytes_avail);
 
 /*
+ * chaiNNer-C patch (PROVENANCE.md): libdeflate_deflate_compress() (with 'final')
+ * or libdeflate_deflate_compress_nonfinal() of the 'in_nbytes' bytes at 'in',
+ * whose matches may also reach into the 'history_nbytes' bytes (at most 32768
+ * are used) just before 'in': the end of the data a decompressor has already
+ * produced when it reaches this piece.  The lazy and near-optimal compressors
+ * (levels 5 to 12) use the history; the lower levels ignore it.  With 'warm',
+ * the near-optimal compressor (levels 10 to 12) also parses the history first,
+ * as blocks it does not write, so that the first block it writes starts from
+ * the costs they ended with.
+ */
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress_history(struct libdeflate_compressor *compressor,
+				    const void *in, size_t in_nbytes,
+				    size_t history_nbytes, int warm,
+				    void *out, size_t out_nbytes_avail,
+				    int final);
+
+/*
+ * chaiNNer-C patch (PROVENANCE.md): matches found ahead, so that the
+ * near-optimal compressor's match finding can run in parallel pieces while one
+ * stream is parsed.  libdeflate_find_matches() writes, for each position p of
+ * [begin, end) of the 'in_nbytes' bytes at 'in', the matches the near-optimal
+ * compressor (levels 10 to 12) would find there in one stream: count[p - begin]
+ * entries of 4 bytes (length, offset; increasing lengths) from list[start[p -
+ * begin] - list_base], its search primed with the 'prime' bytes before 'begin'
+ * (32768 give the stream's matches).  It returns the entries written (at least
+ * 1); 0 when 'list_capacity' entries would not hold them or the level is below
+ * 10; SIZE_MAX when its match finder could not be allocated.  libdeflate_deflate_compress_matches() compresses 'in' from those
+ * matches instead of searching (match[k] is position k of 'in'; k may be
+ * negative down to -history_nbytes), as libdeflate_deflate_compress() (with
+ * 'final') or libdeflate_deflate_compress_nonfinal() would; matches reaching
+ * past the input's end are cut there.  With 'warm' it first parses the
+ * 'history_nbytes' bytes before 'in' (any number of them) as blocks it does not
+ * write, to fit its costs.  With one search's matches and no history, the
+ * output equals libdeflate_deflate_compress()'s.
+ */
+struct libdeflate_matches {
+	const uint32_t *start;
+	const uint16_t *count;
+	const void *list;
+	/*
+	 * When not NULL, the lists come from window(): for position p it sets
+	 * start, count and list for the positions [*base, *end) that hold p,
+	 * position q's at start[q - *base] and count[q - *base], and returns;
+	 * the compressor asks for positions in increasing order and asks again
+	 * when it reaches *end.
+	 */
+	void (*window)(void *context, ptrdiff_t p, const uint32_t **start,
+		       const uint16_t **count, const void **list,
+		       ptrdiff_t *base, ptrdiff_t *end);
+	void *context;
+};
+
+LIBDEFLATEAPI size_t
+libdeflate_find_matches(const struct libdeflate_compressor *compressor,
+			const void *in, size_t in_nbytes,
+			size_t begin, size_t end, size_t prime,
+			uint32_t *start, uint16_t *count,
+			void *list, uint32_t list_base, size_t list_capacity);
+
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress_matches(struct libdeflate_compressor *compressor,
+				    const void *in, size_t in_nbytes,
+				    size_t history_nbytes, int warm,
+				    const struct libdeflate_matches *matches,
+				    void *out, size_t out_nbytes_avail,
+				    int final);
+
+/*
+ * chaiNNer-C patch (PROVENANCE.md): one stream at levels 10 to 12 in three
+ * steps, so that its blocks' parses can be refined in parallel.
+ * libdeflate_plan_blocks() parses 'in' from 'matches' as
+ * libdeflate_deflate_compress_matches() would, but records each block (its
+ * place, the costs its parse came from, its size in bits and its match cache,
+ * appended to 'cache') instead of writing it; it returns the blocks, or 0 when
+ * 'max_plans' or 'cache_max' (4-byte entries) are too few.
+ * libdeflate_refine_block() parses one block again from its costs (or from
+ * 'start', when not NULL: then restart 0 is 'start' unchanged) changed at
+ * random by up to 'noise' per mille, once for each restart of [first_restart,
+ * first_restart + restarts) ('seed' and the restart's number fix the change),
+ * each run to convergence; when the smallest parse is smaller than the plan's,
+ * it writes its size and costs to *bits and costs (LIBDEFLATE_COST_WORDS) and
+ * returns 1, else returns 0.  The plan itself is not changed.  'noise' is at
+ * most 1000 (larger values count as 1000).  Any compressor of a level 10 to 12 may refine
+ * any block.  libdeflate_write_blocks() writes the blocks from their costs
+ * (as libdeflate_deflate_compress() with 'final', or
+ * libdeflate_deflate_compress_nonfinal()).
+ */
+#define LIBDEFLATE_COST_WORDS (256 + 259 + 32)
+struct libdeflate_block_plan {
+	size_t begin;
+	uint32_t length;
+	uint32_t mode; /* 0: the costs' parse, 1: literals only, 2: static codes */
+	size_t cache_begin, cache_end;
+	uint32_t bits;
+	uint32_t costs[LIBDEFLATE_COST_WORDS];
+};
+
+LIBDEFLATEAPI size_t
+libdeflate_plan_blocks(struct libdeflate_compressor *compressor,
+		       const void *in, size_t in_nbytes,
+		       const struct libdeflate_matches *matches,
+		       struct libdeflate_block_plan *plans, size_t max_plans,
+		       uint32_t *cache, size_t cache_max);
+
+LIBDEFLATEAPI int
+libdeflate_refine_block(struct libdeflate_compressor *compressor,
+			const struct libdeflate_block_plan *plan,
+			const uint32_t *cache, const uint32_t *start,
+			uint64_t seed, unsigned first_restart,
+			unsigned restarts, unsigned noise, uint32_t *bits,
+			uint32_t *costs);
+
+LIBDEFLATEAPI size_t
+libdeflate_write_blocks(struct libdeflate_compressor *compressor,
+			const void *in, size_t in_nbytes,
+			struct libdeflate_block_plan *plans, size_t count,
+			uint32_t *cache, void *out, size_t out_nbytes_avail,
+			int final);
+
+/*
  * libdeflate_deflate_compress_bound() returns a worst-case upper bound on the
  * number of bytes of compressed data that may be produced by compressing any
  * buffer of length less than or equal to 'in_nbytes' using
