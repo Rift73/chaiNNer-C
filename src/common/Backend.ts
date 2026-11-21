@@ -85,12 +85,28 @@ export interface BackendRunRequest {
     data: BackendJsonNode[];
     options: PackageSettings;
     sendBroadcastData: boolean;
+    /** As /run/individual's: the preview widths of the views on screen, for every broadcast. */
+    previewSizes?: number[];
 }
 export interface BackendRunIndividualRequest {
     id: string;
     inputs: (InputValue | null)[];
     schemaId: SchemaId;
     options: PackageSettings;
+    /**
+     * A seek preview's request: the run's node-broadcast and node-finish events carry it, and
+     * the reply, sent once the broadcasts are queued, says whether a broadcast came.
+     */
+    token?: string;
+    /**
+     * The widths (px) of the views on screen of the node's preview: the backend makes for each
+     * the smallest of its preview tiers at least that wide. Without it, every tier.
+     */
+    previewSizes?: number[];
+}
+/** The reply's data of a request with a token; null without one. */
+export interface BackendRunIndividualResult {
+    broadcast: boolean;
 }
 export interface BackendWorkerStatusResponse {
     executor: 'running' | 'killing' | 'paused' | 'ready';
@@ -247,7 +263,9 @@ export class Backend {
     /**
      * Runs a single node
      */
-    runIndividual(data: BackendRunIndividualRequest): Promise<BackendResult<null>> {
+    runIndividual(
+        data: BackendRunIndividualRequest
+    ): Promise<BackendResult<BackendRunIndividualResult | null>> {
         return this.fetchJson('/run/individual', 'POST', data);
     }
 
@@ -369,12 +387,18 @@ export interface BackendEventMap {
     'node-finish': {
         nodeId: string;
         executionTime: number;
+        /** The token of the individual run's request, if it had one. */
+        token?: string;
     };
     'node-broadcast': {
         nodeId: string;
         data: OutputData;
         types: OutputTypes;
         sequenceTypes?: IterOutputTypes | null;
+        /** The token of the individual run's request, if it had one. */
+        token?: string;
+        /** The preview widths of a run that made only those previews; absent: every one. */
+        previewSizes?: number[];
     };
     'backend-status': {
         message: string;
@@ -389,5 +413,13 @@ export interface BackendEventMap {
         message: string;
         progress: number;
         statusProgress?: number | null;
+    };
+    /**
+     * The start's install of package dependencies failed: the backend runs with the packages it
+     * had, and the next start tries again. `packages` are "name version".
+     */
+    'startup-install-failed': {
+        packages: string[];
+        error: string;
     };
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os as os
 import re
 import sys
+import threading
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -903,8 +904,15 @@ class FrameCollector(Collector[tuple[np.ndarray | None, ...], None]):
     """Save Video's collector in a run of one chosen frame (frame_collector)."""
 
 
+# The pictures the one-frame runs' Save Video nodes claim, until their chain ends: by
+# the picture's path without the container, the claims' containers, one per node.
+_PICTURE_CLAIMS: dict[str, list[VideoFormat]] = {}
+_PICTURE_LOCK = threading.Lock()
+
+
 def frame_collector(
-    item: int,
+    node_context: NodeContext,
+    items: tuple[int, ...],
     save_dir: Path,
     video_name: str,
     simplicity: Simplicity,
@@ -920,9 +928,14 @@ def frame_collector(
     audio_settings: AudioSettings,
     settings: WriteSettings,
 ) -> FrameCollector:
-    """Save Video in a run of the one chosen frame `item` (Load Video's "Run this frame",
-    or Start = End): the frame goes to `<video name>_f000123.png`
+    """Save Video in a run of one chosen frame (Load Video's "Run this frame", or
+    Start = End): `items`, the frame numbers of the videos that feed the node (one, or
+    several distinct ones, ascending). The frame goes to `<video name>_f000123.png`
+    (`<video name>_f000005_f000123.png` for several numbers)
     next to where the video would go, as the video would hold it (Writer.save_frame).
+    When another node of the run claims that picture for another container (film.mkv
+    and film.mp4), each names its container: `<video name>_mkv_f000123.png`; the name
+    is chosen at the first frame, once the loop's collectors are all made.
     FFmpeg never starts, the video's file is never touched and the audio is left out.
     Settings the video would refuse raise as they would for the video (its folder, the
     Additional parameters, then its first frame). A second frame is an error: the loop
@@ -945,10 +958,16 @@ def frame_collector(
         simplicity,
         additional_parameters,
     )
+    chosen = (
+        f"the one chosen frame {items[0]}"
+        if len(items) == 1
+        else f"the chosen frames {', '.join(map(str, items))}"
+    )
     if audio is not None and container is not VideoFormat.GIF:
         logger.info(
-            "Save Video saves the one chosen frame %d as a PNG, without the audio.",
-            item,
+            "Save Video saves %s as %s PNG, without the audio.",
+            chosen,
+            "a" if len(items) == 1 else "one",
         )
     writer = Writer(
         container=container,
@@ -964,7 +983,19 @@ def frame_collector(
         target=None,
         settings=settings,
     )
-    path = (save_dir / f"{video_name}_f{item:06d}.png").resolve()
+    numbers = "".join(f"_f{item:06d}" for item in items)
+    claim = os.path.normcase(str((save_dir / f"{video_name}{numbers}").resolve()))
+    with _PICTURE_LOCK:
+        _PICTURE_CLAIMS.setdefault(claim, []).append(container)
+
+    def release() -> None:
+        with _PICTURE_LOCK:
+            claims = _PICTURE_CLAIMS[claim]
+            claims.remove(container)
+            if not claims:
+                del _PICTURE_CLAIMS[claim]
+
+    node_context.add_cleanup(release)
     frames = 0
 
     def iterate(frame: object) -> None:
@@ -972,10 +1003,15 @@ def frame_collector(
         frames += 1
         if frames > 1:
             raise RuntimeError(
-                f"Save Video got a second frame in a run of the one chosen frame {item}:"
+                f"Save Video got a second frame in a run of {chosen}:"
                 " the loop's generator gave more than its one item."
             )
-        writer.save_frame(frame, path)
+        with _PICTURE_LOCK:
+            shared = len(set(_PICTURE_CLAIMS[claim])) > 1
+        tag = f"_{container.ext}" if shared else ""
+        writer.save_frame(
+            frame, (save_dir / f"{video_name}{tag}{numbers}.png").resolve()
+        )
 
     return FrameCollector(on_iterate=iterate, on_complete=lambda: None)
 
@@ -1341,9 +1377,10 @@ def save_video_node(
         VideoEncoder.H265_NVENC: (nvenc_preset.value, nvenc_cq),
         VideoEncoder.AV1_NVENC: (nvenc_preset.value, av1_nvenc_cq),
     }.get(encoder, (video_preset.value, crf))
-    chosen = node_context.chosen_item
+    chosen = node_context.chosen_items
     if chosen is not None:
         return frame_collector(
+            node_context,
             chosen,
             save_dir,
             video_name,

@@ -8,7 +8,7 @@ import os
 import re
 import subprocess as subprocess
 import time
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -383,7 +383,8 @@ class FrameIndex:
     """A video's frames as PyAV's reader numbers them: `pts`, every frame's presentation
     timestamp (the first video track's time base) in display order, so frame n is the
     full read's item n; `keyframes`, the numbers of the frames a decoder can start at;
-    `discarded`, the number of the packets an edit list hides, left out of both."""
+    `discarded`, the number of the packets left out of both: those an edit list hides,
+    and those of the frames shown before the first the decoder gives (_scan_frames)."""
 
     pts: tuple[int, ...]
     keyframes: tuple[int, ...]
@@ -403,7 +404,8 @@ class _Unindexed:
 def frame_index(path: Path, check: Callable[[], None] | None = None) -> FrameIndex:
     """The first video track's FrameIndex, from its packets demuxed without decoding and
     sorted (B-frames store them out of order). A packet flagged as discarded (the frames
-    an MP4's edit list hides) is decoded but never shown, so it is left out. The scan
+    an MP4's edit list hides) is decoded but never shown, so it is left out, as are the
+    frames shown before the first the decoder gives, which it never decodes. The scan
     reads the whole file, so its index is kept for the file's version (file_identity),
     as _variable_timestamps keeps its answer; `check` raises to abort the scan (Stop),
     which is then not kept. Raises _UseCliReader when the packets cannot number the
@@ -470,16 +472,38 @@ def _scan_frames(
         scanned = _Unindexed("its packets time none of its frames")
     else:
         frames.sort()
+        # The frames shown before the first the decoder gives from the file's start are
+        # never decoded (the full read starts at that one): an open GOP's leading frames
+        # where the file starts with one (a segment cut from a stream, which refer to
+        # the GOP before the cut), or a stream cut inside a GOP. They are left out, as
+        # the discarded ones.
+        first = _first_decoded(path, av)
+        dropped = 0 if first is None else sum(pts < first for pts, _ in frames)
+        frames = frames[dropped:]
         scanned = FrameIndex(
             tuple(pts for pts, _ in frames),
             tuple(n for n, (_, keyframe) in enumerate(frames) if keyframe),
-            packets - shown,
+            packets - shown + dropped,
         )
     with _SCANS_LOCK:
         _SCANS[key] = scanned
         while len(_SCANS) > _SCANS_KEPT:
             _SCANS.popitem(last=False)
     return scanned
+
+
+def _first_decoded(path: Path, av: ModuleType) -> int | None:
+    """The timestamp of the first frame the first video track's decoder gives from the
+    file's start, as the full read decodes it (_decode); None when it gives none, or
+    one without a timestamp. The frames a decoder drops do not depend on its threads,
+    so it keeps PyAV's default ones (frame threads would delay the first frame)."""
+    with av.open(str(path)) as container:
+        frames = _decode(container, _video_track(container), path, av)
+        try:
+            frame = next(frames, None)
+        finally:
+            frames.close()
+    return None if frame is None else frame.pts
 
 
 def _pyav_index(
@@ -491,6 +515,29 @@ def _pyav_index(
     if _variable_rate(path, container, av):
         return _Unindexed("its frame rate is variable")
     return _scan_frames(file_identity(path), path, av)
+
+
+@lru_cache(maxsize=64)
+def _counted_index(
+    identity: tuple, path: Path, av: ModuleType
+) -> FrameIndex | _Unindexed:
+    """_pyav_index's answer for the file version `identity`, which Load Video's count
+    asks at every run (a seek of its Preview included). Kept for the version, as
+    _timestamps_vary's answer is: opening the file decodes the first frame of an H.264
+    track to learn its parameters (37 ms at 1080p). A failed open is not kept."""
+    with av.open(str(path)) as container:
+        return _pyav_index(path, container, av)
+
+
+@lru_cache(maxsize=64)
+def _guessed_rate(
+    identity: tuple, path: Path, av: ModuleType
+) -> Fraction | AVRational | None:
+    """The first video track's rate as FFmpeg guesses it (PyAV's guessed_rate), for the
+    file version `identity`: kept as _counted_index's answer is. A failed open is not
+    kept."""
+    with av.open(str(path)) as container:
+        return _video_track(container).guessed_rate
 
 
 class PastTheEnd(ValueError):
@@ -518,17 +565,31 @@ def _set_up_decoder(stream: VideoStream, av: ModuleType) -> None:
 
 
 def _decode(
-    container: InputContainer, stream: VideoStream, path: Path, av: ModuleType
+    container: InputContainer,
+    stream: VideoStream,
+    path: Path,
+    av: ModuleType,
+    skip_before: int | None = None,
 ) -> Generator[VideoFrame, None, None]:
-    """The track's frames decoded from where the container is (its start or a seek)."""
-    for packet in container.demux(stream):
-        try:
-            frames = packet.decode()
-        except av.error.InvalidDataError as error:
-            # The CLI skips a broken packet too (no -xerror).
-            logger.warning("Skipping undecodable data in %s: %s", path, error)
-            continue
-        yield from frames
+    """The track's frames decoded from where the container is (its start or a seek).
+    With `skip_before` (a timestamp), the packets of frames shown before it skip their
+    frames that no other frame refers to, which are then not given: the frames given
+    decode as they would without the skips."""
+    try:
+        for packet in container.demux(stream):
+            if skip_before is not None:
+                early = packet.pts is not None and packet.pts < skip_before
+                stream.codec_context.skip_frame = "NONREF" if early else "DEFAULT"
+            try:
+                frames = packet.decode()
+            except av.error.InvalidDataError as error:
+                # The CLI skips a broken packet too (no -xerror).
+                logger.warning("Skipping undecodable data in %s: %s", path, error)
+                continue
+            yield from frames
+    finally:
+        if skip_before is not None:
+            stream.codec_context.skip_frame = "DEFAULT"
 
 
 # The keyframes _seek starts from, nearest first, before it decodes from the file's start.
@@ -556,6 +617,7 @@ def _seek(
     path: Path,
     av: ModuleType,
     n: int,
+    skip_before: int | None = None,
 ) -> Generator[VideoFrame, None, None]:
     """The track's frames decoded from frame `n` (frame_index's number) on, as the full
     read decodes them: a seek to the nearest keyframe at or before it, then decoding up
@@ -565,7 +627,9 @@ def _seek(
     demuxer that seeks by decoding timestamps (MPEG-TS) lands past the keyframe, so the
     decoder starts at the next one. After _SEEK_TRIES keyframes, or for a frame before
     the index's first keyframe (an edit list hides the one before it), the file is
-    decoded from its start in a container of its own, as the full read decodes it."""
+    decoded from its start in a container of its own, as the full read decodes it.
+    `skip_before` is _decode's: the frames before that timestamp no frame refers to are
+    not given."""
     index = frame_index(path)
     if n >= len(index.pts):
         raise _past_the_end(n, len(index.pts))
@@ -575,14 +639,14 @@ def _seek(
     tries = index.keyframes[max(nearest - _SEEK_TRIES, 0) : nearest]
     for start in (index.pts[k] for k in reversed(tries)):
         container.seek(start, stream=stream, backward=True, any_frame=False)
-        frames = _decode(container, stream, path, av)
+        frames = _decode(container, stream, path, av, skip_before)
         if (yield from _from_timestamp(frames, target)):
             return
         frames.close()
     with av.open(str(path)) as again:
         stream = _video_track(again)
         _set_up_decoder(stream, av)
-        frames = _decode(again, stream, path, av)
+        frames = _decode(again, stream, path, av, skip_before)
         try:
             if (yield from _from_timestamp(frames, target)):
                 return
@@ -839,8 +903,7 @@ class VideoLoader:
         if av is None:
             return
         try:
-            with av.open(str(path)) as container:
-                guessed = _video_track(container).guessed_rate
+            guessed = _guessed_rate(file_identity(path), path, av)
         except av.error.FFmpegError as reason:
             logger.warning("Keeping %s's rate from its probe: %s", path, reason)
             return
@@ -1067,8 +1130,7 @@ class VideoLoader:
         av = _reader_pyav()
         if av is not None:
             try:
-                with av.open(str(path)) as container:
-                    index = _pyav_index(path, container, av)
+                index = _counted_index(file_identity(path), path, av)
             except av.error.FFmpegError as reason:
                 # The reader goes to the CLI too (_pyav_reader).
                 logger.warning("Counting %s's frames by its probe: %s", path, reason)
@@ -1157,8 +1219,12 @@ class PreviewReader:
     """A node's open reader for its Preview (preview_frame): float32 BGR frames in the
     loader's preview_format, frame n being the full read's frame n. PyAV keeps the
     container, the converter and the decoder's place: a later frame of the GOP the
-    decoder is in decodes forward; an earlier one, or one of a later GOP, seeks (as
-    stream_items(n, n + 1) does): whichever passes fewer frames. A file the FFmpeg CLI
+    decoder is in decodes forward; an earlier one, or one of a later GOP, seeks to its
+    keyframe (as stream_items(n, n + 1) does) and decodes forward: whichever passes
+    fewer frames. The frames a seek's decode passes, and each frame shown, stay kept,
+    the nearest to the frame shown first, up to PREVIEW_KEPT_BYTES: a kept frame (the same frame again, a step back, a
+    drag back within them) is shown without a seek or a decode, the decoder's own
+    frame, so it is the full read's bit for bit. A file the FFmpeg CLI
     reads keeps its pipe: a later frame reads forward, an earlier one reads again from
     the start. `key` is the file version and the format the reader is for."""
 
@@ -1176,6 +1242,9 @@ class PreviewReader:
         self._decoded: Generator[VideoFrame, None, None] | None = None
         self._piped: Iterator[np.ndarray] | None = None
         self._next = 0
+        # PyAV's decoded frames by number, and the bytes of their buffers.
+        self._kept: dict[int, VideoFrame] = {}
+        self._kept_bytes = 0
 
     def frame(self, n: int) -> np.ndarray:
         """Frame `n` (n >= 0). PyAV falls back to the CLI before its first frame, as
@@ -1210,25 +1279,74 @@ class PreviewReader:
         # Decoding forward passes the frames from the decoder's place to n, a seek those
         # from n's keyframe (the nearest at or before it; without one, the file's start)
         # to n: forward only when that passes fewer, the place being past the keyframe.
+        frame = self._kept.get(n)
+        if frame is None:
+            frame = self._decode_to(av, index, n)
+        self._keep(n, None)
+        (image,) = converters.values(frame)
+        assert isinstance(image, np.ndarray)
+        return image
+
+    def _decode_to(self, av: ModuleType, index: FrameIndex, n: int) -> VideoFrame:
+        """Frame n decoded, from the decoder's place or a seek to n's keyframe: kept
+        (_keep), and after a seek also the frames passed. A forward step keeps only its
+        frame: a kept frame holds its buffer, so the decoder allocates a new one for the
+        next, which costs more than a forward step's decode saves later."""
+        container = self._container
+        assert container is not None and self._converters is not None
         nearest = bisect_right(index.keyframes, n)
         keyframe = index.keyframes[nearest - 1] if nearest else -1
         decoded = self._decoded
+        # The frames a seek's decode keeps start where those up to n fill the bound, by
+        # the kept frames' size: the frames before them no frame refers to are skipped.
+        kept_from = 0
         if decoded is None or not keyframe < self._next <= n:
             if decoded is not None:
                 decoded.close()
-            decoded = _seek(self._container, converters.stream, self.path, av, n)
+            # Without a keyframe at or before n, _seek decodes from the file's start.
+            start = max(keyframe, 0)
+            if self._kept:
+                frame_bytes = self._kept_bytes / len(self._kept)
+                kept_from = max(start, n + 1 - int(PREVIEW_KEPT_BYTES // frame_bytes))
+            stream = self._converters.stream
+            skip_before = index.pts[kept_from] if kept_from > start else None
+            decoded = _seek(container, stream, self.path, av, start, skip_before)
             self._decoded = decoded
-            self._next = n
+            self._next = start
+            sought = True
+        else:
+            sought = False
         frame = None
         while self._next <= n:
             frame = next(decoded, None)
             if frame is None:
                 raise RuntimeError(f"{self.path} ended before its frame {n}.")
-            self._next += 1
+            # Skipped frames are not given: the frame's number is its timestamp's.
+            pts = frame.pts
+            number = self._next
+            if kept_from and pts is not None:
+                number = bisect_left(index.pts, pts)
+            if (sought and number >= kept_from) or number == n:
+                self._keep(n, (number, frame))
+            self._next = number + 1
         assert frame is not None
-        (image,) = converters.values(frame)
-        assert isinstance(image, np.ndarray)
-        return image
+        return frame
+
+    def _keep(self, n: int, decoded: tuple[int, VideoFrame] | None) -> None:
+        """Keeps the frame `decoded` (its number and frame) unless it is kept already,
+        then drops the kept frames farthest from frame n while they hold more than
+        PREVIEW_KEPT_BYTES (frame n's own stays)."""
+        if decoded is not None and decoded[0] not in self._kept:
+            number, frame = decoded
+            self._kept[number] = frame
+            self._kept_bytes += sum(plane.buffer_size for plane in frame.planes)
+        if self._kept_bytes <= PREVIEW_KEPT_BYTES:
+            return
+        for number in sorted(self._kept, key=lambda kept: -abs(kept - n)):
+            if self._kept_bytes <= PREVIEW_KEPT_BYTES or number == n:
+                break
+            frame = self._kept.pop(number)
+            self._kept_bytes -= sum(plane.buffer_size for plane in frame.planes)
 
     def _piped_frame(self, n: int) -> np.ndarray:
         piped = self._piped
@@ -1249,7 +1367,9 @@ class PreviewReader:
         return image
 
     def close(self) -> None:
-        """Closes the decoder and its file, or the pipe."""
+        """Closes the decoder and its file, or the pipe, and lets the kept frames go."""
+        self._kept.clear()
+        self._kept_bytes = 0
         if self._decoded is not None:
             self._decoded.close()
             self._decoded = None
@@ -1267,6 +1387,9 @@ class PreviewReader:
 # preview_frame keeps a reader for at most PREVIEW_READERS nodes, and closes one idle for
 # PREVIEW_IDLE_SECONDS: Windows renames or deletes no file a reader holds open.
 PREVIEW_READERS = 4
+# The most bytes of decoded frames a PreviewReader keeps: about 170 frames of 1080p
+# 8-bit 4:2:0 video (3.1 MB each), 20 of 4K 10-bit 4:2:0 (24.9 MB each).
+PREVIEW_KEPT_BYTES = 512 << 20
 PREVIEW_IDLE_SECONDS = 60.0
 _previews_lock = Lock()
 # By node id, the least recently used first.

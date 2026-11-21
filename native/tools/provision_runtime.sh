@@ -49,7 +49,7 @@ jet_index="https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple"
 # ROCm's meta package, bundled (see --rocm); the ROCm version its kernel wheels have.
 rocm_pin="rocm==10.0.0+chainner"
 rocm_version="10.0.0"
-spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c22/spandrel-0.4.2%2Bc22-py3-none-any.whl#sha256=a989c94501afa50121bbcab9090bf672020541aa986fc3ff14d197cad1eb082b"
+spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c24/spandrel-0.4.2%2Bc24-py3-none-any.whl#sha256=26e2b4ec80ed78c5d1ab67a12fd0615b454569448fb16aac5bf8cf9401706128"
 
 die() {
     echo "error: $*" >&2
@@ -239,19 +239,22 @@ else
         # their dependencies under the lock's pins.
         constraints="$runtime_dir/constraints-$version.txt"
         printf '%s\n' "${pins[@]}" | grep -E '^[A-Za-z0-9._-]+==' >"$constraints"
-        # The noise plugin's own wheel by hash, as the backend's VapourSynth package pins it.
+        # The plugins' own wheels by hash, as the backend's VapourSynth package pins them.
         noise='vsnoise @ https://files.pythonhosted.org/packages/e3/86/497a531cc75061b609790542de3816cf61e8a902201aa0df909b75f583f7/vsnoise-1.3-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=35cc606ef085cd140d62108023f30c16e9dddcea91f23c074cf798db520d66db'
+        bifrost='vapoursynth-bifrost @ https://files.pythonhosted.org/packages/8c/e1/a40673957ecfb50254a34ce4f172d3f3e602785bdc5a461a683479279f00/vapoursynth_bifrost-4.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl#sha256=f0144ea7596aa0bfcd9780da0a8979a3a150b4552bd8364d93111be090ba52b9'
+        dotkill='vapoursynth-dotkill @ https://files.pythonhosted.org/packages/34/be/acae6b4886127dfad619b90da880d1246666f4199e553f72eacccdffbef0/vapoursynth_dotkill-4.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl#sha256=cb23808a9a5b7bb82fe593f09e23830a0c4f5c142d1789b801394cdfd5bd3a5b'
+        dedot='vapoursynth-dedot @ https://files.pythonhosted.org/packages/06/f7/6764a8974f1d5b65f92bb81201aec5e6cb5005f01c4640408cf6508b449a/vapoursynth_dedot-4.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl#sha256=0a386e6ede263dfa55eb58c622d13fcd50c7e8c0f51d3a81342715deb1b0ed8e'
         if [ "$rocm" = 1 ]; then
             extras=(
                 'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
-                "$noise" 'vsview==0.13.0'
+                "$noise" "$bifrost" "$dotkill" "$dedot" 'vsview==0.13.0'
                 'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
             )
         else
             extras=(
                 'tensorrt==11.4.0.106' 'cuda-python==13.4.1'
                 'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
-                "$noise" 'vapoursynth-vszipcu==1.2.0' 'dfttest2[cpu,cufft,nvrtc]==11.0.0' 'vsview==0.13.0'
+                "$noise" "$bifrost" "$dotkill" "$dedot" 'vapoursynth-vszipcu==1.2.0' 'dfttest2[cpu,cufft,nvrtc]==11.0.0' 'vsview==0.13.0'
                 'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
             )
         fi

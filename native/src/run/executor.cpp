@@ -384,6 +384,7 @@ struct OutputPlan {
     int64_t id = 0;
     bool image = false;  // ImageOutput or LargeImageOutput: the engine enforces and broadcasts images
     bool large = false;  // LargeImageOutput: its broadcast carries the UI's previews
+    bool full_size = false;  // LargeImageOutput.full_size: a preview at the image's own size first
     int channels = 0;    // 0: any
     bool assume_normalized = false;
 };
@@ -425,8 +426,8 @@ struct GroupPlan {
     std::vector<GeneratorPlan> generators;
     std::vector<int> outputs;
     std::vector<int> iterated;
-    // A group of one generator: its temporal nodes (NodeData.temporal_context), in topological order, and their known
-    // gates (process.known_gates: node, input position), whose values its items hook judges.
+    // Its temporal nodes (NodeData.temporal_context), in topological order, and their known gates
+    // (process.known_gates: node, input position), whose values its generators' items hooks judge.
     std::vector<int> temporal;
     std::vector<std::pair<int, int>> gates;
 };
@@ -719,6 +720,9 @@ private:
     std::vector<int> tail_;
     std::vector<std::string> chain_start_;
     bool send_broadcast_data_ = false;
+    // The widths of the views that show the run's large images (a seek request's previewSizes; empty: every
+    // preview), cn::image_preview::previews's sizes.
+    std::vector<uint32_t> preview_sizes_;
     std::filesystem::path storage_;
     Hooks hooks_;
     PyRef hooks_object_;
@@ -1013,6 +1017,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                    bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"), bind("preview_url"),
                    bind("aborted_type"), bind("waited")};
     send_broadcast_data_ = plan["send_broadcast_data"].cast<bool>();
+    for (py::handle size : plan["preview_sizes"]) preview_sizes_.push_back(size.cast<uint32_t>());
     preview_interval_ = std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(plan["preview_interval"].cast<double>()));
     for (py::handle id : plan["chain_start"]) chain_start_.push_back(id.cast<std::string>());
@@ -1066,6 +1071,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                 output.channels = description[0].cast<int>();
                 output.assume_normalized = description[1].cast<bool>();
                 output.large = description[2].cast<bool>();
+                output.full_size = description[3].cast<bool>();
             }
             plan_node.outputs.push_back(output);
         }
@@ -2360,8 +2366,9 @@ void Run::iterate_group(const GroupPlan &group)
     std::vector<CollectorRun> collectors;
     std::set<int> collector_ids;
     std::set<int64_t> lengths, bases;
-    // Context items (process.Executor.__iterate_generator_nodes): a group's only generator reads, for its temporal
-    // nodes whose context applies (temporal), `before` items before its range and `after` items after it.
+    // Context items (process.Executor.__iterate_generator_nodes): a group's generators read, for its temporal nodes
+    // whose context applies (temporal), `before` items before their ranges and `after` items after them, the same
+    // counts for all of them (process.loop_context), which the hook of the group's last generator returns.
     int64_t before = 0, after = 0;
     std::vector<int> temporal;
     for (const GeneratorPlan &plan : group.generators) {
@@ -2408,19 +2415,18 @@ void Run::iterate_group(const GroupPlan &group)
         } else {
             PythonSection python;
             try {
-                py::object context = py::none();
-                if (group.generators.size() == 1) {
-                    py::list candidates;
-                    for (int node : group.temporal) candidates.append(node);
-                    py::dict values;
-                    for (const auto &[node, position] : gates) {
-                        const InputPlan &input = nodes_[size_t(node)].inputs[size_t(position)];
-                        if (input.source < 0)
-                            values[py::int_(node)] = py::handle(static_cast<PyObject *>(input.constant.handle.get()));
-                    }
-                    for (const auto &[node, value] : gate_values) values[py::int_(node)] = to_python(value);
-                    context = py::make_tuple(candidates, values);
+                // Every generator's hook gets the group's temporal nodes; the group's last one reads the context
+                // items of all of them, with the same counts, and returns those counts and the temporal nodes.
+                py::list candidates;
+                for (int node : group.temporal) candidates.append(node);
+                py::dict values;
+                for (const auto &[node, position] : gates) {
+                    const InputPlan &input = nodes_[size_t(node)].inputs[size_t(position)];
+                    if (input.source < 0)
+                        values[py::int_(node)] = py::handle(static_cast<PyObject *>(input.constant.handle.get()));
                 }
+                for (const auto &[node, value] : gate_values) values[py::int_(node)] = to_python(value);
+                py::object context = py::make_tuple(candidates, values);
                 py::list iterated;
                 for (int node : group.iterated) iterated.append(node);
                 py::tuple items = hooks_.items(plan.node, py::handle(static_cast<PyObject *>(run.output.handle.get())),
@@ -2439,7 +2445,14 @@ void Run::iterate_group(const GroupPlan &group)
             }
         }
         bases.insert(base);
-        for (int collector : plan.collectors) {
+        if (exact_length) lengths.insert(run.expected);
+        generators.push_back(std::move(run));
+    }
+    // The collectors are made once every generator's items hook ran: a collector reads the chosen items of a one-item
+    // run when it is made, and they come from every generator of the group (process.chosen_items).
+    for (size_t g = 0; g < generators.size(); ++g) {
+        GeneratorRun &run = generators[g];
+        for (int collector : group.generators[g].collectors) {
             if (!collector_ids.insert(collector).second) continue;
             suspend();
             Clock::time_point start = Clock::now();
@@ -2450,11 +2463,9 @@ void Run::iterate_group(const GroupPlan &group)
             if (c.state == State::failed) throw PythonError{c.error};
             collectors.push_back({collector, c.object, c.inputs, seconds_since(start)});
         }
-        if (exact_length) lengths.insert(run.expected);
         run.loop_start = run.last = Clock::now();
         run.paused_start = run.last_paused = time_paused_;
-        emit_progress(plan.node, {}, 0, run.expected);
-        generators.push_back(std::move(run));
+        emit_progress(run.node, {}, 0, run.expected);
     }
     if (lengths.size() > 1) {
         PythonSection python;
@@ -2476,9 +2487,12 @@ void Run::iterate_group(const GroupPlan &group)
         for (const CollectorRun &collector : collectors) loop_->sinks.push_back(collector.node);
         for (const GeneratorRun &generator : generators) loop_->fail_fast = loop_->fail_fast && generator.fail_fast;
         // The range's slots: `before` context items come first; with items after it, the loop ends after its last
-        // one (they only serve look-aheads), else as always, when the generators are exhausted.
+        // one (they only serve look-aheads), else as always, when the generators are exhausted. The range is as long
+        // as its shortest generator's.
+        int64_t range = generators[0].expected;
+        for (const GeneratorRun &generator : generators) range = std::min(range, generator.expected);
         loop_->first = before;
-        loop_->end = after > 0 ? before + generators[0].expected : -1;
+        loop_->end = after > 0 ? before + range : -1;
     }
     size_t stops = 0;
     std::set<int> ended;  // the generators whose items ran out
@@ -3709,11 +3723,12 @@ struct ImageBroadcast {
     Image image;
     std::vector<cn::image_preview::Preview> previews;
     bool large;
+    bool full_size;
     PyRef cached;            // its previews' Python list, already encoded (PreviewCache)
     bool cacheable = false;  // pooled storage: its new previews are kept
 };
 
-/* LargeImage previews already encoded, by image: an unchanged engine image (a memo hit, a generator's
+/* LargeImage previews already encoded, by image and full_size (with it, other previews): an unchanged engine image (a memo hit, a generator's
  * static outputs again, a node passing its input through) is not encoded again. Keyed by the image's view of its
  * storage, pooled storage only (immutable once published), held weakly: an entry never keeps an image alive, and a
  * freed storage's address reused by another never matches. The previews' Python list is kept, so its URLs are not
@@ -3726,11 +3741,11 @@ public:
         static PreviewCache *cache = new PreviewCache();
         return *cache;
     }
-    PyRef find(const Image &image)
+    PyRef find(const Image &image, bool full_size)
     {
         std::vector<PyRef> dropped;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
-        auto found = entries_.find(key(image));
+        auto found = entries_.find(key(image, full_size));
         if (found == entries_.end() || found->second.storage.lock() != image.storage) {
             if (found != entries_.end()) drop(found, dropped);  // its image is gone (another at its address)
             ++misses_;
@@ -3740,17 +3755,17 @@ public:
         ++hits_;
         return found->second.previews;
     }
-    void insert(const Image &image, PyRef previews, size_t bytes)
+    void insert(const Image &image, bool full_size, PyRef previews, size_t bytes)
     {
         std::vector<PyRef> dropped;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
-        if (bytes > budget_ || entries_.count(key(image))) return;
+        if (bytes > budget_ || entries_.count(key(image, full_size))) return;
         drop_expired(dropped);
         while ((bytes_ + bytes > budget_ || entries_.size() >= capacity_) && !order_.empty())
             drop(entries_.find(order_.front()), dropped);
         bytes_ += bytes;
-        order_.push_back(key(image));
-        entries_.emplace(key(image), Entry{image.storage, std::move(previews), bytes, std::prev(order_.end())});
+        order_.push_back(key(image, full_size));
+        entries_.emplace(key(image, full_size), Entry{image.storage, std::move(previews), bytes, std::prev(order_.end())});
     }
     py::dict stats()
     {
@@ -3774,10 +3789,10 @@ public:
     }
 
 private:
-    using Id = std::tuple<const ImageStorage *, const float *, int32_t, int32_t, int32_t>;
-    static Id key(const Image &image)
+    using Id = std::tuple<const ImageStorage *, const float *, int32_t, int32_t, int32_t, bool>;
+    static Id key(const Image &image, bool full_size)
     {
-        return {image.storage.get(), image.data, image.height, image.width, image.channels};
+        return {image.storage.get(), image.data, image.height, image.width, image.channels, full_size};
     }
     struct Entry {
         std::weak_ptr<const ImageStorage> storage;
@@ -3813,21 +3828,43 @@ void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef
     const NodePlan &plan = nodes_[size_t(node)];
     if (!send_broadcast_data_ || plan.outputs.empty() || aborted_) return;
     std::vector<ImageBroadcast> images;
+    // The node's previews fit one event (cn::image_preview::node_preview_chars): every image's ordinary previews count,
+    // and the full-size ones are granted in output order while they fit; a later image past that gets the others alone.
+    const auto shown = [&](size_t i) -> const Image * {
+        const Image *image = std::get_if<Image>(&outputs[i]);
+        return plan.outputs[i].image && image && image->height > 0 && image->width > 0 ? image : nullptr;
+    };
+    uint64_t pixels = 0;
+    for (size_t i = 0; i < outputs.size() && i < plan.outputs.size(); ++i)
+        if (const Image *image = shown(i); image && plan.outputs[i].large)
+            pixels += cn::image_preview::tier_pixels(uint32_t(image->height), uint32_t(image->width));
     try {
         for (size_t i = 0; i < outputs.size() && i < plan.outputs.size(); ++i) {
-            const Image *image = std::get_if<Image>(&outputs[i]);
-            if (!plan.outputs[i].image || !image || image->height <= 0 || image->width <= 0) continue;
-            ImageBroadcast broadcast{i, *image, {}, plan.outputs[i].large, PyRef{}, false};
+            const Image *image = shown(i);
+            if (!image) continue;
+            bool full_size = plan.outputs[i].large && plan.outputs[i].full_size;
+            if (full_size) {
+                const uint64_t cost = cn::image_preview::full_size_cost(uint32_t(image->height), uint32_t(image->width));
+                full_size = (pixels + cost) * cn::image_preview::preview_centichars_per_pixel <=
+                            cn::image_preview::node_preview_chars * 100;
+                if (full_size) pixels += cost;
+            }
+            ImageBroadcast broadcast{i, *image, {}, plan.outputs[i].large, full_size, PyRef{}, false};
             if (broadcast.large) {
                 // Previews the native encoder made, while it is on (CHAINNER_C_NATIVE_CODECS, read per call).
-                bool pooled = !image->storage->owner().handle && cn::image_decode::enabled();
-                if (pooled) broadcast.cached = PreviewCache::get().find(*image);
-                // A preview the native encoder declines stays Python's (numpy_outputs._previews).
+                // The cache holds every preview of an image: a run that makes some of them neither reads nor fills it.
+                bool pooled = !image->storage->owner().handle && cn::image_decode::enabled() && preview_sizes_.empty();
+                if (pooled) broadcast.cached = PreviewCache::get().find(*image, broadcast.full_size);
+                // A preview the native encoder declines makes every broadcast of the node Python's
+                // (numpy_outputs._previews), which then spends the full-size budget in output order itself.
                 if (!broadcast.cached.handle &&
                     !(cn::image_decode::enabled() &&
                       cn::image_preview::previews(image->data, uint32_t(image->height), uint32_t(image->width),
-                                                  uint32_t(image->channels), broadcast.previews)))
-                    continue;
+                                                  uint32_t(image->channels), broadcast.full_size, broadcast.previews,
+                                                  preview_sizes_))) {
+                    images.clear();
+                    break;
+                }
                 broadcast.cacheable = pooled && !broadcast.cached.handle;
             }
             images.push_back(std::move(broadcast));
@@ -3858,7 +3895,7 @@ void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef
                     bytes += preview.url.size();
                 }
                 data["previews"] = previews;
-                if (image.cacheable) PreviewCache::get().insert(image.image, py_ref(previews), bytes);
+                if (image.cacheable) PreviewCache::get().insert(image.image, image.full_size, py_ref(previews), bytes);
             }
             data["height"] = image.image.height;
             data["width"] = image.image.width;

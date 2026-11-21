@@ -43,6 +43,7 @@ from . import (
     plksr_export,
     swin_export,
     traced_size_export,
+    wsr_export,
 )
 
 _Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
@@ -139,6 +140,8 @@ def export_onnx(
     model = omnisr_export.for_export(model)
     # RetinexFormer in FP16: a copy that holds where FP16 alone gives NaN
     model = fp16_export.for_export(model)
+    # WSR in FP16: a copy with its context gates' upsampling in FP32
+    model = wsr_export.for_export(model)
     # GFISRv2 and FIGSR: a copy with their Fourier transforms in valid operators
     model = fourier_export.for_export(model, opset_version)
     # The LDA upsampler: a copy with its sizes following the input's (exact)

@@ -331,7 +331,7 @@ class DynamicGraph(Graph):
         """x reshaped to the size it has, [1, channels, scale*H, scale*W] of the network
         input: an identity, but computed from the input's shape TensorRT bounds the tail
         exactly. Through the graph's shape chain its fusion compiler finds no kernel for
-        the large tail convolutions above ~512x1024 input (found by Codex, 2026-10-09)."""
+        the large tail convolutions above ~512x1024 input (found 2026-10-09)."""
         hw = self.op("Shape", ["input"], start=2, end=4)
         hw = self.div(self.mul(hw, self.i(scale.numerator)), self.i(scale.denominator))
         return self.shape(x, [self.i(1), self.i(channels), hw])

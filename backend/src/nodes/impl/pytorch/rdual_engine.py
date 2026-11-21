@@ -1,7 +1,7 @@
-"""Upscale Image's Use TensorRT Engine for a temporal model (RDUAL) on NVIDIA GPUs: the
-model's engine set for the frame's size (tensorrt/rdual.py, built once and kept as the
-image route keeps its engines), run by its session (tensorrt/rdual_session.py) as the
-temporal path's executor. A set that cannot be built, or fails on a frame, leaves the
+"""Upscale Image's Use TensorRT Engine for a temporal model (RDUAL, RSR) on NVIDIA GPUs:
+the model's engine set for the frame's size (tensorrt/rdual.py, tensorrt/rsr.py; built
+once and kept as the image route keeps its engines), run by its session
+(tensorrt/rdual_session.py, tensorrt/rsr_session.py) as the temporal path's executor. A set that cannot be built, or fails on a frame, leaves the
 model on PyTorch for the rest of the chain run, with a warning that says why; that frame
 runs on PyTorch at once, its planner starting cold (another executor's key).
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import partial
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
 import numpy as np
@@ -23,7 +23,7 @@ from spandrel import ImageModelDescriptor
 from api import Aborted, NodeContext
 
 from ..upscale.basic_upscale import PAD_SIZE, PaddingType
-from ..upscale.temporal_window import Fit, temporal_upscale
+from ..upscale.temporal_window import Executor, Fit, temporal_upscale
 from ..upscale.tile_report import TileReport
 from .auto_engine import (
     cache_folder,
@@ -33,6 +33,9 @@ from .auto_engine import (
     release_engine,
 )
 from .rdual_window import RDUALWindows
+from .rsr_window import RSRWindows, is_aligned
+from .temporal_models import runtime
+from .tfdat_window import TFDATWindows
 
 if TYPE_CHECKING:
     from ..tensorrt.model import TensorRTEngine
@@ -65,15 +68,26 @@ def _on_pytorch(context: NodeContext, model: ImageModelDescriptor, reason: str) 
         )
 
 
+def model_unavailable(model: ImageModelDescriptor) -> str | None:
+    """Why this model has no engine set on any machine, or None if it may."""
+    architecture = model.architecture.id
+    found = runtime(architecture)
+    if found is None:
+        return f"{model.architecture.name} is not a temporal model."
+    checked = found[0].CHECKED_SCALES
+    if model.scale not in checked:
+        return f"{architecture}'s engines are checked for {checked} scale only."
+    if architecture == "RSR" and is_aligned(model.model):
+        return "RSR's flow variant (aligned read) has no engine set yet."
+    return None
+
+
 def unavailable(model: ImageModelDescriptor, device: torch.device) -> str | None:
     """Why this model has no engine set on this machine, or None if it may ("" for a
     machine without NVIDIA's TensorRT, which is no surprise worth a warning)."""
-    from ..tensorrt.rdual import CHECKED_SCALES
-
-    if model.architecture.id != "RDUAL":
-        return f"{model.architecture.name} is not a temporal model."
-    if model.scale not in CHECKED_SCALES:
-        return f"RDUAL's engines are checked for {CHECKED_SCALES} scale only."
+    reason = model_unavailable(model)
+    if reason is not None:
+        return reason
     reason = no_engine_here(device)
     if reason is not None:
         return reason
@@ -87,7 +101,7 @@ def temporal_upscale_through_engine(
     img: np.ndarray,
     model: ImageModelDescriptor,
     device: torch.device,
-    windows: Callable[[], RDUALWindows],
+    windows: Callable[[], RDUALWindows | RSRWindows | TFDATWindows],
     gpu_index: int,
     report: TileReport,
     padding: PaddingType,
@@ -96,14 +110,13 @@ def temporal_upscale_through_engine(
     """`img` on the temporal path through the model's engine set, or on PyTorch's
     executor `windows()` (with `fit`) when it has none or the set fails: only then is
     it made, which moves the model to `device`."""
+    from packages.chaiNNer_pytorch.pytorch.io.load_model import full_precision_source
     from packages.chaiNNer_tensorrt.settings import ENGINE_CACHE_DIRECTORY
-
-    from ..tensorrt import rdual
-    from ..tensorrt.rdual_session import temporal_engine_upscale
 
     def pytorch() -> np.ndarray:
         release_engine(context.node_id)
-        return temporal_upscale(context, img, windows(), report, padding, fit)
+        executor = cast(Executor[Any, Any, Any], windows())
+        return temporal_upscale(context, img, executor, report, padding, fit)
 
     with _lock:
         failed = model in _failed
@@ -113,6 +126,10 @@ def temporal_upscale_through_engine(
     if reason is not None:
         _on_pytorch(context, model, reason)
         return pytorch()
+    found = runtime(model.architecture.id)
+    assert found is not None  # unavailable() said so
+    sets, session = found
+    name = model.architecture.name
     height, width = img.shape[:2]
     if padding != PaddingType.NONE:
         height, width = height + 2 * PAD_SIZE, width + 2 * PAD_SIZE
@@ -128,24 +145,32 @@ def temporal_upscale_through_engine(
             timing = context.settings.of_package(
                 "chaiNNer_tensorrt"
             ).get_cache_location("timing_cache")
-            engine = rdual.engine_set(
-                model, height, width, gpu_index, where[3], context, timing
+            # The set is exported from the model's FP32 weights, as Convert To ONNX's,
+            # also for a model Load Model loaded in FP16; its key hashes those weights,
+            # so a set built before from FP16-rounded ones is not taken for it.
+            source = full_precision_source(model, "Use TensorRT Engine")
+            engine = sets.engine_set(
+                source, height, width, gpu_index, where[3], context, timing
             )
             with _lock:
                 _sets.setdefault(model, {})[where] = engine
     except Aborted:
         raise
     except Exception as e:
-        logger.exception("Use TensorRT Engine: no engine set for this RDUAL model")
+        logger.exception(f"Use TensorRT Engine: no engine set for this {name} model")
         _on_pytorch(context, model, f"{type(e).__name__}: {e}")
         return pytorch()
     hold_engine(context.node_id)
     try:
-        return temporal_engine_upscale(context, img, engine, gpu_index, report, padding)
+        return session.temporal_engine_upscale(
+            context, img, engine, gpu_index, report, padding
+        )
     except Aborted:
         raise
     except Exception as e:
-        logger.exception("Use TensorRT Engine: the RDUAL engine set failed on a frame")
+        logger.exception(
+            f"Use TensorRT Engine: the {name} engine set failed on a frame"
+        )
         _on_pytorch(context, model, f"{type(e).__name__}: {e}")
         return pytorch()
 

@@ -105,9 +105,12 @@ PRECISION_APPLIES = Condition.type(
     f'OnnxModel {{ arch: "{NO_RECORD_ARCH}" }}',
     if_not_connected=True,
 )
-# Shown until the ONNX is known to be RDUAL's, whose bundle fixes its one size
+# Shown until the ONNX is known to be a video model's, whose bundle fixes its one size
 SHAPE_APPLIES = Condition.type(
-    0, 'OnnxModel { arch: invStrSet("RDUAL") }', if_not_connected=True
+    0,
+    'OnnxModel { arch: invStrSet("RDUAL") & invStrSet("RSR") & invStrSet("TFDAT")'
+    ' & invStrSet("TFDATv2") }',
+    if_not_connected=True,
 )
 
 
@@ -123,7 +126,7 @@ if utility_group is not None:
             "It is recommended to save the built engine for reuse, as building is slow.",
             "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
             "An ONNX from Convert To ONNX builds in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown; an earlier ESRGAN ONNX in FP16 also builds with the faster layout a new conversion has.",
-            "An RDUAL ONNX from Convert To ONNX (a video model's four parts for one frame size) builds into one engine set: four engines with their TensorRT plugins (Triton kernels compiled for your GPU), carried as one engine by Save Engine and Load Engine. Its frame size and mixed precision are its own, so Precision and the shape inputs do not apply and are hidden; Workspace (0: 8 GiB), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
+            "An RDUAL ONNX from Convert To ONNX (a video model's four parts for one frame size) builds into one engine set: four engines with their TensorRT plugins (Triton kernels compiled for your GPU), carried as one engine by Save Engine and Load Engine. Its frame size and mixed precision are its own, so Precision and the shape inputs do not apply and are hidden; Workspace (0: 8 GiB), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. An RSR ONNX (three parts) builds the same way into an engine set of three engines, without plugins, in FP16 with FP32 images, and a TFDAT or TFDATv2 ONNX (one part) into an engine set of one engine.",
             "A legacy DRFT ONNX from Convert To ONNX also builds in its own mixed precision, with chaiNNer-C's DRFT TensorRT plugins (chaiNNer-C loads them with the engine; another program needs the plugin library too). Its sizes, Fixed or Dynamic, must be multiples of the ONNX's alignment and at least its minimum size on each side (Build Engine says which if not). Precision does not apply; Workspace (0: TensorRT's default), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
         ],
         icon="BsNvidia",
@@ -238,7 +241,7 @@ if utility_group is not None:
                 "Maximum GPU memory TensorRT may use while building. Larger values may allow"
                 " better optimizations; any amount can be typed.",
                 "0 is automatic: TensorRT's default, up to all of the GPU's memory, or"
-                f" {DUAL_WORKSPACE_GIB:g} GiB for a DUAL or RDUAL ONNX.",
+                f" {DUAL_WORKSPACE_GIB:g} GiB for a DUAL, RDUAL or RSR ONNX.",
                 hint=True,
             ),
             BoolInput("Allow TF32", default=False).with_docs(
@@ -311,7 +314,7 @@ if utility_group is not None:
             min_width = opt_width = max_width = static_width
 
         if rdual_bundle.is_bundle(onnx_model.bytes):
-            return build_rdual_engine(
+            return build_temporal_engine(
                 context,
                 onnx_model,
                 settings,
@@ -609,7 +612,7 @@ def build_drft_engine(
     return cached_engine(key, build, settings.engine_cache_path)
 
 
-def build_rdual_engine(
+def build_temporal_engine(
     context: NodeContext,
     onnx_model: OnnxModel,
     settings: TensorRTSettings,
@@ -620,12 +623,23 @@ def build_rdual_engine(
     sparse_weights: bool,
     tiling_optimization: str,
 ) -> TensorRTEngine:
-    """RDUAL's engine set (rdual_engine_set.py) of an ONNX bundle (rdual_bundle.py): the
-    bundle's parts written out and built in rdual_engine_worker.py, then packed. The
-    bundle fixes the frame size and precision; the node's workspace, TF32, sparsity,
-    optimization level and tiling optimization apply."""
-    # rdual imports PyTorch, which the TensorRT package loads only for this.
-    from nodes.impl.tensorrt import rdual
+    """A video model's engine set (rdual_engine_set.py) of an ONNX bundle
+    (rdual_bundle.py): the bundle's parts written out and built by its architecture's
+    worker (rdual_engine_worker.py, rsr_engine_worker.py), then packed. The bundle fixes
+    the frame size and precision; the node's workspace, TF32, sparsity, optimization
+    level and tiling optimization apply."""
+    # These import PyTorch, which the TensorRT package loads only for this.
+    from nodes.impl.tensorrt import rdual, rsr, tfdat
+
+    architecture = rdual_bundle.architecture(rdual_bundle.unpack(onnx_model.bytes)[0])
+    sets = {"RDUAL": rdual, "RSR": rsr, "TFDAT": tfdat, "TFDATv2": tfdat}.get(
+        architecture
+    )
+    if sets is None:
+        raise ValueError(
+            f"This ONNX bundle is of {architecture}, which this chaiNNer-C does not"
+            " build."
+        )
 
     gpu_index = settings.gpu_index
     build_settings = (
@@ -637,14 +651,17 @@ def build_rdual_engine(
     )
 
     def build() -> TensorRTEngine:
-        with tempfile.TemporaryDirectory(prefix="chaiNNer-rdual-engines-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="chaiNNer-temporal-engines-"
+        ) as temporary:
             root = Path(temporary)
             manifest = rdual_bundle.write(onnx_model.bytes, root / "export")
-            info = rdual.set_info(manifest, gpu_index)
+            info = sets.set_info(manifest, gpu_index)
             assert info.temporal is not None
             logger.info(
-                "Building an RDUAL engine set (x%d, %dx%d, plugins %s, %s):"
+                "Building an %s engine set (x%d, %dx%d, plugins %s, %s):"
                 " workspace=%gGiB, level=%d, tf32=%s, sparse=%s, tiling=%s",
+                architecture,
                 info.scale,
                 info.temporal.width,
                 info.temporal.height,
@@ -656,7 +673,7 @@ def build_rdual_engine(
                 sparse_weights,
                 tiling_optimization,
             )
-            rdual.build(
+            sets.build(
                 root / "export", root / "engines", gpu_index, context, build_settings
             )
             parts = {
@@ -667,10 +684,10 @@ def build_rdual_engine(
 
     key = engine_key(
         onnx_model,
-        ("rdual", *build_settings),
+        (architecture.lower(), *build_settings),
         get_cuda_device_name(gpu_index),
         get_cuda_compute_capability(gpu_index),
         trt.__version__,
-        rdual.recipe_identity(),
+        sets.recipe_identity(),
     )
     return cached_engine(key, build, settings.engine_cache_path)

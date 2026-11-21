@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import ctypes
 import functools
 import os
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,9 +42,38 @@ def engine_jobs(pool_size: int) -> int:
     return max(1, pool_size - 2)
 
 
+class _MemoryStatus(ctypes.Structure):
+    """Windows' MEMORYSTATUSEX."""
+
+    _fields_ = [
+        ("dwLength", ctypes.c_ulong),
+        ("dwMemoryLoad", ctypes.c_ulong),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+def available_memory() -> int:
+    """The memory available now, psutil.virtual_memory().available: on Windows its
+    GlobalMemoryStatusEx's ullAvailPhys, read directly, as psutil's query of every
+    memory figure takes 15 to 20 ms there (a run asks once, at its window's decision)."""
+    if sys.platform != "win32":
+        return psutil.virtual_memory().available
+    status = _MemoryStatus()
+    status.dwLength = ctypes.sizeof(_MemoryStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise ctypes.WinError()
+    return status.ullAvailPhys
+
+
 def memory_budget() -> int:
     """B: 25 % of the memory available now."""
-    return psutil.virtual_memory().available // 4
+    return available_memory() // 4
 
 
 def output_nbytes(values: Iterable[object]) -> int:

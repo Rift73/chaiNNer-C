@@ -1,5 +1,5 @@
 import { Package, PyPiName, PyPiPackage, Version } from '../../common/common-types';
-import { versionGt } from '../../common/version';
+import { isOutdated } from '../../common/version';
 
 export const formatBytes = (bytes: number): string => {
     const KB = 1024 ** 1;
@@ -38,7 +38,7 @@ export class PackageUpdateInfo {
             const installed = installedPyPi[dep.pypiName];
             if (!installed) {
                 missing.push(dep);
-            } else if (versionGt(dep.version, installed)) {
+            } else if (isOutdated(dep.version, installed)) {
                 outdated.push(dep);
             }
         }

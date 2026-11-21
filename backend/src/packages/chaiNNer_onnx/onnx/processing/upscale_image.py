@@ -9,6 +9,7 @@ from sanic.log import logger
 from api import NodeContext, Progress
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.auto_split import onnx_auto_split
+from nodes.impl.onnx.errors import is_out_of_memory
 from nodes.impl.onnx.model import OnnxGeneric
 from nodes.impl.onnx.session import (
     OnnxSession,
@@ -25,7 +26,8 @@ from nodes.impl.upscale.auto_split_tiles import (
 )
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
 from nodes.impl.upscale.tile_report import TileReport
-from nodes.impl.upscale.tiler import ExactTileSize
+from nodes.impl.upscale.tiler import ExactTileSize, NoTiling, Tiler
+from nodes.impl.upscale.whole_image import WHOLE_IMAGE_ONLY, warn_tiled
 from nodes.properties.inputs import (
     BoolInput,
     ImageInput,
@@ -51,6 +53,7 @@ def upscale(
     progress: Progress | None = None,
     storage_dir: Path | None = None,
     report: TileReport | None = None,
+    context: NodeContext | None = None,
 ) -> np.ndarray:
     logger.debug("Upscaling image")
     if exact_size is None:
@@ -63,16 +66,39 @@ def upscale(
     else:
         tiler = ExactTileSize(exact_size)
         size_req = None
-    return onnx_auto_split(
-        img,
-        session,
-        change_shape=change_shape,
-        tiler=tiler,
-        size_req=size_req,
-        collect_after=collect_after,
-        progress=progress,
-        report=report,
-    )
+
+    def split(tiler: Tiler) -> np.ndarray:
+        return onnx_auto_split(
+            img,
+            session,
+            change_shape=change_shape,
+            tiler=tiler,
+            size_req=size_req,
+            collect_after=collect_after,
+            progress=progress,
+            report=report,
+        )
+
+    arch = model.info.arch
+    if exact_size is None and tile_size > 0 and arch in WHOLE_IMAGE_ONLY:
+        # The Tile Size is the default for every model, and this one's output changes
+        # in tiles: the whole image first, the tiles only for want of memory.
+        try:
+            return split(NoTiling())
+        except RuntimeError as e:
+            cause = e.__cause__
+            if not (isinstance(cause, Exception) and is_out_of_memory(cause)):
+                raise
+        message = (
+            f"Upscale Image runs this {arch} model in {tile_size} px tiles, its Tile"
+            f" Size: the whole image ran out of memory, and {arch}'s output changes in"
+            " tiles."
+        )
+        if context is None:
+            logger.warning(message)
+        else:
+            warn_tiled(context, model, message)
+    return split(tiler)
 
 
 def upscale_with_session(
@@ -84,9 +110,11 @@ def upscale_with_session(
     progress: Progress | None = None,
     storage_dir: Path | None = None,
     report: TileReport | None = None,
+    context: NodeContext | None = None,
 ) -> np.ndarray:
     """The node's upscale of one image with the model's session (also used by
-    VapourSynth's AI Upscale, which has no node context)."""
+    VapourSynth's AI Upscale, which has no node context: a model of WHOLE_IMAGE_ONLY run
+    in tiles is then only logged)."""
     input_type = session.get_inputs()[0].type
     if input_type not in ("tensor(float)", "tensor(float16)"):
         raise ValueError(
@@ -120,6 +148,7 @@ def upscale_with_session(
             progress=progress,
             storage_dir=storage_dir,
             report=report,
+            context=context,
         ),
         separate_alpha,
     )
@@ -195,6 +224,7 @@ def upscale_image_node(
         progress=context,
         storage_dir=context.storage_dir,
         report=report,
+        context=context,
     )
     return image, report.text
 

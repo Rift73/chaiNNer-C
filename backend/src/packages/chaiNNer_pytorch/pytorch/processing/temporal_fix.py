@@ -13,6 +13,7 @@ from nodes.impl.pytorch.temporal_fix import (
     load_state,
     uses_fp16,
 )
+from nodes.impl.pytorch.utils import host_image, to_host
 from nodes.properties.inputs import ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -94,6 +95,6 @@ def temporal_fix_node(
         ),
     ) as model, torch.inference_mode():
         result = model(torch.stack(frames)[None])[0, :, :h, :w]
-        return np.ascontiguousarray(
-            result.float().flip(0).permute(1, 2, 0).cpu().numpy()
-        )
+        # RGB CHW -> BGR HWC float32 on the device, its values as they are (the output
+        # normalizes them), then into page-locked memory on a GPU.
+        return host_image(to_host(result, clamp=False))

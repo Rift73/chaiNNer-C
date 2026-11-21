@@ -12,7 +12,8 @@ unzips to `chaiNNer-linux-x64/`. Building on Linux is in [`BUILDING.md`](BUILDIN
   distribution (`apt-get`, `dnf`, `pacman` or `zypper`). `CHAINNER_SKIP_LIBRARY_CHECK=1` skips the check.
 - Chromium's sandbox needs user namespaces, which some systems do not allow (Docker, Ubuntu 23.10 and later, hardened
   kernels). There `chaiNNer.sh` starts without the sandbox and says so. `CHAINNER_SANDBOX=0` always starts without it
-  and `CHAINNER_SANDBOX=1` always with it.
+  and `CHAINNER_SANDBOX=1` always with it. An update in the app makes `chrome-sandbox` an ordinary file again (it keeps
+  only permission bits): if you made it setuid root, do so again after each update.
 - `./chaiNNer.sh run chain.chn` (the command line) also needs a display, because Electron cannot start without one. On a
   server, install `xvfb` and `xauth`; the script then runs the chain on a virtual display.
 - Copy To Clipboard needs `wl-clipboard` (Wayland) or `xclip` (X11).

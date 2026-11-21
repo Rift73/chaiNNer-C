@@ -14,7 +14,8 @@ one's kept frames ended) reuses the prefix outputs, flows and cues of the frames
 read: only the reverse sweep repeats. The ring grows to the longest window run, never
 beyond. Every engine call is a CUDA graph captured at its first run and replayed after;
 the four engines share one working memory. Outputs and the returned state are copies, so
-a later window never writes over what the planner still holds.
+a later window never writes over what the planner still holds. What is not RDUAL's own
+is temporal_session.py's, which RSR's session shares.
 
 This module must not import TensorRT at its top (the PyTorch package imports it)."""
 
@@ -22,7 +23,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -30,25 +30,23 @@ import torch
 from torch.nn import functional
 
 from api import NodeContext, NodeId
-from util import held
 
 from ..upscale.basic_upscale import PaddingType
-from ..upscale.temporal_window import Fit, temporal_upscale
+from ..upscale.temporal_window import temporal_upscale
 from ..upscale.tile_report import TileReport
-from ..upscale.tiler import NoTiling
 from .cache import SharedCache, engines
-from .memory import gpu_setup_lock
 from .model import TensorRTEngine
-from .rdual_engine_set import unpack
+from .temporal_session import (
+    ALLOCATOR_SHARE,
+    OUTSIDE_ALLOCATOR_MARGIN,
+    Output,
+    Part,
+    SetSession,
+    WindowMemory,
+    open_set,
+    set_fit,
+)
 
-Tensors = dict[str, torch.Tensor]
-# The share of the free device memory a window may plan for: PyTorch's allocator holds
-# about 5 % more than it hands out (WindowMemory).
-ALLOCATOR_SHARE = 0.95
-# Room kept for what the process holds outside PyTorch's allocator and that grows during
-# a run (TensorRT's and CUDA's own memory): it grew by 0.2-0.5 GB over a 1920x1080 run,
-# and without this margin the process ended 0.2 GB over a 7 GB and an 11 GB card.
-OUTSIDE_ALLOCATOR_MARGIN = 512 * 1024**2
 # A set takes whole frames of its one size, so a frame that does not fit with no frames
 # read ahead has no further step on this route.
 SET_EXHAUSTED = (
@@ -58,145 +56,11 @@ SET_EXHAUSTED = (
 )
 
 
-@dataclass(frozen=True)
-class WindowMemory:
-    """A session's device memory: `fixed` bytes whatever the window (TensorRT's runtime,
-    the engines and their contexts as measured when they were made, their one working
-    memory, the shared buffers, and two images of an output on its way to the host) and
-    `per_frame` bytes per frame of a window (its slot of the ring and the frame `convert`
-    made; a window of n frames that carries a state takes n + 1), and `carried` bytes for
-    the two states a window has at once outside the ring: the one it was given (the
-    planner holds it) and the copy it returns. All from the bindings' shapes. Measured
-    beyond the ring at 1280x720, 1488x837 and 1920x1080, a window of 2 or 8 frames
-    adds to PyTorch's peak exactly the two output images (in `fixed`) and keeps one state
-    (56, 76 and 127 MiB); one pair's alignment cues peak lower (25, 36 and 56 MiB) and so
-    add nothing. The outputs the planner holds are in host memory. PyTorch's allocator
-    holds about 5 % more in blocks it keeps for reuse (at 1488x837, 8 frames: 6636 MiB
-    reserved for 6347 MiB allocated)."""
-
-    fixed: int
-    per_frame: int
-    carried: int
-
-    def window_bytes(self, frames: int) -> int:
-        """The bytes of a session that has run windows of up to `frames` frames."""
-        return self.fixed + self.carried + (frames + 1) * self.per_frame
-
-    def longest_window(self, free: int) -> int:
-        """The most frames a window may hold within `free` bytes; 0 if none fits."""
-        return max(0, (free - self.fixed - self.carried) // self.per_frame - 1)
-
-
-@dataclass(frozen=True)
-class Output:
-    """A kept frame's output on its way to the host: the BGR HWC float32 image in 0..1,
-    whose copy has ended once `ready` has passed (None: already there)."""
-
-    image: torch.Tensor
-    ready: Any
-
-
-class _Part:
-    """One engine of the set with its execution context, and the CUDA graphs of its
-    calls, one per set of bound buffers."""
-
-    def __init__(self, runtime: Any, data: bytes, name: str) -> None:
-        import tensorrt as trt
-
-        self.name = name
-        with gpu_setup_lock:
-            engine = runtime.deserialize_cuda_engine(data)
-        if engine is None:
-            raise RuntimeError(
-                f"Failed to deserialize the RDUAL engine set's {name} engine. It may have"
-                " been built with another TensorRT version or for another GPU: build it"
-                " again with Build Engine."
-            )
-        self.engine = engine
-        with gpu_setup_lock:
-            self.context = engine.create_execution_context(
-                trt.ExecutionContextAllocationStrategy.USER_MANAGED
-            )
-        if self.context is None:
-            raise RuntimeError(f"Failed to create the {name} engine's context.")
-        self.names = [engine.get_tensor_name(i) for i in range(engine.num_io_tensors)]
-        self.workspace = int(engine.device_memory_size_v2)
-        self.graphs: dict[Hashable, torch.cuda.CUDAGraph] = {}
-
-    def use_memory(self, memory: torch.Tensor) -> None:
-        """Run in `memory`, the working memory every part shares."""
-        self.context.set_device_memory(memory.data_ptr(), memory.numel())
-
-    def spec(self, name: str) -> tuple[tuple[int, ...], torch.dtype]:
-        """A binding's shape and torch type."""
-        import tensorrt as trt
-
-        types = {
-            trt.DataType.FLOAT: torch.float32,
-            trt.DataType.HALF: torch.float16,
-            trt.DataType.BF16: torch.bfloat16,
-            trt.DataType.BOOL: torch.bool,
-        }
-        shape = tuple(int(d) for d in self.engine.get_tensor_shape(name))
-        return shape, types[self.engine.get_tensor_dtype(name)]
-
-    def tensor(self, name: str, device: torch.device) -> torch.Tensor:
-        shape, dtype = self.spec(name)
-        return torch.empty(shape, dtype=dtype, device=device)
-
-    def call(self, key: Hashable, tensors: Tensors, stream: torch.cuda.Stream) -> None:
-        """The engine on `tensors` (every binding), enqueued on `stream`: the graph of
-        `key` (one set of buffers), else a run, after which that graph is captured."""
-        graph = self.graphs.get(key)
-        if graph is not None:
-            graph.replay()
-            return
-        if set(tensors) != set(self.names):
-            raise ValueError(
-                f"RDUAL {self.name} engine bindings {sorted(tensors)} are not its"
-                f" {sorted(self.names)}"
-            )
-        for name, tensor in tensors.items():
-            shape, dtype = self.spec(name)
-            if (
-                tuple(tensor.shape) != shape
-                or tensor.dtype != dtype
-                or not tensor.is_contiguous()
-            ):
-                raise ValueError(
-                    f"RDUAL {self.name}/{name}: {tuple(tensor.shape)} {tensor.dtype},"
-                    f" the engine takes {shape} {dtype}"
-                )
-            if not self.context.set_tensor_address(name, tensor.data_ptr()):
-                raise RuntimeError(f"TensorRT rejected {self.name}/{name}'s address.")
-        if not self.context.execute_async_v3(stream.cuda_stream):
-            raise RuntimeError(f"RDUAL {self.name} engine failed to run.")
-        stream.synchronize()
-        # As inference.py captures: this thread only, and not while TensorRT makes or
-        # frees a context or an engine (which synchronizes every stream).
-        graph = torch.cuda.CUDAGraph()
-        with held(gpu_setup_lock):
-            graph.capture_begin(capture_error_mode="thread_local")
-            try:
-                captured = self.context.execute_async_v3(stream.cuda_stream)
-            finally:
-                graph.capture_end()
-        if not captured:
-            raise RuntimeError(f"RDUAL {self.name} engine capture failed.")
-        self.graphs[key] = graph
-
-    def close(self) -> None:
-        self.graphs.clear()
-        with gpu_setup_lock:
-            del self.context
-            del self.engine
-
-
 class _Slot:
     """One frame's buffers: its padded input, the prefix's outputs, its reverse and
     forward states, and the flow and packed guidance of the pair (it, the next frame)."""
 
-    def __init__(self, parts: dict[str, _Part], device: torch.device) -> None:
+    def __init__(self, parts: dict[str, Part], device: torch.device) -> None:
         prefix, revcore = parts["prefix"], parts["revcore"]
         self.input = prefix.tensor("input", device)
         self.stem = prefix.tensor("stem", device)
@@ -211,10 +75,6 @@ class _Slot:
 
     def tensors(self) -> list[torch.Tensor]:
         return list(vars(self).values())
-
-
-def _bytes(tensors: Sequence[torch.Tensor]) -> int:
-    return sum(t.numel() * t.element_size() for t in tensors)
 
 
 def pad_frame(frame: torch.Tensor, height: int, width: int) -> torch.Tensor:
@@ -237,16 +97,15 @@ def model_pack_guidance() -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor
     return model.pack_guidance
 
 
-class RDUALSession:
-    """The executor of an engine set on a GPU. Frames are RGB CHW float32 tensors on the
-    device, copied there on the session's stream; outputs are `Output`s, each copied to
-    the host as soon as the forward sweep made it, while the sweep goes on; the state is
-    the BF16 trunk state. Nothing waits for the GPU but `to_image`, for its own output.
-    Host buffers are page-locked when the device is a GPU."""
+class RDUALSession(SetSession[_Slot]):
+    """The executor of an RDUAL engine set on a GPU (temporal_session.SetSession); the
+    state is the BF16 trunk state."""
+
+    ARCHITECTURE = "RDUAL"
 
     def __init__(
         self,
-        parts: dict[str, _Part],
+        parts: dict[str, Part],
         runtime: Any,
         resident: int,
         stream: Any,
@@ -259,23 +118,7 @@ class RDUALSession:
         (open_session), which their runtime outlives, and `resident` the device bytes
         they and their contexts took; `size` is the frames' height, width and the set's
         scale."""
-        self.parts = parts
-        self._runtime = runtime
-        self.stream = stream
-        self._key = key
-        self.device = device
-        self._pinned = device.type == "cuda"
-        self.height, self.width, self.scale = size
-        # One working memory for every engine, which runs one at a time.
-        self._workspace = torch.empty(
-            max(1, *(p.workspace for p in parts.values())),
-            dtype=torch.uint8,
-            device=device,
-        )
-        for part in parts.values():
-            part.use_memory(self._workspace)
         self._pair = parts["flow"].tensor("frames", device)
-        self._output = parts["fwdcore"].tensor("output", device)
         self._zero_state = torch.zeros_like(
             parts["revcore"].tensor("state_out", device)
         )
@@ -285,132 +128,20 @@ class RDUALSession:
         self._on = torch.ones(1, dtype=torch.bool, device=device)
         self._off = torch.zeros(1, dtype=torch.bool, device=device)
         self._pack_guidance = model_pack_guidance()
-        self.slots: list[_Slot] = []
-        # The frame indices whose prefix ("prefix") or pair ("pair") a later window
-        # may reuse, and the first frame of the window that would continue the last.
-        self._done: dict[int, set[str]] = {}
-        self._next: int | None = None
-        probe = _Slot(parts, device)
-        output = 3 * self.height * self.scale * self.width * self.scale * 4
-        self.memory = WindowMemory(
-            fixed=resident
-            + 2 * output
-            + _bytes(
-                [
-                    self._workspace,
-                    self._pair,
-                    self._output,
-                    self._zero_state,
-                    self._zero_guidance,
-                ]
-            ),
-            per_frame=_bytes(probe.tensors()) + 3 * self.height * self.width * 4,
-            carried=2 * _bytes([self._zero_state]),
+        super().__init__(
+            parts,
+            runtime,
+            resident,
+            stream,
+            device,
+            size,
+            key,
+            [self._pair, self._zero_state, self._zero_guidance],
+            self._zero_state,
         )
-        del probe
 
-    @property
-    def key(self) -> Hashable:
-        return self._key
-
-    def convert(self, frame: np.ndarray) -> torch.Tensor:
-        """A BGR HWC float32 frame of the set's size -> RGB CHW in 0..1 on the GPU."""
-        if frame.shape != (self.height, self.width, 3):
-            raise ValueError(
-                f"This RDUAL engine set takes {self.width}x{self.height} frames, not"
-                f" {frame.shape[1]}x{frame.shape[0]}: build one for this size."
-            )
-        host = torch.from_numpy(np.ascontiguousarray(frame))
-        if self._pinned:
-            host = host.pin_memory()
-        with torch.cuda.stream(self.stream):
-            tensor = host.to(self.device, non_blocking=True)
-            return tensor.float().clamp(0, 1).permute(2, 0, 1).flip(0)
-
-    @staticmethod
-    def to_image(output: Output) -> np.ndarray:
-        """The output's BGR HWC float32 image in 0..1, once its copy has ended."""
-        if output.ready is not None:
-            output.ready.synchronize()
-        return output.image.numpy()
-
-    def _to_host(self, height: int, width: int) -> Output:
-        """The forward sweep's output cropped to `height` x `width`, turned to BGR HWC
-        in 0..1 on the GPU and copied to the host without waiting for the copy."""
-        output = self._output[0, :, :height, :width].permute(1, 2, 0).flip(2)
-        image = torch.empty((height, width, 3), device=self.device)
-        torch.clamp(output, 0, 1, out=image)
-        if not self._pinned:
-            return Output(image, None)
-        host = torch.empty(image.shape, pin_memory=True)
-        host.copy_(image, non_blocking=True)
-        ready = torch.cuda.Event()
-        ready.record(self.stream)
-        return Output(host, ready)
-
-    def fitting_ahead(self, shape: tuple[int, int], ahead: int) -> int:
-        """The frames read ahead, at most `ahead`, whose window fits the device now, or
-        -1 when not even a window of one frame does
-        (temporal_window.Executor): this session's memory as it stands (its fixed
-        buffers and its ring), plus the device's free memory and what PyTorch keeps
-        cached unused, within PyTorch's per-process cap (set_per_process_memory_fraction,
-        which the free memory does not show), less OUTSIDE_ALLOCATOR_MARGIN, by
-        `memory.longest_window`. A frame of
-        another size is the set's to refuse, so it is not capped here."""
-        if tuple(shape) != (self.height, self.width):
-            return ahead
-        free, total = torch.cuda.mem_get_info(self.device)
-        allocated = torch.cuda.memory_allocated(self.device)
-        cached = torch.cuda.memory_reserved(self.device) - allocated
-        capped = total * torch.cuda.get_per_process_memory_fraction(self.device)
-        room = min(free + cached, capped - allocated)
-        # What the session holds now: its fixed buffers, its ring, and once it has run,
-        # the states a window carries.
-        held = self.memory.fixed + len(self.slots) * self.memory.per_frame
-        if self.slots:
-            held += self.memory.carried
-        budget = int(ALLOCATOR_SHARE * max(0, room)) - OUTSIDE_ALLOCATOR_MARGIN
-        frames = self.memory.longest_window(held + budget)
-        return min(ahead, frames - 1)
-
-    def _slot(self, index: int) -> _Slot:
-        return self.slots[index % len(self.slots)]
-
-    def _ensure_slots(self, count: int) -> None:
-        """A ring of at least `count` slots; a larger ring drops every graph and the
-        work kept in the old one."""
-        if len(self.slots) >= count:
-            return
-        self.stream.synchronize()
-        for part in self.parts.values():
-            part.graphs.clear()
-        self.slots = []
-        self._done = {}
-        self._next = None
-        self.slots = [_Slot(self.parts, self.device) for _ in range(count)]
-
-    def run(
-        self,
-        frames: Sequence[torch.Tensor],
-        keep: int,
-        past: tuple[torch.Tensor, torch.Tensor] | None,
-        first: int,
-    ) -> tuple[list[Output], torch.Tensor]:
-        """One window (temporal_window.Run): `keep` outputs and the state after frame
-        keep - 1. `past` is the state and frame an earlier call returned and read, or
-        None to start cold."""
-        count = len(frames)
-        if not 1 <= keep <= count:
-            raise ValueError(f"A window of {count} frames cannot keep {keep}.")
-        torch.cuda.set_device(self.device)
-        try:
-            self._ensure_slots(count + 1)
-            with torch.no_grad():
-                return self._run(frames, keep, past, first)
-        except BaseException:
-            self._done = {}
-            self._next = None
-            raise
+    def new_slot(self) -> _Slot:
+        return _Slot(self.parts, self.device)
 
     def _run(
         self,
@@ -534,54 +265,11 @@ class RDUALSession:
             self.stream,
         )
 
-    def close(self) -> None:
-        """Frees the graphs before the buffers they write, the contexts before their
-        engines and the engines before their runtime."""
-        self.stream.synchronize()
-        _close(self.parts)
-        self.slots = []
-        self._runtime = None
-
-
-def _close(parts: dict[str, _Part]) -> None:
-    for part in parts.values():
-        part.close()
-    parts.clear()
-
 
 def open_session(engine: TensorRTEngine, gpu_index: int) -> RDUALSession:
     """The session of an engine set on a GPU: its four engines deserialized, each with
     an execution context."""
-    import tensorrt as trt
-
-    from .trt_logger import TRT_LOGGER
-
-    info, data = unpack(engine.bytes)
-    temporal = info.temporal
-    if temporal is None or info.scale is None:
-        raise ValueError("An RDUAL session runs an RDUAL engine set.")
-    torch.cuda.set_device(gpu_index)
-    # TensorRT's runtime and plugins load their kernels into the device as well.
-    free = torch.cuda.mem_get_info(gpu_index)[0]
-    trt.init_libnvinfer_plugins(TRT_LOGGER, "")
-    runtime = trt.Runtime(TRT_LOGGER)
-    parts: dict[str, _Part] = {}
-    try:
-        for name in temporal.parts:
-            parts[name] = _Part(runtime, data[name], name)
-        resident = free - torch.cuda.mem_get_info(gpu_index)[0]
-        return RDUALSession(
-            parts,
-            runtime,
-            max(0, resident),
-            torch.cuda.Stream(device=gpu_index),
-            torch.device("cuda", gpu_index),
-            (temporal.height, temporal.width, info.scale),
-            ("tensorrt", id(engine), gpu_index),
-        )
-    except BaseException:
-        _close(parts)
-        raise
+    return open_set(engine, gpu_index, RDUALSession.ARCHITECTURE, RDUALSession)
 
 
 _sessions: SharedCache[RDUALSession] = SharedCache(RDUALSession.close, built_on=engines)
@@ -614,22 +302,15 @@ def temporal_engine_upscale(
     session the executor, kept for the node. The set takes whole frames of its one size,
     whatever the node's Tile Size; when the GPU's memory runs out, the window is
     shortened (Fit's steps), and past the last step SET_EXHAUSTED is raised."""
-    from ..pytorch.rdual_window import release_memory
-    from ..pytorch.utils import is_out_of_memory
-
-    fit = Fit(
-        NoTiling(),
-        shorten=True,
-        out_of_memory=is_out_of_memory,
-        release=release_memory,
-        tiles=False,
-        exhausted=SET_EXHAUSTED,
-    )
     with use_rdual_session(engine, gpu_index, context.node_id) as session:
-        return temporal_upscale(context, img, session, report, padding, fit)
+        return temporal_upscale(
+            context, img, session, report, padding, set_fit(SET_EXHAUSTED)
+        )
 
 
 __all__ = [
+    "ALLOCATOR_SHARE",
+    "OUTSIDE_ALLOCATOR_MARGIN",
     "Output",
     "RDUALSession",
     "WindowMemory",

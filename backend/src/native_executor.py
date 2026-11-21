@@ -21,7 +21,7 @@ import os
 import sys
 import time
 import weakref
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
@@ -70,10 +70,12 @@ from process import (
     CollectorOutput,
     ExecutionId,
     GeneratorOutput,
+    KeptBroadcasts,
     NodeExecutionError,
     NodeOutput,
     RegularOutput,
     check_loop_outputs,
+    chosen_items,
     collect_input_information,
     compute_broadcast,
     compute_sequence_broadcast,
@@ -85,6 +87,7 @@ from process import (
     generator_loops,
     known_gates,
     look_ahead_off_warning,
+    loop_context,
     loop_node_error,
     on_failing_node,
     prepare_node,
@@ -108,7 +111,7 @@ from util import waited_seconds
 if TYPE_CHECKING:
     from events import Event
     from nodes.properties.inputs.numpy_inputs import ImageInput
-    from nodes.properties.outputs.numpy_outputs import ImageOutput
+    from nodes.properties.outputs.numpy_outputs import ImageOutput, LargeImageOutput
     from process import _SplitIterator
 
 EXECUTOR_VARIABLE = "CHAINNER_C_EXECUTOR"
@@ -483,8 +486,8 @@ class _EngineContext(NodeContext):
         self.chain_cleanup_fns: set[Callable[[], None]] = set()
         self.node_cleanup_fns: set[Callable[[], None]] = set()
         self.iteration_view: _EngineIterationView | None = None
-        # The chosen item of the loop the node belongs to (NodeContext.chosen_item).
-        self.chosen: int | None = None
+        # The chosen items of the loop's generators that feed the node (NodeContext.chosen_items).
+        self.chosen: tuple[int, ...] | None = None
         # A temporal node whose output no node reads on a context item (IterationView.unread).
         self.unread_on_context = False
 
@@ -493,7 +496,7 @@ class _EngineContext(NodeContext):
         return self.iteration_view
 
     @property
-    def chosen_item(self) -> int | None:
+    def chosen_items(self) -> tuple[int, ...] | None:
         return self.chosen
 
     @property
@@ -547,9 +550,16 @@ class _Hooks:
         loop: asyncio.AbstractEventLoop,
         inputs: InputMap,
         chain: Chain,
+        native: set[int],
+        preview_sizes: Sequence[int],
     ) -> None:
         self.executor_id = executor_id
         self.nodes = nodes
+        # compute_broadcast's preview_sizes (a seek request's previewSizes).
+        self.preview_sizes = preview_sizes
+        # compute_broadcast's kept broadcasts of the generators' partial outputs, by node
+        # position, for the run (the engine's cell holds those outputs until it ends).
+        self.kept_broadcasts: dict[int, KeptBroadcasts] = {}
         self.contexts = contexts
         self.queue = queue
         self.loop = loop
@@ -572,6 +582,16 @@ class _Hooks:
         # The running loop's range: its first slot (context items before it) and that slot's item number.
         self.loop_first = 0
         self.loop_base = 0
+        # The chosen item (Generator.chosen_item) of each generator whose items hook ran, by position.
+        self.chosen: dict[int, int | None] = {}
+        # The output of each generator whose items hook ran, by position, in the group's order, until the hook of its
+        # group's last generator checks their outputs (process.check_loop_outputs).
+        self.outputs: dict[int, GeneratorOutput] = {}
+        # The positions of the nodes the plan runs natively.
+        self.native = native
+        # A group's generators that read context items, until the hook of its last generator reads them (read).
+        self.readers: dict[int, Generator] = {}
+        self.read: dict[int, Iterable[object]] = {}
 
     # Threads and events
 
@@ -683,7 +703,25 @@ class _Hooks:
         """process.Executor's broadcast payload; native: the engine's own image broadcasts by output position (their
         values are None in outputs)."""
         node = self.nodes[index]
-        computed, computed_types = compute_broadcast(outputs, node.data.outputs)
+        # Only a generator broadcasts the same value again: its partial outputs, at its
+        # finish, its items and its end; its items' outputs are new each time.
+        partial: list[int] = []
+        if node.data.kind == "generator":
+            iterated = {
+                output for info in node.data.iterable_outputs for output in info.outputs
+            }
+            partial = [
+                position
+                for position, output in enumerate(node.data.outputs)
+                if output.id not in iterated
+            ]
+        computed, computed_types = compute_broadcast(
+            outputs,
+            node.data.outputs,
+            self.preview_sizes,
+            self.kept_broadcasts.setdefault(index, {}) if partial else None,
+            partial,
+        )
         data: dict[OutputId, BroadcastData | None] = {}
         types: dict[OutputId, navi.ExpressionJson | None] = {}
         for position, output in enumerate(node.data.outputs):
@@ -701,15 +739,16 @@ class _Hooks:
             )
             for output_id, kind in item_types.items():
                 types[output_id] = kind
-        return {
-            "event": "node-broadcast",
-            "data": {
-                "nodeId": node.id,
-                "data": data,
-                "types": types,
-                "sequenceTypes": sequence_types,
-            },
+        event_data: dict[str, object] = {
+            "nodeId": node.id,
+            "data": data,
+            "types": types,
+            "sequenceTypes": sequence_types,
         }
+        # A reduced run's (a seek's): the views' widths its previews were made for.
+        if self.preview_sizes:
+            event_data["previewSizes"] = list(self.preview_sizes)
+        return {"event": "node-broadcast", "data": event_data}
 
     # Generators
 
@@ -722,27 +761,65 @@ class _Hooks:
     ) -> tuple[Iterator[object], bool, int, bool, int, int, int, bool, list[int]]:
         """A generator node's items: (iterator, split, expected length, fail_fast, before, after, index base, exact length,
         temporal). split: the iterator names its items (describe) apart from loading them (materialize), as Load Images'
-        native iterator does. context: the loop's temporal nodes and their known gates' values by node, when the
-        generator is its group's only one, else None (process.Executor.__iterate_generator_nodes): it then gives its
-        chosen item to the group's nodes (iterated, collectors included, before they are made), keeps the temporal
-        nodes whose context applies (temporal, which run for a context item), and reads the context items they want
-        through Generator.context, once, when it has one and they want any; before, after: the clipped counts it read."""
+        native iterator does. context: the loop's temporal nodes and their known gates' values by node
+        (process.Executor.__iterate_generator_nodes). The hook of the group's last generator keeps the temporal nodes
+        whose context applies (temporal, which run for a context item) and, when every generator of the group has
+        Generator.context and they want any, reads the context items of all of them with the same counts
+        (process.loop_context; an earlier generator's iterator waits for them); before, after: those counts, the other
+        hooks' (0, 0) and no temporal nodes. It also gives the group's nodes (iterated, collectors included, which the
+        engine makes once every generator's hook ran) their chosen items (process.chosen_items), then checks the outputs
+        of all its generators (process.check_loop_outputs)."""
         assert isinstance(output, GeneratorOutput)
-        # Before its loop's first item, as process.Executor: no two items may give a writer one path. Here, as an
-        # error of this hook is the run's as raised.
-        check_loop_outputs(
-            self.chain,
-            [(self.nodes[index], output)],
-            {self.nodes[node].id for node in iterated},
-        )
         generator = output.generator
         before = after = 0
         iterator: Iterator[object] | None = None
         temporal: list[int] = []
-        if context is not None:
-            if generator.chosen_item is not None:
-                for node in iterated:
-                    self.contexts[node].chosen = generator.chosen_item
+        self.chosen[index] = generator.chosen_item
+        self.outputs[index] = output
+        # The group's generators are the iterated nodes that are generators (each iterates itself).
+        members = {
+            n: member
+            for n in iterated
+            if isinstance(member := self.nodes[n], GeneratorNode)
+        }
+        if context is not None and generator.context is not None:
+            # Its items wait for the group's context counts, which the hook of its last generator decides.
+            self.readers[index] = generator
+        # A generator the engine runs natively (Range, Split Spritesheet) never calls this hook and never has a
+        # chosen item or context items: it is known as soon as the plan is, whichever of the group's generators comes
+        # last.
+        last = all(n in self.chosen or n in self.native for n in members)
+        if last:
+            chosen = chosen_items(
+                self.chain,
+                {member.id: self.chosen.get(n) for n, member in members.items()},
+                {
+                    member.id: {m.id for m in _iterated_nodes(self.chain, member)[2]}
+                    for member in members.values()
+                },
+            )
+            for node in iterated:
+                if self.nodes[node].id in chosen:
+                    self.contexts[node].chosen = chosen[self.nodes[node].id]
+            # Before the loop's first item, as process.Executor, over all the group's generators at once: no two
+            # items, of one generator or of two, may give a writer one path. Here, as an error of this hook is the
+            # run's as raised. Generators of different exact lengths are refused for those first, as there, by the
+            # engine once the hooks ran (only the hooks' lengths are known here: not a natively run generator's).
+            outputs = {
+                n: self.outputs.pop(n) for n in list(self.outputs) if n in members
+            }
+            lengths = {
+                o.generator.expected_length
+                for o in outputs.values()
+                if o.generator.length_is_exact
+            }
+            if len(lengths) <= 1:
+                check_loop_outputs(
+                    self.chain,
+                    [(self.nodes[n], o) for n, o in outputs.items()],
+                    {self.nodes[node].id for node in iterated},
+                )
+        if context is not None and last:
             candidates, values = context
             gates = {self.nodes[node].id: value for node, value in values.items()}
             temporal = [
@@ -755,19 +832,27 @@ class _Hooks:
             _, unread = context_nodes(self.chain, loop, applying)
             for node in temporal:
                 self.contexts[node].unread_on_context = self.nodes[node].id in unread
-            wanted = context_wanted(self.chain, loop, applying)
+            wanted = context_wanted(self.chain, loop, applying, gates)
+            readers = {n: self.readers.pop(n) for n in members if n in self.readers}
             if (
-                generator.context is not None
+                len(readers) == len(members)
                 and wanted != (0, 0)
-                and generator.expected_length > 0
+                and all(reader.expected_length > 0 for reader in readers.values())
             ):
-                items, before, after = generator.context(*wanted)
-                assert 0 <= before <= wanted[0] and 0 <= after <= wanted[1], (
-                    f"{self.nodes[index].data.name} read ({before}, {after}) context items"
-                    f" for the {wanted} asked"
+                # process.loop_context: every generator of the group reads the same counts.
+                read, before, after = loop_context(
+                    {n: self.nodes[n] for n in readers}, readers, wanted
                 )
-                iterator = items.__iter__()
-        if iterator is None:
+                self.read.update(read)
+            else:
+                self.read.update(
+                    (n, reader.supplier()) for n, reader in readers.items()
+                )
+        if index in self.read:
+            iterator = self.read.pop(index).__iter__()
+        elif index in self.readers:
+            iterator = self.__later(index)
+        else:
             iterator = generator.supplier().__iter__()
         return (
             iterator,
@@ -780,6 +865,10 @@ class _Hooks:
             generator.length_is_exact,
             temporal,
         )
+
+    def __later(self, index: int) -> Iterator[object]:
+        """The items of a generator that reads context items, from the hook of its group's last generator on."""
+        yield from self.read.pop(index)
 
     def pure_in_loop(self, index: int, value: object) -> bool:
         """Whether a temporal node on a pure schema runs as a pure one for the rest of this loop run
@@ -1092,9 +1181,10 @@ def _image_input(node_input: object) -> tuple[list[int] | None, bool] | None:
     return image.channels, image.allow_colors
 
 
-def _image_output(output: object) -> tuple[int, bool, bool] | None:
-    """(channels or 0, assume_normalized, large) of an output whose enforce and broadcast the engine performs for
-    images: an ImageOutput or LargeImageOutput itself (large: LargeImageOutput, whose broadcast has previews)."""
+def _image_output(output: object) -> tuple[int, bool, bool, bool] | None:
+    """(channels or 0, assume_normalized, large, full_size) of an output whose enforce and broadcast the engine
+    performs for images: an ImageOutput or LargeImageOutput itself (large: LargeImageOutput, whose broadcast has
+    previews; full_size: its LargeImageOutput.full_size)."""
     module = sys.modules.get("nodes.properties.outputs.numpy_outputs")
     if module is None or type(output) not in (
         module.ImageOutput,
@@ -1102,10 +1192,12 @@ def _image_output(output: object) -> tuple[int, bool, bool] | None:
     ):
         return None
     image = cast("ImageOutput", output)
+    large = type(output) is module.LargeImageOutput
     return (
         image.channels or 0,
         image.assume_normalized,
-        type(output) is module.LargeImageOutput,
+        large,
+        large and cast("LargeImageOutput", output).full_size,
     )
 
 
@@ -1118,8 +1210,10 @@ def build_plan(
     engine: Callable[[], _Engine],
     warn: Callable[[str], None],
     progress_sender: Callable[[NodeId], Callable[[float], None]],
+    preview_sizes: Sequence[int] = (),
 ) -> tuple[dict[str, object], list[Node], list[_EngineContext], InputMap]:
-    """The engine's plan of an optimized chain (nodes, groups, sinks) with every node's context."""
+    """The engine's plan of an optimized chain (nodes, groups, sinks) with every node's context; preview_sizes: the
+    widths of the views that show its large images (cn::image_preview::previews's sizes)."""
     nodes = list(chain.nodes.values())
     positions = {node.id: index for index, node in enumerate(nodes)}
     inputs = InputMap.from_chain(chain)
@@ -1243,29 +1337,28 @@ def build_plan(
         entries: list[dict[str, object]] = []
         output_nodes: list[FunctionNode] = []
         iterated: set[int] = set()
-        # A group's only generator may read context items for its temporal nodes (Generator.context).
-        temporal: list[FunctionNode] = []
-        gates: list[tuple[int, int]] = []
+        # The collectors of all the group's generators, and the nodes they reach.
+        group_collectors: list[CollectorNode] = []
+        seen_ids: set[NodeId] = set()
         for generator in generators:
             collectors, outputs, seen = _iterated_nodes(chain, generator)
             output_nodes.extend(n for n in outputs if n not in output_nodes)
+            group_collectors.extend(c for c in collectors if c not in group_collectors)
             iterated.update(positions[n.id] for n in seen)
+            seen_ids.update(n.id for n in seen)
             entries.append(
                 {
                     "node": positions[generator.id],
                     "collectors": [positions[c.id] for c in collectors],
                 }
             )
-            if len(generators) == 1:
-                seen_ids = {n.id for n in seen}
-                sinks = [*outputs, *collectors]
-                temporal = temporal_nodes(chain, seen_ids, sinks)
-                gates = [
-                    (positions[n.id], position)
-                    for n, position in known_gates(
-                        chain, inputs, seen_ids, sinks, temporal
-                    )
-                ]
+        # The group's generators read context items for its temporal nodes (process.loop_context).
+        sinks = [*output_nodes, *group_collectors]
+        temporal = temporal_nodes(chain, seen_ids, sinks)
+        gates = [
+            (positions[n.id], position)
+            for n, position in known_gates(chain, inputs, seen_ids, sinks, temporal)
+        ]
         groups.append(
             {
                 "generators": entries,
@@ -1299,6 +1392,7 @@ def build_plan(
         "tail": tail,
         "chain_start": list(chain_start),
         "send_broadcast_data": send_broadcast_data,
+        "preview_sizes": list(preview_sizes),
         "preview_interval": PREVIEW_INTERVAL,
         "storage_dir": storage_dir,
     }
@@ -1321,6 +1415,7 @@ class NativeExecutor:
         parent_cache: OutputCache[NodeOutput] | None = None,
         pool: object = None,
         pool_size: int | None = None,
+        preview_sizes: Sequence[int] = (),
     ) -> None:
         self.id = id
         self.chain = chain
@@ -1339,9 +1434,26 @@ class NativeExecutor:
             lambda: engine[0],
             run_warning(loop, queue),
             functools.partial(run_progress, loop, queue),
+            preview_sizes,
         )
         self.__nodes = nodes
-        self.__hooks = _Hooks(id, nodes, contexts, queue, loop, inputs, chain)
+        self.__hooks = _Hooks(
+            id,
+            nodes,
+            contexts,
+            queue,
+            loop,
+            inputs,
+            chain,
+            {
+                index
+                for index, node_plan in enumerate(
+                    cast("list[dict[str, object]]", plan["nodes"])
+                )
+                if node_plan["native"]
+            },
+            preview_sizes,
+        )
         # The Result Cache settings, before the engine reads its plan (whether the memo is on): a smaller size trims
         # the memo, off empties it; CHAINNER_C_MEMO_BUDGET_MIB wins over both.
         graph().memo_set_budget(cache_budget(options))

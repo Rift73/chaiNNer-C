@@ -143,7 +143,7 @@ Checklists for changing any of this: `MAINTAINING.md`.
   latest zip, checks its SHA-256 and installs it over the folder. `src/renderer/helpers/github.ts`,
   `src/renderer/components/Header/AppInfo.tsx`, `src/main/updater.ts`; the package's bundle patches force
   `checkForUpdatesOnStartup` off.
-- **Version label.** The UI shows `v0.3.12` (header, About, startup log, system information) while `app.getVersion()`
+- **Version label.** The UI shows `v0.3.13` (header, About, startup log, system information) while `app.getVersion()`
   stays upstream's, since it stamps saved chains that upstream's migrations read. `src/common/version.ts`,
   `independent_ui.PRODUCT_VERSION`.
 

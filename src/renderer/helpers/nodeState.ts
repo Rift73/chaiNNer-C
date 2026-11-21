@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useContext, useContextSelector } from 'use-context-selector';
 import {
+    ImageCompare,
     InputData,
     InputHeight,
     InputId,
@@ -73,6 +74,8 @@ export interface NodeState {
     readonly setOutputHeight: (inputId: OutputId, size: number) => void;
     readonly nodeWidth: number | undefined;
     readonly setWidth: (width: number) => void;
+    readonly imageCompare: ImageCompare | undefined;
+    readonly setImageCompare: (value: ImageCompare) => void;
     readonly isLocked: boolean;
     readonly passthrough: PassthroughInfo | undefined;
     readonly connectedInputs: ReadonlySet<InputId>;
@@ -91,6 +94,7 @@ export const useNodeStateFromData = (data: NodeData): NodeState => {
         setNodeInputHeight,
         setNodeOutputHeight,
         setNodeWidth,
+        setNodeImageCompare,
         setNodeName,
     } = useContext(GlobalContext);
 
@@ -103,6 +107,7 @@ export const useNodeStateFromData = (data: NodeData): NodeState => {
         isPassthrough,
         schemaId,
         nodeWidth,
+        imageCompare,
         nodeName,
     } = data;
 
@@ -118,6 +123,10 @@ export const useNodeStateFromData = (data: NodeData): NodeState => {
     );
 
     const setWidth = useMemo(() => setNodeWidth.bind(null, id), [id, setNodeWidth]);
+    const setImageCompare = useMemo(
+        () => setNodeImageCompare.bind(null, id),
+        [id, setNodeImageCompare]
+    );
     const setName = useMemo(() => setNodeName.bind(null, id), [id, setNodeName]);
 
     const { schemata, passthrough } = useContext(BackendContext);
@@ -186,6 +195,8 @@ export const useNodeStateFromData = (data: NodeData): NodeState => {
         setOutputHeight,
         nodeWidth,
         setWidth,
+        imageCompare,
+        setImageCompare,
         isLocked: isLocked ?? false,
         passthrough: isPassthrough ? passthrough.get(schemaId) : undefined,
         connectedInputs,

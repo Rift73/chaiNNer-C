@@ -131,6 +131,7 @@ export class SaveFile {
                         inputHeight: n.data.inputHeight,
                         outputHeight: n.data.outputHeight,
                         nodeWidth: n.data.nodeWidth,
+                        imageCompare: n.data.imageCompare,
                         id: n.data.id,
                         isDisabled: n.data.isDisabled,
                         isLocked: n.data.isLocked,

@@ -373,6 +373,16 @@ export interface NodeSchema {
     readonly keywords?: readonly string[];
 }
 
+/** The images a node with several large image outputs compares, and where its split is. */
+export interface ImageCompare {
+    readonly a?: OutputId;
+    readonly b?: OutputId;
+    /** The split's position from the left, as a fraction of the picture's width. */
+    readonly split?: number;
+    /** The names given to the images, by the input that takes each; an unnamed one shows its label. */
+    readonly names?: Readonly<Partial<Record<InputId, string>>>;
+}
+
 export interface NodeData {
     readonly id: string;
     readonly schemaId: SchemaId;
@@ -382,6 +392,7 @@ export interface NodeData {
     readonly inputHeight?: InputHeight;
     readonly outputHeight?: OutputHeight;
     readonly nodeWidth?: number;
+    readonly imageCompare?: ImageCompare;
     readonly isCollapsed?: boolean;
     readonly isPassthrough?: boolean;
     readonly nodeName?: string;

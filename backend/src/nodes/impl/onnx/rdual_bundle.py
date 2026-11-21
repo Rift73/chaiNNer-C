@@ -1,9 +1,11 @@
-"""RDUAL's ONNX bundle: the bytes of the `OnnxModel` Convert To ONNX gives for an RDUAL
-model at one input size. It holds rdual_export.py's output (each part's model.onnx and
-weights.bin, and the manifest export.json) in the engine set's container layout
-(rdual_engine_set.pack_container) with its own magic. Save Model writes it as one file,
-Load Model reads it, and only Build Engine uses it (rdual_engine_worker.py builds the
-engine set from the files written out again); every other ONNX user refuses it.
+"""A video model's ONNX bundle: the bytes of the `OnnxModel` Convert To ONNX gives for an
+RDUAL or RSR model at one input size. It holds rdual_export.py's or rsr_export.py's
+output (each part's model.onnx and weights.bin, and the manifest export.json, whose
+"architecture" names RSR; a manifest without it is RDUAL's) in the engine set's
+container layout (rdual_engine_set.pack_container) with its own magic (which names
+RDUAL, the first). Save Model writes it as one file, Load Model reads it, and only Build
+Engine uses it (the architecture's engine worker builds the engine set from the files
+written out again); every other ONNX user refuses it.
 
 This module must not import ONNX, TensorRT or PyTorch."""
 
@@ -20,7 +22,9 @@ MAGIC = b"chaiNNer-C RDUAL ONNX\n"
 MANIFEST = "export.json"
 # The files of each part's folder (rdual_export.save)
 PART_FILES = ("model.onnx", "weights.bin")
-_WHAT = "RDUAL ONNX bundle"
+_WHAT = "ONNX bundle"
+# The architecture of a manifest that names none
+FIRST = "RDUAL"
 _REMEDY = "Convert the model to ONNX again."
 
 
@@ -38,6 +42,11 @@ def pack(folder: Path, opset: int) -> bytes:
         for name in PART_FILES
     }
     return pack_container(MAGIC, {"manifest": manifest, "opset": opset}, files)
+
+
+def architecture(manifest: dict[str, Any]) -> str:
+    """The architecture a bundle's manifest is of."""
+    return str(manifest.get("architecture", FIRST))
 
 
 def unpack(data: bytes) -> tuple[dict[str, Any], int, dict[str, bytes]]:
@@ -68,21 +77,22 @@ def write(data: bytes, folder: Path) -> dict[str, Any]:
 
 
 def load(data: bytes) -> OnnxGeneric:
-    """The ONNX model of a bundle: RDUAL's fixed input size and scale, in mixed
-    precision."""
+    """The ONNX model of a bundle: its architecture's fixed input size and scale, in
+    mixed precision (RDUAL) or FP16 with FP32 images (RSR)."""
     manifest, opset, _ = unpack(data)
+    arch = architecture(manifest)
     height, width = int(manifest["height"]), int(manifest["width"])
     scale = int(manifest["scale"])
     info = OnnxInfo(
         opset=opset,
-        dtype=MIXED,
+        dtype=MIXED if arch == FIRST else "fp16",
         scale_width=scale,
         scale_height=scale,
         fixed_input_width=width,
         fixed_input_height=height,
         input_channels=3,
         output_channels=3,
-        arch="RDUAL",
+        arch=arch,
     )
     return OnnxGeneric(data, info)
 
@@ -90,10 +100,20 @@ def load(data: bytes) -> OnnxGeneric:
 def refuse(model: OnnxModel, user: str) -> None:
     """Raises if `model` is a bundle, which `user` (a node's name) cannot run."""
     if is_bundle(model.bytes):
+        arch = architecture(unpack(model.bytes)[0])
         raise ValueError(
-            f"{user} cannot use an RDUAL ONNX: it holds a video model's TensorRT parts,"
+            f"{user} cannot use an {arch} ONNX: it holds a video model's TensorRT parts,"
             " which only TensorRT's Build Engine reads."
         )
 
 
-__all__ = ["MAGIC", "is_bundle", "load", "pack", "refuse", "unpack", "write"]
+__all__ = [
+    "MAGIC",
+    "architecture",
+    "is_bundle",
+    "load",
+    "pack",
+    "refuse",
+    "unpack",
+    "write",
+]

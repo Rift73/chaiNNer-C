@@ -102,6 +102,7 @@
             "frameForward": "Next frame (Right)",
             "in": "Set start",
             "lastFrame": "Last frame (End)",
+            "loopRunsAllItems": "Run this frame is off here: a loop source without a seek bar (such as Load Images) also feeds this viewer.",
             "out": "Set end",
             "runThisFrame": "Run this frame",
             "secondBack": "Back 1 second (Shift+Left)",
@@ -110,7 +111,8 @@
             "setOut": "End the frame range here",
             "tenBack": "Back 10 frames (Shift+Left)",
             "tenForward": "Forward 10 frames (Shift+Right)",
-            "waitingForVideo": "The seek bar works once the node has read the video."
+            "waitingForVideo": "The seek bar works once the node has read the video.",
+            "waitingForVideos": "The seek bar works once the nodes before this one have read their videos."
         },
         "dropdown": {
             "search": "Search...",
@@ -119,12 +121,21 @@
     },
     "outputs": {
         "largeImage": {
+            "backgroundBlack": "Background: black",
+            "backgroundTheme": "Background: theme colour",
+            "backgroundWhite": "Background: white",
             "close": "Close (Esc)",
+            "compareA": "Image on the left of the split (A)",
+            "compareB": "Image on the right of the split (B)",
             "fit": "Fit to the window (double click)",
             "fullscreen": "Full screen (F)",
             "imageNotAvailable": "Image not available.",
             "imagePreviewFailed": "Image preview failed to load, probably unsupported file type.",
-            "maximize": "Maximize"
+            "maximize": "Maximize",
+            "realSize": "Real size",
+            "split": "Split between A and B",
+            "swap": "Swap A and B",
+            "zoomOfPreview": "{{percent}} % (preview {{width}} px)"
         },
         "model": {
             "modelNotAvailable": "Model data not available."
@@ -232,7 +243,10 @@
         "loading": "Loading...",
         "startingBackend": "Starting up backend process...",
         "proxyHint": "The download uses your system's proxy settings, or HTTPS_PROXY if it is set.",
-        "errorLabel": "Error:"
+        "errorLabel": "Error:",
+        "installFailedTitle": "A package could not be updated",
+        "installFailed": "{{packages}} could not be installed, so chaiNNer runs with the older version: models that need the new one (such as RSR) will not load. The next start tries again.",
+        "installProxyHint": "It needs internet access; a proxy must be set in HTTPS_PROXY."
     },
     "typeTags": {
         "optional": "optional"

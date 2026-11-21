@@ -207,6 +207,10 @@ class NodeData:
     # does an input fed from inside the loop, never judged (the loop's own generator's
     # per-run outputs included). None: it always applies.
     temporal_if: tuple[InputId, Callable[[object], bool]] | None = None
+    # The (before, after) neighbours for the gate input's value (temporal_if) when the
+    # loop knows it before its first item, in place of temporal_context: a model that
+    # reads more neighbours asks for them. None: temporal_context for every value.
+    temporal_context_of: Callable[[object], tuple[int, int]] | None = None
 
     @property
     def single_iterable_input(self) -> IteratorInputInfo:

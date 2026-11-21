@@ -247,7 +247,7 @@ def later_outputs(preview_docs: str) -> list[BaseOutput]:
     description=[
         "Iterate over the frames in a video as images: all of them, or a Range from Start to End.",
         "Uses FFMPEG to read video files.",
-        "The seek bar picks a frame, which the Preview shows. Set start and Set end set the Range there, and Run this frame runs the chain on that frame alone. A run of one frame (Run this frame, or a Range whose Start is its End) makes Save Video save the frame as a PNG image instead of a video.",
+        "The seek bar picks a frame, which the Preview shows. Set start and Set end set the Range there, and Run this frame runs what the node feeds (with what that needs) on that frame alone. A run of one frame (Run this frame, or a Range whose Start is its End) makes Save Video save the frame as a PNG image instead of a video.",
         "This iterator is much slower than just using FFMPEG directly, so if you are doing a simple conversion, just use FFMPEG outside chaiNNer instead.",
     ],
     icon="MdVideoCameraBack",

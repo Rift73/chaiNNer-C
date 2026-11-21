@@ -9,6 +9,12 @@ import {
     Size,
 } from '../../../common/common-types';
 
+/** The name the user gives an input that can be renamed. */
+export interface InputRename {
+    readonly name: string | undefined;
+    readonly setName: (name: string) => void;
+}
+
 export interface InputProps<Kind extends InputKind, Value extends string | number = never> {
     readonly value: Value | undefined;
     readonly setValue: (input: Value) => void;
@@ -25,4 +31,5 @@ export interface InputProps<Kind extends InputKind, Value extends string | numbe
     readonly nodeSchemaId?: SchemaId;
     readonly testCondition: (condition: Condition) => boolean;
     readonly sequenceType?: Type;
+    readonly rename?: InputRename;
 }

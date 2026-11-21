@@ -13,6 +13,7 @@ from spandrel.architectures.SCUNet import SCUNet
 from spandrel.architectures.SPAN import SPAN
 from spandrel.architectures.Swin2SR import Swin2SR
 from spandrel.architectures.SwinIR import SwinIR
+from spandrel.architectures.WSR import WESR, WideContextSR
 from spandrel_extra_arches.architectures.SRFormer import SRFormer
 
 from api import NodeContext
@@ -50,6 +51,12 @@ from ..io.load_model import full_precision_source
 def convert_to_ncnn_node(
     context: NodeContext, model: ImageModelDescriptor, is_fp16: int
 ) -> tuple[NcnnModelWrapper, str]:
+    if model.architecture.id in ("RSR", "TFDAT", "TFDATv2"):
+        # A plain export runs each frame on its own, without the frames around it.
+        raise ValueError(
+            f"{model.architecture.name} (a video model) does not convert to NCNN: its"
+            " NCNN model would upscale each frame without the frames around it."
+        )
     try:
         from nodes.impl.onnx.load import load_onnx_model
         from nodes.impl.pytorch.convert_to_onnx_impl import (
@@ -70,7 +77,8 @@ def convert_to_ncnn_node(
 
     # NCNN's layers have fixed shapes; DRFT's windows and NAFNet's padding to a multiple
     # (and its LayerNorm's weight views) take theirs from the image's size as it runs.
-    # NCNN has no Fourier transform for GFISRv2's and FIGSR's Fourier units.
+    # NCNN has no Fourier transform for GFISRv2's and FIGSR's Fourier units. WSR pads its
+    # context stream to a multiple of 4 and crops its gates' maps to the image's size.
     assert is_onnx_supported(model) and not isinstance(
         model.model,
         (
@@ -87,6 +95,8 @@ def convert_to_ncnn_node(
             NAFNet,
             GFISRV2,
             FIGSR,
+            WESR,
+            WideContextSR,
         ),
     ), f"{model.architecture.name} is not supported for NCNN conversions at this time."
 

@@ -504,11 +504,11 @@ if(CHAINNER_C_PDB)
 endif()
 
 # drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, the
-# LegacyBarrierV1 library, compile definitions as his), from the same two roots, beside the DRFT
+# LegacyBarrierV1 library, compile definitions as in that library), from the same two roots, beside the DRFT
 # loader in nodes/impl/tensorrt. Engines embed it, so it is never loaded to run one. The four .cu
 # files (kernels and their plugin classes) are compiled by nvcc as qkv.cu is, except two points:
 # - device math: nvcc's defaults (contraction on, IEEE division and square root), the numerics
-#   Codex measured;
+#   that were measured;
 # - /W4 without /WX or -Werror: two warning classes remain, C4211 in nvcc's generated stubs of
 #   the kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
 #   plugin on TensorRT's deprecated IPluginV2DynamicExt (its legacy overloads are private there).

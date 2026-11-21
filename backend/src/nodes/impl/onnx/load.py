@@ -61,7 +61,7 @@ class ModelFacts:
     frozen_grid: FrozenGrid | None = None
 
 
-# An RDUAL ONNX bundle's: no graph to parse, and no session runs it (rdual_bundle.refuse)
+# A video model's ONNX bundle's: no graph to parse, and no session runs it (rdual_bundle.refuse)
 _BUNDLE_FACTS = ModelFacts(native_session=False, dual_manifest=None)
 
 # The facts load_onnx_model found while it parsed each model, so that its sessions and
@@ -173,7 +173,7 @@ def warn_if_grid_frozen(context: NodeContext, model: OnnxModel, subject: str) ->
 
 
 def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
-    """The model of an ONNX, or of an RDUAL ONNX bundle's bytes (rdual_bundle.py)."""
+    """The model of an ONNX, or of a video model's ONNX bundle's bytes (rdual_bundle.py)."""
     if isinstance(model_or_bytes, bytes) and rdual_bundle.is_bundle(model_or_bytes):
         bundle = rdual_bundle.load(model_or_bytes)
         _facts[bundle] = _BUNDLE_FACTS

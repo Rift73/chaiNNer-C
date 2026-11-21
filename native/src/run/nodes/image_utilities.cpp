@@ -631,10 +631,11 @@ void change_color_model(NodeContext &, std::span<const Value> inputs, std::vecto
     outputs.push_back(result);
 }
 
-/* chainner:image:view (image/io/view_image.py): returns its input; the engine's LargeImageOutput broadcasts it. */
+/* chainner:image:view (image/io/view_image.py): the ten inputs as the ten outputs (an unconnected one stays empty);
+ * the engine's LargeImageOutputs broadcast them. */
 void view_image(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
-    outputs.push_back(inputs[0]);
+    outputs.assign(inputs.begin(), inputs.end());
 }
 
 }  // namespace

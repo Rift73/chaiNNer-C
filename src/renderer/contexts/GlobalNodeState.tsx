@@ -17,6 +17,7 @@ import { createContext, useContext } from 'use-context-selector';
 import {
     EdgeData,
     FileOpenResult,
+    ImageCompare,
     InputData,
     InputId,
     InputKind,
@@ -142,6 +143,7 @@ interface Global {
     setNodeInputHeight: (nodeId: string, inputId: InputId, value: number) => void;
     setNodeOutputHeight: (nodeId: string, outputId: OutputId, value: number) => void;
     setNodeWidth: (nodeId: string, value: number) => void;
+    setNodeImageCompare: (nodeId: string, value: ImageCompare) => void;
     setNodeName: (nodeId: string, nickname: string | undefined) => void;
     removeNodesById: (ids: readonly string[]) => void;
     removeEdgeById: (id: string) => void;
@@ -165,6 +167,8 @@ interface Global {
     typeStateRef: Readonly<React.MutableRefObject<TypeState>>;
     chainLineageRef: Readonly<React.MutableRefObject<ChainLineage>>;
     outputDataActions: OutputDataActions;
+    /** A node's last reported outputs, for event handlers: reading it renders nothing again. */
+    getOutputData: (nodeId: string) => OutputDataEntry | undefined;
     getInputHash: (nodeId: string) => string;
     hasRelevantUnsavedChangesRef: React.MutableRefObject<boolean>;
     setNodeCollapsed: (id: string, isCollapsed: boolean) => void;
@@ -317,6 +321,12 @@ export const GlobalProvider = memo(
         ]);
 
         const [outputDataMap, outputDataActions] = useOutputDataStore();
+        const outputDataMapRef = useRef(outputDataMap);
+        outputDataMapRef.current = outputDataMap;
+        const getOutputData = useCallback(
+            (nodeId: string) => outputDataMapRef.current.get(nodeId),
+            []
+        );
 
         // Cache node state to avoid clearing state when refreshing
         useEffect(() => {
@@ -1144,6 +1154,15 @@ export const GlobalProvider = memo(
             [modifyNode]
         );
 
+        const setNodeImageCompare = useCallback(
+            (nodeId: string, value: ImageCompare): void => {
+                modifyNode(nodeId, (old) => {
+                    return withNewData(old, 'imageCompare', value);
+                });
+            },
+            [modifyNode]
+        );
+
         const setNodeName = useCallback(
             (nodeId: string, name: string | undefined): void => {
                 modifyNode(nodeId, (old) => {
@@ -1512,6 +1531,7 @@ export const GlobalProvider = memo(
             setNodeInputHeight,
             setNodeOutputHeight,
             setNodeWidth,
+            setNodeImageCompare,
             setNodeName,
             toggleNodeLock,
             resetInputs,
@@ -1531,6 +1551,7 @@ export const GlobalProvider = memo(
             typeStateRef,
             chainLineageRef,
             outputDataActions,
+            getOutputData,
             getInputHash,
             hasRelevantUnsavedChangesRef,
             setNodeCollapsed,

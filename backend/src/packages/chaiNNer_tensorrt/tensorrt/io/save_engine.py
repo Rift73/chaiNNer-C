@@ -30,7 +30,7 @@ if io_group is not None:
         description=(
             "Save a TensorRT engine to a file (.engine). "
             "The saved engine is specific to your GPU architecture and TensorRT version. "
-            "An RDUAL engine set (a video model's four engines) is saved as one file, "
+            "A video model's engine set (RDUAL's four engines, RSR's three) is saved as one file, "
             "compressed or not, that only chaiNNer-C reads."
         ),
         icon="MdSave",

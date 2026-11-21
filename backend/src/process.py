@@ -403,15 +403,72 @@ class _IterationTimer:
         self._last_paused = paused
 
 
-def compute_broadcast(output: Output, node_outputs: Iterable[BaseOutput]):
+# A node's large image broadcasts already made in a run, by output position: the value, whether it was granted its
+# full-size preview, and its data and type.
+KeptBroadcasts = dict[
+    int, tuple[object, bool | None, BroadcastData, navi.ExpressionJson | None]
+]
+
+
+def compute_broadcast(
+    output: Output,
+    node_outputs: Sequence[BaseOutput],
+    preview_sizes: Sequence[int] = (),
+    kept: KeptBroadcasts | None = None,
+    reusable: Collection[int] = (),
+):
+    """The node's broadcast data and types; preview_sizes: the widths of the views that show its large images (a
+    seek request's previewSizes; empty: every preview), LargeImageOutput.get_broadcast_data's sizes. kept: the
+    node's large image broadcasts made before in the run, reused for the same value (an output is read-only, so its
+    previews do not change: a generator's partial outputs are broadcast at its finish, its items and its end) and
+    filled with the ones made now at the positions `reusable` (those partial outputs, which the run holds anyway:
+    an entry keeps no image alive that would be freed without it)."""
     data: dict[OutputId, BroadcastData | None] = {}
     types: dict[OutputId, navi.ExpressionJson | None] = {}
+    # One node's full-size previews share one budget (numpy_outputs.full_size_previews); the module is loaded
+    # whenever a node has a LargeImageOutput.
+    module = sys.modules.get("nodes.properties.outputs.numpy_outputs")
+    full_size = (
+        {} if module is None else module.full_size_previews(output, node_outputs)
+    )
     for index, node_output in enumerate(node_outputs):
         try:
             value = output[index]
-            if value is not None:
-                data[node_output.id] = node_output.get_broadcast_data(value)
+            large = module is not None and isinstance(
+                node_output, module.LargeImageOutput
+            )
+            known = None if kept is None or not large else kept.get(index)
+            # Reused only with the full-size preview this broadcast grants (the node's
+            # other images share its budget).
+            if (
+                known is not None
+                and known[0] is value
+                and known[1] == full_size.get(index)
+            ):
+                data[node_output.id], types[node_output.id] = known[2], known[3]
+            elif (
+                module is not None
+                and value is not None
+                and (index in full_size or (preview_sizes and large))
+            ):
+                broadcast = module.LargeImageOutput.get_broadcast_data(
+                    node_output,
+                    value,
+                    full_size=full_size.get(index),
+                    sizes=preview_sizes,
+                )
+                data[node_output.id] = broadcast
                 types[node_output.id] = node_output.get_broadcast_type(value)
+                if kept is not None and index in reusable:
+                    granted = full_size.get(index)
+                    kept[index] = (value, granted, broadcast, types[node_output.id])
+            elif value is not None:
+                broadcast = node_output.get_broadcast_data(value)
+                data[node_output.id] = broadcast
+                types[node_output.id] = node_output.get_broadcast_type(value)
+                if kept is not None and index in reusable and broadcast is not None:
+                    granted = full_size.get(index)
+                    kept[index] = (value, granted, broadcast, types[node_output.id])
         except Exception as e:
             logger.error(f"Error broadcasting output: {e}", exc_info=True)
     return (data, types)
@@ -606,15 +663,15 @@ class _ExecutorNodeContext(NodeContext):
         self.node_cleanup_fns: set[Callable[[], None]] = set()
         # Set while a generator loop runs this node on its commit path.
         self.iteration_view: _IterationView | None = None
-        # The chosen item of the loop the node belongs to (NodeContext.chosen_item).
-        self.chosen: int | None = None
+        # The chosen items of the loop's generators that feed the node (NodeContext.chosen_items).
+        self.chosen: tuple[int, ...] | None = None
 
     @property
     def iteration(self) -> IterationView | None:
         return self.iteration_view
 
     @property
-    def chosen_item(self) -> int | None:
+    def chosen_items(self) -> tuple[int, ...] | None:
         return self.chosen
 
     @property
@@ -1476,6 +1533,91 @@ def eager_ancestors(
     return eager
 
 
+def chosen_items(
+    chain: Chain,
+    chosen: Mapping[NodeId, int | None],
+    iterated_by: Mapping[NodeId, Iterable[NodeId]],
+) -> dict[NodeId, tuple[int, ...]]:
+    """
+    A loop's chosen items by node (NodeContext.chosen_items): when every generator of the loop runs one chosen item
+    (chosen, Generator.chosen_item by generator), each node a generator iterates (iterated_by) gets the distinct items
+    of the generators that iterate it, ascending; when none does, no node gets any. A loop in which only some do is
+    refused, on a generator that runs all its items: its first item would be paired with the chosen one, and a
+    collector would take the one-item loop for a whole run (Save Video would replace its video with one frame).
+    """
+    items = {generator: item for generator, item in chosen.items() if item is not None}
+    if not items:
+        return {}
+    whole = next((generator for generator in chosen if generator not in items), None)
+    if whole is not None:
+        one, item = next(iter(items.items()))
+        names = {key: chain.nodes[key].data.name for key in (whole, one)}
+        # Only a generator with a seek bar (an input of kind video-seek, as the interface decides) has a Range to set.
+        advice = (
+            f"Give {names[whole]} the same one-frame Range, or run {names[one]} on all its frames."
+            if any(i.kind == "video-seek" for i in chain.nodes[whole].data.inputs)
+            else f"{names[whole]} cannot be set to one frame, so this loop cannot run a single frame: disconnect"
+            f" {names[whole]} from the loop, or run the whole chain with {names[one]} on all its frames."
+        )
+        raise NodeAttributedError(
+            f"{names[whole]} would run all its items in a loop where {names[one]} runs only item {item} (Run this"
+            f" frame, or a Range whose Start is its End), so its first item would be paired with item {item}."
+            f" {advice}",
+            whole,
+        )
+    by_node: dict[NodeId, set[int]] = {}
+    for generator, nodes in iterated_by.items():
+        for node_id in nodes:
+            by_node.setdefault(node_id, set()).add(items[generator])
+    return {node_id: tuple(sorted(found)) for node_id, found in by_node.items()}
+
+
+def read_context(
+    node: Node, generator: Generator, wanted: tuple[int, int]
+) -> tuple[Iterable[Any], int, int]:
+    """
+    The generator's items with up to `wanted` (before, after) context items around them (Generator.context), and the counts it read.
+    """
+    assert generator.context is not None
+    items, before, after = generator.context(*wanted)
+    assert 0 <= before <= wanted[0] and 0 <= after <= wanted[1], (
+        f"{node.data.name} read ({before}, {after}) context items"
+        f" for the {wanted} asked"
+    )
+    return items, before, after
+
+
+def loop_context(
+    nodes: Mapping[int, Node],
+    generators: Mapping[int, Generator],
+    wanted: tuple[int, int],
+) -> tuple[dict[int, Iterable[Any]], int, int]:
+    """
+    The context items of a loop whose generators (by position) all read them, for the `wanted` (before, after): each
+    generator's items and the counts every one of them read, the fewest any has, so that each item pairs the
+    generators' items as a whole run does (whose look-aheads end with its shortest generator). A generator that has
+    more is read again with those counts.
+    """
+    read = {
+        n: read_context(nodes[n], generator, wanted)
+        for n, generator in generators.items()
+    }
+    before = min(counts[1] for counts in read.values())
+    after = min(counts[2] for counts in read.values())
+    items: dict[int, Iterable[Any]] = {}
+    for n, (found, *counts) in read.items():
+        if counts == [before, after]:
+            items[n] = found
+            continue
+        again, *read_again = read_context(nodes[n], generators[n], (before, after))
+        assert read_again == [before, after], (
+            f"{nodes[n].data.name} read {tuple(read_again)} context items"
+            f" for the {(before, after)} asked"
+        )
+        items[n] = again
+    return items, before, after
+
+
 def reads_context(generator: Generator) -> bool:
     """
     Whether the generator may read context items: it reads part of its source (Generator.context) and has items. Only then are a loop's known gates resolved before its items.
@@ -1581,15 +1723,26 @@ def context_nodes(
     return frozenset(needed), unread
 
 
+def context_radius(node: Node, gates: Mapping[NodeId, object]) -> tuple[int, int]:
+    """
+    A temporal node's (before, after) radius: its temporal_context_of for its known gate's value (`gates`, the known gates' values), else its temporal_context.
+    """
+    of = node.data.temporal_context_of
+    if of is not None and node.id in gates:
+        return of(gates[node.id])
+    return typing.cast(tuple[int, int], node.data.temporal_context)
+
+
 def context_wanted(
-    chain: Chain, iterated: Collection[NodeId], temporal: Iterable[Node]
+    chain: Chain,
+    iterated: Collection[NodeId],
+    temporal: Iterable[Node],
+    gates: Mapping[NodeId, object],
 ) -> tuple[int, int]:
     """
-    The context items (before, after) the loop's temporal nodes whose context applies want: their radii added along each path, sources first, taking maxima where paths merge.
+    The context items (before, after) the loop's temporal nodes whose context applies want: their radii (context_radius) added along each path, sources first, taking maxima where paths merge.
     """
-    radii = {
-        n.id: typing.cast(tuple[int, int], n.data.temporal_context) for n in temporal
-    }
+    radii = {n.id: context_radius(n, gates) for n in temporal}
     needs: dict[NodeId, tuple[int, int]] = {}
     for node_id in reversed(chain.topological_order()):
         if node_id not in iterated:
@@ -1886,11 +2039,14 @@ class Executor:
         storage_dir: Path,
         parent_cache: OutputCache[NodeOutput] | None = None,
         pool_size: int | None = None,
+        preview_sizes: Sequence[int] = (),
     ):
         self.id: ExecutionId = id
         self.chain = chain
         self.inputs: InputMap = InputMap.from_chain(chain)
         self.send_broadcast_data: bool = send_broadcast_data
+        # compute_broadcast's preview_sizes (a seek request's previewSizes).
+        self.preview_sizes = preview_sizes
         self.options: ExecutionOptions = options
         self.node_cache: OutputCache[NodeOutput] = OutputCache(parent=parent_cache)
         self.__broadcasts = LatestBroadcasts()
@@ -1917,8 +2073,8 @@ class Executor:
         self.__collector_directories: dict[NodeId, dict[int, object]] = {}
         self.__item_bytes: dict[NodeId, int] | None = None
         self.__budget: int | None = None
-        # The nodes of loops that run one chosen item, and that item (chosen_item).
-        self.__chosen_items: dict[NodeId, int] = {}
+        # The nodes of loops that run one chosen item, and their items (chosen_items).
+        self.__chosen_items: dict[NodeId, tuple[int, ...]] = {}
         # The generators with a loop to run (__process_nodes)
         self.__looped: set[NodeId] = set()
 
@@ -2766,23 +2922,30 @@ class Executor:
             return None
         return _output_value(typing.cast(NodeOutput, output), source.index)
 
-    async def __temporal_nodes(
-        self, iterated: set[NodeId], sinks: list[Node], generator: Generator
-    ) -> tuple[list[FunctionNode], frozenset[NodeId], frozenset[NodeId]]:
+    async def __known_gates(
+        self, iterated: set[NodeId], sinks: list[Node]
+    ) -> dict[NodeId, object]:
         """
-        The loop's temporal nodes whose context applies (temporal_nodes, temporal_applies), in the chain's sink-first order. When the generator reads context items (reads_context), a known gate's input is resolved first, so its source (Load Model) runs before the loop's first item. Also the loop's nodes that run for a context item and the temporal nodes none of those reads (context_nodes).
+        The values of the loop's known gates (known_gates), resolved when its first generator that reads context items (reads_context) has run, as the native engine resolves them: a gate's source (Load Model) runs before the loop's first item.
         """
         temporal = temporal_nodes(self.chain, iterated, sinks)
-        gates = {
+        return {
             node.id: await self.__resolve_node_input(self.inputs.get(node.id)[position])
-            for node, position in (
-                known_gates(self.chain, self.inputs, iterated, sinks, temporal)
-                if reads_context(generator)
-                else []
+            for node, position in known_gates(
+                self.chain, self.inputs, iterated, sinks, temporal
             )
         }
+
+    def __temporal_nodes(
+        self, iterated: set[NodeId], sinks: list[Node], gates: dict[NodeId, object]
+    ) -> tuple[list[FunctionNode], frozenset[NodeId], frozenset[NodeId]]:
+        """
+        The loop's temporal nodes whose context applies (temporal_nodes, temporal_applies, by the known gates' values), in the chain's sink-first order. Also the loop's nodes that run for a context item and the temporal nodes none of those reads (context_nodes).
+        """
         temporal = [
-            node for node in temporal if temporal_applies(node, gates, self.inputs)
+            node
+            for node in temporal_nodes(self.chain, iterated, sinks)
+            if temporal_applies(node, gates, self.inputs)
         ]
         needed, unread = context_nodes(self.chain, iterated, temporal)
         return temporal, needed, unread
@@ -2798,50 +2961,78 @@ class Executor:
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]] = {}
         generator_outputs: dict[NodeId, GeneratorOutput] = {}
         iter_timers: dict[NodeId, _IterationTimer] = {}
-        # Context items (a group's only generator reads them for its temporal nodes):
-        # `before` items before the range, run through the temporal nodes and the nodes
-        # they need (context_nodes) alone, and `after` items after it, only served to
-        # look-aheads.
+        # Context items, when every generator of the loop can read them (Generator.context)
+        # for its temporal nodes: `before` items before the range, run through the temporal
+        # nodes and the nodes they need (context_nodes) alone, and `after` items after it,
+        # only served to look-aheads; the same counts for every generator (loop_context).
         temporal_nodes: list[FunctionNode] = []
         context_nodes: frozenset[NodeId] = frozenset()
         unread: frozenset[NodeId] = frozenset()
         before = after = 0
+        # Each generator's collectors, side-effect nodes and the nodes it iterates (itself included).
+        reached = {node.id: self.__get_iterated_nodes(node) for node in generator_nodes}
+        group_iterated = {n.id for _, _, nodes in reached.values() for n in nodes}
+        group_sinks: list[Node] = []
+        for index in (1, 0):
+            for nodes in reached.values():
+                group_sinks.extend(n for n in nodes[index] if n not in group_sinks)
+        gates: dict[NodeId, object] | None = None
+        iterated_collectors: dict[NodeId, list[CollectorNode]] = {}
+        iterated_by: dict[NodeId, set[NodeId]] = {}
         for node in generator_nodes:
             generator_output = await self.process_generator_node(node)
             generator_outputs[node.id] = generator_output
             generator = generator_output.generator
-            contextual = num_generators == 1 and generator.context is not None
-            if not contextual:
+            if generator.context is None:
                 generator_suppliers[node.id] = generator.supplier().__iter__()
-            collector_nodes, __output_nodes, __all_iterated_nodes = (
-                self.__get_iterated_nodes(node)
-            )
+            collector_nodes, __output_nodes, __all_iterated_nodes = reached[node.id]
             for iterated_node in __all_iterated_nodes:
                 all_iterated_nodes.add(iterated_node.id)
+            iterated_by[node.id] = {n.id for n in __all_iterated_nodes}
+            iterated_collectors[node.id] = collector_nodes
             for o_node in __output_nodes:
                 if o_node not in output_nodes:
                     output_nodes.append(o_node)
             if len(collector_nodes) == 0 and len(output_nodes) == 0:
                 return
-            if num_generators == 1 and generator.chosen_item is not None:
-                for iterated_node in __all_iterated_nodes:
-                    self.__chosen_items[iterated_node.id] = generator.chosen_item
-            if contextual:
-                assert generator.context is not None
-                temporal_nodes, context_nodes, unread = await self.__temporal_nodes(
-                    all_iterated_nodes, [*output_nodes, *collector_nodes], generator
+            if gates is None and reads_context(generator):
+                gates = await self.__known_gates(group_iterated, group_sinks)
+        readers = {
+            node.id: generator_outputs[node.id].generator for node in generator_nodes
+        }
+        if all(generator.context is not None for generator in readers.values()):
+            temporal_nodes, context_nodes, unread = self.__temporal_nodes(
+                group_iterated, group_sinks, gates or {}
+            )
+            wanted = context_wanted(
+                self.chain, group_iterated, temporal_nodes, gates or {}
+            )
+            if wanted != (0, 0) and all(
+                generator.expected_length > 0 for generator in readers.values()
+            ):
+                read, before, after = loop_context(
+                    dict(enumerate(generator_nodes)),
+                    {n: readers[node.id] for n, node in enumerate(generator_nodes)},
+                    wanted,
                 )
-                wanted = context_wanted(self.chain, all_iterated_nodes, temporal_nodes)
-                if wanted == (0, 0) or generator.expected_length == 0:
-                    generator_suppliers[node.id] = generator.supplier().__iter__()
-                else:
-                    items, before, after = generator.context(*wanted)
-                    assert 0 <= before <= wanted[0] and 0 <= after <= wanted[1], (
-                        f"{node.data.name} read ({before}, {after}) context items"
-                        f" for the {wanted} asked"
-                    )
-                    generator_suppliers[node.id] = items.__iter__()
-            for collector_node in collector_nodes:
+                for n, items in read.items():
+                    generator_suppliers[generator_nodes[n].id] = items.__iter__()
+        for node_id, generator in readers.items():
+            if node_id not in generator_suppliers:
+                generator_suppliers[node_id] = generator.supplier().__iter__()
+        # A collector reads the chosen items when it is made: they come from every generator of the loop.
+        self.__chosen_items.update(
+            chosen_items(
+                self.chain,
+                {
+                    node_id: output.generator.chosen_item
+                    for node_id, output in generator_outputs.items()
+                },
+                iterated_by,
+            )
+        )
+        for node in generator_nodes:
+            for collector_node in iterated_collectors[node.id]:
                 if collector_node.id in collector_ids:
                     continue
                 collector_ids.add(collector_node.id)
@@ -2851,7 +3042,7 @@ class Executor:
                     collector_output = await self.process_collector_node(collector_node)
                 assert isinstance(collector_output, CollectorOutput)
                 collectors.append((collector_output.collector, timer, collector_node))
-            expected_length = generator_output.generator.expected_length
+            expected_length = generator_outputs[node.id].generator.expected_length
             expected_lengths[node.id] = expected_length
             iter_times = _IterationTimer(self.progress)
             iter_timers[node.id] = iter_times
@@ -2878,9 +3069,9 @@ class Executor:
         self.__item_bytes = {}
         # The range's slots: `before` context items come first; with items after it, the
         # loop ends after its last one (they only serve look-aheads), else as always, when
-        # the generators are exhausted.
+        # the generators are exhausted. The range is as long as its shortest generator's.
         first = before
-        end = None if after == 0 else before + expected_lengths[generator_nodes[0].id]
+        end = None if after == 0 else before + min(expected_lengths.values())
         bases = {output.generator.index_base for output in generator_outputs.values()}
         run = self.__run = _LoopRun(
             {node.id for node in generator_nodes},
@@ -3250,7 +3441,7 @@ class Executor:
         def compute_broadcast_data():
             if self.progress.aborted:
                 return None
-            foo = compute_broadcast(output, node.data.outputs)
+            foo = compute_broadcast(output, node.data.outputs, self.preview_sizes)
             if generators is None:
                 return (*foo, {}, {})
             return (
@@ -3273,6 +3464,9 @@ class Executor:
                 "types": types,
                 "sequenceTypes": sequence_types,
             }
+            # A reduced run's (a seek's): the views' widths its previews were made for.
+            if self.preview_sizes:
+                evant_data["previewSizes"] = list(self.preview_sizes)
             self.queue.put({"event": "node-broadcast", "data": evant_data})
 
         if self.send_broadcast_data and len(node.data.outputs) > 0:

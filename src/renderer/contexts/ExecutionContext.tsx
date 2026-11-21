@@ -14,8 +14,10 @@ import {
 import { EdgeData, InputData, NodeData, OutputId } from '../../common/common-types';
 import { formatExecutionErrorMessage } from '../../common/formatExecutionErrorMessage';
 import {
+    RunPart,
     withClipViewer,
     withInputOverrides,
+    withOnlyDownstreamOf,
     withOnlyUpTo,
 } from '../../common/input-override-common';
 import { log } from '../../common/log';
@@ -26,7 +28,7 @@ import { optimizeChain } from '../../common/nodes/optimize';
 import { toBackendJson } from '../../common/nodes/toBackendJson';
 import { getChainnerScope } from '../../common/types/chainner-scope';
 import { fromJson } from '../../common/types/json';
-import { EMPTY_MAP, EMPTY_SET, assertNever, groupBy } from '../../common/util';
+import { EMPTY_MAP, EMPTY_SET, assertNever, groupBy, mapInputValues } from '../../common/util';
 import { bothValid } from '../../common/Validity';
 import {
     ChainProgress,
@@ -42,7 +44,9 @@ import {
     useBackendEventSourceListener,
 } from '../hooks/useBackendEventSource';
 import { EventBacklog, useEventBacklog } from '../hooks/useEventBacklog';
+import { computeInputHashes } from '../hooks/useInputHashes';
 import { useMemoObject } from '../hooks/useMemo';
+import { OutputDataEntry } from '../hooks/useOutputDataStore';
 import { useSettings } from '../hooks/useSettings';
 import { ipcRenderer } from '../safeIpc';
 import { AlertBoxContext, AlertType } from './AlertBoxContext';
@@ -90,27 +94,93 @@ export interface NodeProgress {
 }
 
 export type PreviewRender =
-    | { readonly kind: 'rendered' }
+    // backendTime: the node's own time in the backend (s), when the render tells it; sizes: the
+    // preview widths it asked for (renderAlone's view sizes), if any
+    | {
+          readonly kind: 'rendered';
+          readonly backendTime?: number;
+          readonly sizes?: readonly number[];
+      }
     | { readonly kind: 'failed'; readonly message: string }
     | { readonly kind: 'skipped' };
 
 interface ExecutionContextValue {
     run: () => Promise<void>;
     /**
-     * Runs the chain as `run` does, with the given input values of the given nodes (by node id)
-     * for this run only: the chain in the editor, which is saved, and the nodes' input hashes
-     * keep their values. Does nothing unless the executor is ready.
+     * Runs a part of the chain as `run` does (`part`: a node and what it depends on, or what it
+     * feeds with what that depends on), with the given input values of the given nodes (by node id) for this run
+     * only: the chain in the editor, which is saved, and the nodes' input hashes keep their
+     * values. Does nothing unless the executor is ready.
      */
-    runWithOverrides: (overrides: ReadonlyMap<string, InputData>) => Promise<void>;
+    runWithOverrides: (overrides: ReadonlyMap<string, InputData>, part: RunPart) => Promise<void>;
     /**
      * Renders what the node shows (its Preview at its own Seek) with the given input values of
-     * the node: only the node and the nodes it depends on run, and the node keeps what it shows
-     * although the overriding values change its items. The render is no run of the chain: the
-     * Run buttons and the execution number stay as they are, a failure is returned, not alerted,
-     * and a Run asked for meanwhile starts once the render ends. Skipped while a run goes on or
-     * waits, or another render does.
+     * the given nodes (by node id): only the node and the nodes it depends on run, and the node
+     * keeps what it shows although the overriding values change its items; the other overridden
+     * nodes keep their outputs, as in a run with overrides. The render is no run of the chain:
+     * the Run buttons and the execution number stay as they are, a failure is returned, not
+     * alerted, and a Run asked for meanwhile starts once the render ends. A render asked for
+     * during another starts once that one ends. Skipped while a run goes on or waits, also when
+     * a run is asked for while the render waits. `withViewSizes` (a gesture's frame): the run
+     * brings only the previews of the node's views on screen (setViewWidth).
      */
-    renderPreview: (nodeId: string, overrides: InputData) => Promise<PreviewRender>;
+    renderPreview: (
+        nodeId: string,
+        overrides: ReadonlyMap<string, InputData>,
+        withViewSizes?: boolean
+    ) => Promise<PreviewRender>;
+    /**
+     * Renders the Preview of a node without connections by itself (/run/individual), with the
+     * given values of its own inputs (by input id) for this render only: the editor's node keeps
+     * its values. The frame is stored under the input hash of the values it was rendered with,
+     * as soon as its event comes, and the render ends then (or with its failure, or skipped when
+     * no frame came: a newer run of the node replaced it). One render of a node at a time is the
+     * caller's (useSeekPreview's). Skipped while a run goes on or waits.
+     */
+    renderAlone: (
+        nodeId: string,
+        inputs: InputData,
+        withViewSizes: boolean
+    ) => Promise<PreviewRender>;
+    /**
+     * The width (px, as the view picks its preview by) of a view of the node's preview on screen
+     * (`view`: which), or undefined when it is not on screen. A render by itself with view sizes
+     * (renderAlone during a gesture) asks only for the previews of these views; while a maximized
+     * one (`isMaximized`) is open, only for those: it covers the node.
+     */
+    setViewWidth: (
+        nodeId: string,
+        view: string,
+        width: number | undefined,
+        isMaximized?: boolean
+    ) => void;
+    /**
+     * A gesture's end sets these values of the node's own inputs: their commit runs nothing
+     * when the renders by themselves (renderAlone) have their frame, rendered or in flight, or
+     * one of them will render it (`willRender`). Nothing is reserved while a run goes on or
+     * waits. A reserved frame that ends without being shown has the node run again
+     * (registerRunAgain).
+     */
+    reserveAlone: (nodeId: string, inputs: InputData, willRender: boolean) => void;
+    /**
+     * Whether the commit of these input values (useRunNode's JSON of them) has its frame
+     * reserved (reserveAlone): the reservation is used then, once.
+     */
+    takeReserved: (nodeId: string, inputsKey: string) => boolean;
+    /** A run of the node is sent: its reservation is no frame of its inputs any more. */
+    forgetReserved: (nodeId: string) => void;
+    /** How the node runs again (useRunNode's reload); returns its removal. */
+    registerRunAgain: (nodeId: string, runAgain: () => void) => () => void;
+    /**
+     * Whether the node's picture is a frame of the renders by itself that follow its seek bar
+     * (renderAlone) while its inputs are those the renders started from: one is in flight, or
+     * the frame shown is the last one asked for. It is not outdated then.
+     */
+    isSeekFrame: (
+        nodeId: string,
+        inputHash: string | undefined,
+        shownHash: string | undefined
+    ) => boolean;
     /**
      * Shows the clip of the given output of the node in the viewer, as a Preview Clips node fed by
      * it shows it, without adding one to the chain: only the node and the nodes it depends on run.
@@ -148,7 +218,9 @@ type NodeEvents =
 
 const useRegisterNodeEvents = (
     eventSource: BackendEventSource | null,
-    backlog: EventBacklog<NodeEvents>
+    backlog: EventBacklog<NodeEvents>,
+    // a render's own event (renderAlone's), handled at once instead of with the backlog
+    takeOwn: (event: NodeEvents) => boolean
 ) => {
     useBackendEventSourceListener(
         eventSource,
@@ -160,17 +232,39 @@ const useRegisterNodeEvents = (
         'node-progress',
         (f) => f && backlog.push({ type: 'node-progress', data: f })
     );
-    useBackendEventSourceListener(
-        eventSource,
-        'node-broadcast',
-        (f) => f && backlog.push({ type: 'node-broadcast', data: f })
-    );
-    useBackendEventSourceListener(
-        eventSource,
-        'node-finish',
-        (f) => f && backlog.push({ type: 'node-finish', data: f })
-    );
+    useBackendEventSourceListener(eventSource, 'node-broadcast', (f) => {
+        if (!f) return;
+        const event = { type: 'node-broadcast', data: f } as const;
+        if (!takeOwn(event)) backlog.push(event);
+    });
+    useBackendEventSourceListener(eventSource, 'node-finish', (f) => {
+        if (!f) return;
+        const event = { type: 'node-finish', data: f } as const;
+        if (!takeOwn(event)) backlog.push(event);
+    });
 };
+
+// The renderer's session in the tokens of its renders by themselves: a late event of an earlier
+// session (before a reload of the window) is none of this one's.
+const SESSION = crypto.randomUUID();
+
+/** A render of a node by itself (renderAlone) in flight. */
+interface AloneRender {
+    /** The input hash of the values it renders. */
+    readonly hash: string;
+    /** The preview widths it asked for, if any. */
+    readonly sizes: readonly number[] | undefined;
+    executionTime: number | undefined;
+    settle: (render: PreviewRender) => void;
+}
+/** What the renders of a node by itself last asked for (renderAlone). */
+interface SeekFrame {
+    /** The input hash of the frame last asked for. */
+    readonly hash: string;
+    /** The node's input hash when it was asked for. */
+    readonly base: string;
+    readonly inFlight: boolean;
+}
 
 const useOnBackendStatus = (
     backend: Backend,
@@ -208,6 +302,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         typeStateRef,
         chainLineageRef,
         outputDataActions,
+        getOutputData,
         getInputHash,
         setManualOutputType,
         clearManualTypes,
@@ -243,13 +338,24 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const statusRef = useRef(status);
     statusRef.current = status;
     const runsInFlightRef = useRef(0);
-    // The Preview render in flight (renderPreview), settled when it ends; whether a run waits for
-    // it; and its failure as the error event told it, which raises no alert.
+    // The last Preview render asked for (renderPreview), settled when it ends, after those asked
+    // for before it; whether a run waits for it; and the failure of the render in flight as the
+    // error event told it, which raises no alert.
     const previewRef = useRef<Promise<void>>();
     const runAskedRef = useRef(false);
     const previewFailureRef = useRef<string>();
     // Error events of renders that ended before their event came.
     const lateFailuresRef = useRef(0);
+    // Per node, the last render by itself started (renderAlone): the JSON of its input values,
+    // whether it is in flight, whether it showed its frame, and whether with every preview (not
+    // only those of the views on screen).
+    const lastAloneRef = useRef(
+        new Map<string, { key: string; inFlight: boolean; rendered: boolean; complete: boolean }>()
+    );
+    // Per node, the input values (JSON) a gesture's end set whose frame is reserved
+    // (reserveAlone), and whether their commit has used it.
+    const reservedRef = useRef(new Map<string, { key: string; used: boolean }>());
+    const runAgainRef = useRef(new Map<string, () => void>());
 
     const [executionNumber, setExecutionNumber] = useState(1);
 
@@ -326,6 +432,15 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     // The node whose Preview the running chain renders (renderPreview), or whose clip it shows
     // (previewClip).
     const shownNodeRef = useRef<string>();
+    // The nodes shown by a gesture's renders that bring only the previews of their views on
+    // screen. A broadcast marked as such a render's (its previewSizes) is a gesture frame of one
+    // of them: any other node's is left out, so that no node keeps a picture without its other
+    // previews; the gesture's end renders them all.
+    const reducedShownRef = useRef(new Set<string>());
+    // Per node shown by a gesture's renders, what it showed with every preview before them
+    // (undefined: nothing): a failed end of the gesture shows it again (outdated), not a frame
+    // without its previews.
+    const beforeReducedRef = useRef(new Map<string, OutputDataEntry | undefined>());
 
     const processSingleNode = (nodeId: string, events: NodeEvents[]) => {
         let executionStatus;
@@ -335,6 +450,8 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         let progress;
         let chainNodeProgress;
         let sequenceTypes;
+        // whether the broadcast stored is a gesture's frame with only some previews
+        let isReduced = false;
 
         for (const { type, data } of events) {
             if (type === 'node-start') {
@@ -348,11 +465,16 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 // frame: a range of one frame), which its own inputs do not have, and would be
                 // kept under its own inputs' hash. It is left out: the node keeps the outputs
                 // and types of its own inputs.
-                if (!overriddenNodesRef.current.has(nodeId)) {
+                const marked = data.previewSizes !== undefined;
+                if (marked && !reducedShownRef.current.has(nodeId)) {
+                    // a gesture's render with only the shown node's previews, whenever it comes
+                } else if (!overriddenNodesRef.current.has(nodeId)) {
+                    isReduced = marked;
                     broadcastData = data.data;
                     types = data.types;
                     sequenceTypes = data.sequenceTypes ?? undefined;
                 } else if (nodeId === shownNodeRef.current) {
+                    isReduced = marked;
                     // The run renders what the node shows for its own Seek, Frame Count and FPS:
                     // only the length of its frames is the overriding range's.
                     broadcastData = data.data;
@@ -389,6 +511,12 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             // the backend send us those hashes is incorrect too because of iterators, I
             // think.
             const inputHash = getInputHash(nodeId);
+            if (broadcastData !== undefined) {
+                if (!isReduced) beforeReducedRef.current.delete(nodeId);
+                else if (!beforeReducedRef.current.has(nodeId)) {
+                    beforeReducedRef.current.set(nodeId, getOutputData(nodeId));
+                }
+            }
             outputDataActions.set(
                 nodeId,
                 executionTime,
@@ -436,8 +564,50 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         interval: 100,
     });
 
+    // The renders of nodes by themselves in flight (renderAlone), by their requests' tokens.
+    const aloneRendersRef = useRef(new Map<string, AloneRender>());
+    const takeOwn = useCallback(
+        (event: NodeEvents): boolean => {
+            if (event.type !== 'node-broadcast' && event.type !== 'node-finish') return false;
+            const { token } = event.data;
+            if (token === undefined) return false;
+            const render = aloneRendersRef.current.get(token);
+            // the frame of a render that has ended is no frame the node shows
+            if (render === undefined) return true;
+            if (event.type === 'node-finish') {
+                render.executionTime = event.data.executionTime;
+                return true;
+            }
+            const { nodeId, data, types, sequenceTypes } = event.data;
+            if (!getNodes().some((n) => n.id === nodeId)) {
+                // the node is gone: its frame is no output of a node
+                render.settle({ kind: 'skipped' });
+                return true;
+            }
+            // a broadcast of the node waiting in the backlog is older than this frame
+            nodeEventBacklog.discard(
+                (e) => e.type === 'node-broadcast' && e.data.nodeId === nodeId
+            );
+            outputDataActions.set(
+                nodeId,
+                render.executionTime,
+                render.hash,
+                data,
+                types,
+                sequenceTypes ?? undefined
+            );
+            render.settle({
+                kind: 'rendered',
+                backendTime: render.executionTime,
+                sizes: render.sizes,
+            });
+            return true;
+        },
+        [outputDataActions, getNodes, nodeEventBacklog]
+    );
+
     const [eventSource, eventSourceStatus] = useBackendEventSource(url, isBackendReady);
-    useRegisterNodeEvents(eventSource, nodeEventBacklog);
+    useRegisterNodeEvents(eventSource, nodeEventBacklog, takeOwn);
 
     useBackendEventSourceListener(eventSource, 'execution-error', (data) => {
         if (data) {
@@ -447,13 +617,16 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 (label, value) => `• ${label}: ${value}`,
                 (nodeId) => getNodes().find((n) => n.id === nodeId)?.data.nodeName
             );
+            // The backend sends the errors of its runs in their order: while a render that ended
+            // before its event came waits for it, the next error is that render's, not the one
+            // of a render in flight.
+            if (lateFailuresRef.current > 0) {
+                lateFailuresRef.current -= 1;
+                return;
+            }
             // A Preview render's failure goes to the render, which reports it once for a drag.
             if (previewRef.current !== undefined) {
                 previewFailureRef.current = formatted;
-                return;
-            }
-            if (lateFailuresRef.current > 0) {
-                lateFailuresRef.current -= 1;
                 return;
             }
             if (statusRef.current === ExecutionStatus.KILLING) {
@@ -499,6 +672,21 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     useEffect(() => {
         if (ownsBackend && !backendDownRef.current && eventSourceStatus === 'error') {
             log.warn('The backend event source errored.');
+            // Their frames would not come: the first one's failure is alerted (once, by its seek
+            // bar), the others end without a frame.
+            [...aloneRendersRef.current.values()].forEach((render, index) =>
+                render.settle(
+                    index === 0
+                        ? {
+                              kind: 'failed',
+                              message: i18n.t(
+                                  'execution.unexpectedError',
+                                  'An unexpected error occurred.'
+                              ),
+                          }
+                        : { kind: 'skipped' }
+                )
+            );
             clearNodeStatusMap();
             setLocalStatus(ExecutionStatus.READY);
         }
@@ -532,11 +720,37 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         }
     }, [status, nodeChanges, edgeChanges, sendToast]);
 
+    // per node, the widths of the views of its preview on screen, by view
+    const viewWidthsRef = useRef(
+        new Map<string, Map<string, { width: number; isMaximized: boolean }>>()
+    );
+    const setViewWidth = useCallback(
+        (nodeId: string, view: string, width: number | undefined, isMaximized = false) => {
+            const widths =
+                viewWidthsRef.current.get(nodeId) ??
+                new Map<string, { width: number; isMaximized: boolean }>();
+            if (width === undefined) widths.delete(view);
+            else widths.set(view, { width, isMaximized });
+            if (widths.size > 0) viewWidthsRef.current.set(nodeId, widths);
+            else viewWidthsRef.current.delete(nodeId);
+        },
+        []
+    );
+    // The preview widths the views of the node on screen pick, none when none is known (then
+    // every preview): an open maximized view covers the node, its picture alone is seen.
+    const viewSizesOf = useCallback((nodeId: string): number[] | undefined => {
+        const views = [...(viewWidthsRef.current.get(nodeId)?.values() ?? [])];
+        const seen = views.some((v) => v.isMaximized) ? views.filter((v) => v.isMaximized) : views;
+        if (seen.length === 0) return undefined;
+        return [...new Set(seen.map((v) => Math.ceil(v.width)))].sort((a, b) => a - b);
+    }, []);
     const runNodes = useCallback(
         async (
             overrides: ReadonlyMap<string, InputData>,
+            part?: RunPart,
             shownNodeId?: string,
-            clipOutput?: OutputId
+            clipOutput?: OutputId,
+            previewSizes?: readonly number[]
         ): Promise<string | undefined> => {
             // A Preview render (a shown node, no viewer) leaves the Run buttons alone and returns
             // its failure instead of alerting it.
@@ -550,16 +764,18 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             // The overriding values go into copies of the nodes: the editor's nodes and their
             // input hashes keep theirs.
             const overridden = withInputOverrides(getNodes(), getEdges(), overrides);
-            let part =
-                shownNodeId === undefined
-                    ? overridden
-                    : withOnlyUpTo(overridden.nodes, overridden.edges, shownNodeId);
+            let chain = overridden;
+            if (part?.kind === 'up-to') {
+                chain = withOnlyUpTo(overridden.nodes, overridden.edges, part.nodeId);
+            } else if (part?.kind === 'downstream') {
+                chain = withOnlyDownstreamOf(overridden.nodes, overridden.edges, part.nodeId);
+            }
             if (shownNodeId !== undefined && clipOutput !== undefined) {
-                part = withClipViewer(part.nodes, part.edges, shownNodeId, clipOutput);
+                chain = withClipViewer(chain.nodes, chain.edges, shownNodeId, clipOutput);
             }
             const { nodes, edges, report } = optimizeChain(
-                part.nodes,
-                part.edges,
+                chain.nodes,
+                chain.edges,
                 schemata,
                 passthrough
             );
@@ -635,6 +851,9 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             }
             overriddenNodesRef.current = new Set(overrides.keys());
             shownNodeRef.current = shownNodeId;
+            if (previewSizes !== undefined && shownNodeId !== undefined) {
+                reducedShownRef.current.add(shownNodeId);
+            }
 
             runsInFlightRef.current += 1;
             try {
@@ -645,6 +864,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     data,
                     options: packageSettings,
                     sendBroadcastData: true,
+                    ...(previewSizes === undefined ? {} : { previewSizes: [...previewSizes] }),
                 });
                 // An 'error' reply needs no alert here: the execution-error event reports it.
                 if (response.type === 'already-running') {
@@ -750,49 +970,272 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     }, [isBackendReady, resume, runNodes, status, setExecutionNumber, afterPreview]);
 
     const runWithOverrides = useCallback(
-        async (overrides: ReadonlyMap<string, InputData>) => {
+        async (overrides: ReadonlyMap<string, InputData>, part: RunPart) => {
             if (!isBackendReady || status !== ExecutionStatus.READY) {
                 // a paused run is not resumed with other values, and a run is not started twice
                 return;
             }
-            await afterPreview(() => runNodes(overrides));
+            await afterPreview(() => runNodes(overrides, part));
             setExecutionNumber((prev) => prev + 1);
         },
         [isBackendReady, runNodes, status, setExecutionNumber, afterPreview]
     );
 
     const renderPreview = useCallback(
-        async (nodeId: string, overrides: InputData): Promise<PreviewRender> => {
-            if (
-                !isBackendReady ||
-                status !== ExecutionStatus.READY ||
-                runAskedRef.current ||
-                previewRef.current !== undefined
-            ) {
+        async (
+            nodeId: string,
+            overrides: ReadonlyMap<string, InputData>,
+            withViewSizes = false
+        ): Promise<PreviewRender> => {
+            // a run goes on or waits to start
+            const isRunAhead = () =>
+                runAskedRef.current || statusRef.current !== ExecutionStatus.READY;
+            if (!isBackendReady || status !== ExecutionStatus.READY || isRunAhead()) {
                 return { kind: 'skipped' };
             }
+            // Renders follow one another in the order asked: this one waits for the one before
+            // it, and the next one for this one.
+            const before = previewRef.current;
             let settle = () => {};
-            previewRef.current = new Promise<void>((resolve) => {
+            const rendering = new Promise<void>((resolve) => {
                 settle = resolve;
             });
-            previewFailureRef.current = undefined;
+            previewRef.current = rendering;
             try {
-                const failure = await runNodes(new Map([[nodeId, overrides]]), nodeId);
+                await before;
+                if (isRunAhead()) return { kind: 'skipped' };
+                previewFailureRef.current = undefined;
+                const sizes = withViewSizes ? viewSizesOf(nodeId) : undefined;
+                const failure = await runNodes(
+                    overrides,
+                    { nodeId, kind: 'up-to' },
+                    nodeId,
+                    undefined,
+                    sizes
+                );
+                if (
+                    failure !== undefined &&
+                    sizes === undefined &&
+                    beforeReducedRef.current.has(nodeId)
+                ) {
+                    // The end of a gesture failed: the node shows its last complete picture,
+                    // or none when it had none (a run renders it then).
+                    const shownBefore = beforeReducedRef.current.get(nodeId);
+                    beforeReducedRef.current.delete(nodeId);
+                    if (shownBefore === undefined) {
+                        outputDataActions.delete(nodeId);
+                    } else {
+                        outputDataActions.set(
+                            nodeId,
+                            shownBefore.lastExecutionTime,
+                            shownBefore.inputHash,
+                            shownBefore.data,
+                            shownBefore.types,
+                            shownBefore.sequenceTypes
+                        );
+                    }
+                }
                 return failure === undefined
-                    ? { kind: 'rendered' }
+                    ? { kind: 'rendered', sizes }
                     : { kind: 'failed', message: failure };
             } finally {
-                previewRef.current = undefined;
+                if (previewRef.current === rendering) previewRef.current = undefined;
                 settle();
             }
         },
-        [isBackendReady, runNodes, status]
+        [isBackendReady, runNodes, status, viewSizesOf, outputDataActions]
+    );
+
+    const tokensRef = useRef(0);
+    const [seekFrames, setSeekFrames] = useState<ReadonlyMap<string, SeekFrame>>(EMPTY_MAP);
+    // The node by itself with the given values of its inputs, unless no render can start.
+    const aloneWith = useCallback(
+        (nodeId: string, inputs: InputData) => {
+            const isRunAhead = runAskedRef.current || statusRef.current !== ExecutionStatus.READY;
+            const node = getNodes().find((n) => n.id === nodeId);
+            if (!isBackendReady || isRunAhead || node === undefined) return undefined;
+            const schema = schemata.get(node.data.schemaId);
+            const data = { ...node.data, inputData: { ...node.data.inputData, ...inputs } };
+            const values = mapInputValues(schema, (inputId) => data.inputData[inputId] ?? null);
+            // useRunNode's key of the values
+            const key = JSON.stringify(values);
+            // the node has no connections: its hash is its own values'
+            const hash = computeInputHashes([{ ...node, data }], [], schemata).get(nodeId) ?? '';
+            return { schemaId: node.data.schemaId, values, key, hash };
+        },
+        [isBackendReady, getNodes, schemata]
+    );
+    const reserveAlone = useCallback(
+        (nodeId: string, inputs: InputData, willRender: boolean) => {
+            const alone = aloneWith(nodeId, inputs);
+            if (alone === undefined) return;
+            const last = lastAloneRef.current.get(nodeId);
+            // a frame with only some previews is no frame at rest: the end's render is
+            const hasFrame =
+                last?.key === alone.key && last.complete && (last.inFlight || last.rendered);
+            if (!hasFrame && !willRender) return;
+            reservedRef.current.set(nodeId, { key: alone.key, used: false });
+            // the frames go on following the bar, whose value is now these inputs'
+            setSeekFrames((prev) => {
+                const frame = prev.get(nodeId);
+                if (frame === undefined) return prev;
+                return new Map(prev).set(nodeId, { ...frame, base: alone.hash });
+            });
+        },
+        [aloneWith]
+    );
+    // the reservation ends; a commit that used it runs the node again
+    const endReserved = useCallback((nodeId: string) => {
+        const reserved = reservedRef.current.get(nodeId);
+        reservedRef.current.delete(nodeId);
+        if (reserved?.used) runAgainRef.current.get(nodeId)?.();
+    }, []);
+    const takeReserved = useCallback((nodeId: string, inputsKey: string) => {
+        const reserved = reservedRef.current.get(nodeId);
+        if (reserved?.key !== inputsKey || reserved.used) return false;
+        const last = lastAloneRef.current.get(nodeId);
+        if (last?.key === inputsKey && !last.inFlight && last.rendered && last.complete) {
+            // its frame is shown with every preview: nothing more to wait for
+            reservedRef.current.delete(nodeId);
+        } else {
+            reservedRef.current.set(nodeId, { ...reserved, used: true });
+        }
+        return true;
+    }, []);
+    const forgetReserved = useCallback((nodeId: string) => {
+        reservedRef.current.delete(nodeId);
+    }, []);
+    const registerRunAgain = useCallback((nodeId: string, runAgain: () => void) => {
+        runAgainRef.current.set(nodeId, runAgain);
+        return () => {
+            if (runAgainRef.current.get(nodeId) === runAgain) runAgainRef.current.delete(nodeId);
+        };
+    }, []);
+    const renderAlone = useCallback(
+        async (
+            nodeId: string,
+            inputs: InputData,
+            withViewSizes: boolean
+        ): Promise<PreviewRender> => {
+            const alone = aloneWith(nodeId, inputs);
+            if (alone === undefined) {
+                // a run goes on or waits: a reserved frame waited for comes from the node's run
+                if (reservedRef.current.has(nodeId)) endReserved(nodeId);
+                return { kind: 'skipped' };
+            }
+            const { schemaId, values, key, hash } = alone;
+            const base = getInputHash(nodeId);
+            tokensRef.current += 1;
+            const token = `${nodeId} ${SESSION} ${tokensRef.current}`;
+            // only the previews the views on screen pick
+            const sizes = withViewSizes ? viewSizesOf(nodeId) : undefined;
+            const render: AloneRender = {
+                hash,
+                sizes,
+                executionTime: undefined,
+                settle: () => {},
+            };
+            const done = new Promise<PreviewRender>((resolve) => {
+                render.settle = resolve;
+            });
+            aloneRendersRef.current.set(token, render);
+            const complete = sizes === undefined;
+            lastAloneRef.current.set(nodeId, { key, inFlight: true, rendered: false, complete });
+            // another frame of the node: its next gesture, past the reserved end
+            if (reservedRef.current.get(nodeId)?.key !== key) reservedRef.current.delete(nodeId);
+            setSeekFrames((prev) => new Map(prev).set(nodeId, { hash, base, inFlight: true }));
+            // The frame's event ends the render, also before the reply (which comes once the
+            // frame is sent); a reply without a frame or a failure ends it too.
+            backend
+                .runIndividual({
+                    schemaId,
+                    id: nodeId,
+                    inputs: values,
+                    options: packageSettings,
+                    token,
+                    ...(sizes === undefined ? {} : { previewSizes: sizes }),
+                })
+                .then(
+                    (reply) => {
+                        if (!reply.success) {
+                            render.settle({ kind: 'failed', message: reply.error });
+                        } else if (!reply.data?.broadcast) {
+                            // a newer run of the node stopped this one: no frame comes
+                            render.settle({ kind: 'skipped' });
+                        }
+                    },
+                    (error: unknown) => {
+                        render.settle({ kind: 'failed', message: String(error) });
+                    }
+                )
+                .catch(log.error);
+            const result = await done;
+            aloneRendersRef.current.delete(token);
+            const rendered = result.kind === 'rendered';
+            if (lastAloneRef.current.get(nodeId)?.key === key) {
+                lastAloneRef.current.set(nodeId, { key, inFlight: false, rendered, complete });
+            }
+            const reserved = reservedRef.current.get(nodeId);
+            if (reserved?.key === key) {
+                // A render with only the views' previews leaves the reservation to the end's
+                // render with every one, which follows unless the render failed.
+                if (complete ? !rendered : result.kind === 'failed') endReserved(nodeId);
+                else if (complete && reserved.used) reservedRef.current.delete(nodeId);
+            } else if (reserved !== undefined && result.kind === 'failed') {
+                // after a failure the seek bar renders nothing more: the reserved frame neither
+                endReserved(nodeId);
+            }
+            setSeekFrames((prev) => {
+                const frame = prev.get(nodeId);
+                if (frame?.hash !== hash || !frame.inFlight) return prev;
+                return new Map(prev).set(nodeId, { ...frame, inFlight: false });
+            });
+            return result;
+        },
+        [aloneWith, getInputHash, backend, packageSettings, endReserved, viewSizesOf]
+    );
+    // A node that leaves the chain leaves its renders by itself: their frames are dropped.
+    useEffect(() => {
+        const ids = new Set(getNodes().map((n) => n.id));
+        for (const nodeId of [
+            ...lastAloneRef.current.keys(),
+            ...reservedRef.current.keys(),
+            ...beforeReducedRef.current.keys(),
+            ...reducedShownRef.current,
+        ]) {
+            if (!ids.has(nodeId)) {
+                lastAloneRef.current.delete(nodeId);
+                reservedRef.current.delete(nodeId);
+                beforeReducedRef.current.delete(nodeId);
+                reducedShownRef.current.delete(nodeId);
+            }
+        }
+        setSeekFrames((prev) => {
+            const gone = [...prev.keys()].filter((nodeId) => !ids.has(nodeId));
+            if (gone.length === 0) return prev;
+            const kept = new Map(prev);
+            for (const nodeId of gone) kept.delete(nodeId);
+            return kept;
+        });
+    }, [nodeChanges, getNodes]);
+    const isSeekFrame = useCallback(
+        (nodeId: string, inputHash: string | undefined, shownHash: string | undefined) => {
+            const frame = seekFrames.get(nodeId);
+            return (
+                frame !== undefined &&
+                frame.base === inputHash &&
+                (frame.inFlight || frame.hash === shownHash)
+            );
+        },
+        [seekFrames]
     );
 
     const previewClip = useCallback(
         async (nodeId: string, outputId: OutputId) => {
             if (!isBackendReady || status !== ExecutionStatus.READY) return;
-            await afterPreview(() => runNodes(EMPTY_MAP, nodeId, outputId));
+            await afterPreview(() =>
+                runNodes(EMPTY_MAP, { nodeId, kind: 'up-to' }, nodeId, outputId)
+            );
         },
         [isBackendReady, runNodes, status, afterPreview]
     );
@@ -918,6 +1361,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         run,
         runWithOverrides,
         renderPreview,
+        renderAlone,
+        setViewWidth,
+        reserveAlone,
+        takeReserved,
+        forgetReserved,
+        registerRunAgain,
+        isSeekFrame,
         previewClip,
         pause,
         kill,

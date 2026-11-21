@@ -1,25 +1,35 @@
 import { NeverType, Type, evaluate } from '@chainner/navi';
 import { Fragment, memo, useCallback, useEffect, useMemo } from 'react';
 import { useContext, useContextSelector } from 'use-context-selector';
-import { OutputId, OutputKind, Size } from '../../../common/common-types';
+import { InputId, OutputId, OutputKind, Size } from '../../../common/common-types';
 import { log } from '../../../common/log';
 import { getGroupStacks } from '../../../common/nodes/groupStacks';
 import { getChainnerScope } from '../../../common/types/chainner-scope';
 import { ExpressionJson, fromJson } from '../../../common/types/json';
 import { BackendContext } from '../../contexts/BackendContext';
+import { ExecutionContext } from '../../contexts/ExecutionContext';
 import { GlobalContext, GlobalVolatileContext } from '../../contexts/GlobalNodeState';
 import { WithInputContext } from '../../contexts/InputContext';
+import {
+    fedImageName,
+    getCompareOutputs,
+    getNameOutputs,
+    getSideA,
+    imageLabel,
+} from '../../helpers/imageCompare';
 import { NodeState } from '../../helpers/nodeState';
 import { getSeekUnderPreview } from '../../helpers/videoSeek';
 import { useAutomaticFeatures } from '../../hooks/useAutomaticFeatures';
 import { useIsCollapsedNode } from '../../hooks/useIsCollapsedNode';
+import { useUpstreamSeeks } from '../../hooks/useUpstreamSeeks';
 import { SchemaInput } from '../inputs/SchemaInput';
 import { SeekBarLayoutContext } from '../inputs/VideoSeekInput';
 import { GenericOutput } from '../outputs/GenericOutput';
 import { LargeImageOutput } from '../outputs/LargeImageOutput';
 import { OutputContainer } from '../outputs/OutputContainer';
-import { OutputProps, UseOutputData } from '../outputs/props';
+import { CompareImages, OutputProps, UseOutputData } from '../outputs/props';
 import { TaggedOutput } from '../outputs/TaggedOutput';
+import { ViewSeekBar } from '../outputs/ViewSeekBar';
 
 const OutputComponents: Readonly<
     Record<OutputKind, React.MemoExoticComponent<(props: OutputProps) => JSX.Element>>
@@ -60,6 +70,8 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
         nodeWidth,
         setWidth,
         iteratedOutputs,
+        imageCompare,
+        setImageCompare,
     } = nodeState;
 
     const { functionDefinitions } = useContext(BackendContext);
@@ -68,7 +80,11 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
         c.outputDataMap.get(id)
     );
     const inputHash = useContextSelector(GlobalVolatileContext, (c) => c.inputHashes.get(id));
-    const stale = inputHash !== outputDataEntry?.inputHash;
+    // the frames its seek bar shows during a gesture are not outdated
+    const isSeekFrame = useContextSelector(ExecutionContext, (c) =>
+        c.isSeekFrame(id, inputHash, outputDataEntry?.inputHash)
+    );
+    const stale = inputHash !== outputDataEntry?.inputHash && !isSeekFrame;
 
     const useOutputData = useCallback(
         // eslint-disable-next-line prefer-arrow-functions/prefer-arrow-functions, func-names
@@ -112,12 +128,39 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
 
     // a seek bar belongs with the picture it seeks: under the Preview, and in its maximized view
     const seek = getSeekUnderPreview(schema);
-    const seekBar = seek && (
-        <SchemaInput
-            input={seek.input}
-            nodeState={nodeState}
-        />
-    );
+    // a viewer without a seek bar of its own (View Image) has one that moves the seek bars before
+    // it, when there are any
+    const viewerOutputs = getCompareOutputs(schema);
+    const upstream = useUpstreamSeeks(id, !seek && viewerOutputs.length > 0);
+    let seekBar: JSX.Element | undefined;
+    let seekOutputId: OutputId | undefined;
+    if (seek) {
+        seekBar = (
+            <SchemaInput
+                input={seek.input}
+                nodeState={nodeState}
+            />
+        );
+        seekOutputId = seek.outputId;
+    } else if (upstream.seeks.length > 0) {
+        // the side A of the images connected, which the bar renders as it moves
+        const sideA = getSideA(
+            viewerOutputs.filter((outputId) =>
+                nodeState.connectedInputs.has(outputId as number as InputId)
+            ),
+            imageCompare
+        );
+        seekBar = (
+            <ViewSeekBar
+                hasFullLoop={upstream.hasFullLoop}
+                isLocked={nodeState.isLocked}
+                nodeId={id}
+                seeks={upstream.seeks}
+                sideA={sideA}
+            />
+        );
+        [seekOutputId] = viewerOutputs;
+    }
     // Frames, Start and End go with the bar, under the same conditions as among the inputs: shown
     // when their groups' conditions hold, and inactive but shown while connected otherwise.
     const seekLayout = useMemo(() => {
@@ -144,6 +187,35 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
         return { isWide: false, companions };
     }, [seek, schema, nodeState]);
 
+    // several large images share one viewer, in the place of the first; each is named by the
+    // input it shows (the input with its output's id), else by the output; a name given to the
+    // image replaces the label, and a name fed to it (the last run's, while connected) that one
+    const names = imageCompare?.names;
+    const nameOutputs = useMemo(() => getNameOutputs(schema), [schema]);
+    const lastTypes = outputDataEntry?.types;
+    const { connectedInputs } = nodeState;
+    const compareOptions = useMemo(
+        () =>
+            getCompareOutputs(schema).map((outputId) => ({
+                id: outputId,
+                label: imageLabel(
+                    schema.inputs.find((i) => (i.id as number) === outputId)?.label ??
+                        schema.outputs.find((o) => o.id === outputId)!.label,
+                    names?.[outputId as number as InputId],
+                    fedImageName(lastTypes, nameOutputs.get(outputId), connectedInputs)
+                ),
+            })),
+        [schema, names, nameOutputs, lastTypes, connectedInputs]
+    );
+    const nameOutputIds = useMemo(() => new Set(nameOutputs.values()), [nameOutputs]);
+    const compare = useMemo(
+        (): CompareImages | undefined =>
+            compareOptions.length > 0
+                ? { options: compareOptions, choice: imageCompare, setChoice: setImageCompare }
+                : undefined,
+        [compareOptions, imageCompare, setImageCompare]
+    );
+
     const isCollapsed = useIsCollapsedNode();
     if (isCollapsed) {
         // just need the effect for collapsed nodes, not the elements
@@ -156,6 +228,14 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
         <SeekBarLayoutContext.Provider value={seekLayout}>
             {schema.outputs.map((output) => {
                 if (schema.inputs.some((i) => i.fused?.outputId === output.id)) {
+                    return null;
+                }
+                // a fed name shows in the viewer, not as an output of its own
+                if (nameOutputIds.has(output.id)) {
+                    return null;
+                }
+                const isViewer = compare?.options[0].id === output.id;
+                if (compare && output.kind === 'large-image' && !isViewer) {
                     return null;
                 }
 
@@ -174,7 +254,7 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
                 };
 
                 const OutputType = OutputComponents[output.kind];
-                const isSeekOutput = seek?.outputId === output.id;
+                const isSeekOutput = seekOutputId === output.id;
                 return (
                     <Fragment key={`${id}-${output.id}`}>
                         <OutputContainer
@@ -189,6 +269,7 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
                         >
                             <OutputType
                                 animated={animated}
+                                compare={isViewer ? compare : undefined}
                                 definitionType={definitionType}
                                 id={id}
                                 output={output}

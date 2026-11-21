@@ -333,6 +333,7 @@ MODULE_FAMILIES: dict[str, str] = {
     "vsscale": "Resize",
     "vsdeinterlace": "Deinterlace",
     "vsdenoise": "Denoise",
+    **dict.fromkeys(["bifrost", "dotkill", "dedot"], "Denoise"),
     "vsrgtools": "Sharpen and Blur",
     "cas": "Sharpen and Blur",
     "vsaa": "Anti-alias",

@@ -5,6 +5,8 @@ diagnostic override, wins over both settings."""
 
 from __future__ import annotations
 
+from functools import cache
+
 import psutil
 from sanic.log import logger
 
@@ -15,8 +17,10 @@ ENABLED = "memo_cache"
 SIZE_MIB = "memo_cache_mib"
 
 
+@cache
 def default_size_mib() -> int:
-    """The engine's own budget, in MiB: the smaller of 2 GiB and 10 % of the RAM."""
+    """The engine's own budget, in MiB: the smaller of 2 GiB and 10 % of the RAM. Kept for the process: the RAM
+    does not change, and psutil's query of it takes 15 to 20 ms on Windows, which every run's start paid."""
     return min(2048, psutil.virtual_memory().total // 10 >> 20)
 
 

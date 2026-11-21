@@ -273,12 +273,12 @@ class NodeContext(Progress, ABC):
         return None
 
     @property
-    def chosen_item(self) -> int | None:
+    def chosen_items(self) -> tuple[int, ...] | None:
         """
-        The item's number when the node's generator loop runs exactly one chosen item
-        (Generator.chosen_item: Load Video's "Run this frame"), for the loop's nodes and
-        collectors, as long as the run lasts; None otherwise, for a loop of several zipped
-        generators, and outside a loop.
+        When every generator of the node's loop runs exactly one chosen item
+        (Generator.chosen_item: Load Video's "Run this frame"), the distinct numbers of
+        the items of the generators that feed this node, ascending, for the loop's nodes
+        and collectors, as long as the run lasts; None otherwise, and outside a loop.
         """
         return None
 

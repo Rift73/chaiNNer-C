@@ -32,6 +32,7 @@ from nodes.impl.pytorch.convert_to_onnx_impl import (
     export_onnx,
     is_onnx_supported,
 )
+from nodes.impl.pytorch.rsr_window import is_aligned
 from nodes.impl.tensorrt import drft_export, dual
 from nodes.properties.inputs import (
     BoolInput,
@@ -138,14 +139,19 @@ def _keep_export(
         _exports.setdefault(model, {})[node] = key, export
 
 
-# DUAL and RDUAL convert to TensorRT-only ONNX, of the TensorRT Shape inputs
-IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" | "RDUAL" }')
-# Shown until the model is known to be DUAL or RDUAL
+# DUAL and the video models convert to TensorRT-only ONNX, of the TensorRT Shape inputs
+IS_DUAL = Condition.type(
+    0, 'PyTorchModel { arch: "DUAL" | "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" }'
+)
+# Shown until the model is known to be DUAL or a video model
 NOT_DUAL = Condition.type(
     0,
-    'PyTorchModel { arch: invStrSet("DUAL") & invStrSet("RDUAL") }',
+    'PyTorchModel { arch: invStrSet("DUAL") & invStrSet("RDUAL") & invStrSet("RSR")'
+    ' & invStrSet("TFDAT") & invStrSet("TFDATv2") }',
     if_not_connected=True,
 )
+# The models with DUAL's expert routing (High Quality)
+HAS_ROUTING = Condition.type(0, 'PyTorchModel { arch: "DUAL" | "RDUAL" }')
 # Every architecture has one automatic precision, so Data Type is hidden for any model,
 # known or not, and a value a saved chain holds is ignored.
 DATA_TYPE_APPLIES = Condition.const(False)
@@ -166,7 +172,7 @@ FP16_ARCH_NAMES = ", ".join(
         "The ONNX records its architecture and precision, so Build Engine and Build Program build it in that precision with no Precision to pick, also after it is saved and loaded again.",
         "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; the conversion reads its file again for its FP32 weights (if the file changed since, it exports the FP16 weights, and the log says so).",
         "A legacy DRFT model (LayerNorm, not i-LN) converts to a TensorRT-only ONNX with chaiNNer-C's DRFT TensorRT plugins, which ONNX Runtime cannot run: its precision is fixed and mixed (FP16 with BF16 attention, FP32 input and output), its opset is 20, it takes every input size from 64 px (twice the window for larger windows), and Opset and Verify do not apply to it.",
-        "An RDUAL model (a video model) converts to TensorRT-only ONNX parts for one frame size, with TensorRT Shape Fixed at the video's height and width (any size; Dynamic is refused). The four parts and their manifest are one ONNX model, which Build Engine builds into one engine set and Save Model writes as one file that only chaiNNer-C reads.",
+        "An RDUAL model (a video model) converts to TensorRT-only ONNX parts for one frame size, with TensorRT Shape Fixed at the video's height and width (any size; Dynamic is refused). The four parts and their manifest are one ONNX model, which Build Engine builds into one engine set and Save Model writes as one file that only chaiNNer-C reads. An RSR model (a video model) converts the same way, into three parts in FP16 with FP32 images, and a TFDAT or TFDATv2 model (a video model reading a clip of frames around each one) into one part in FP16 with FP32 images.",
         "It is recommended to save converted models as a separate step, then load the converted models instead of converting them every time you run the chain.",
         "Note: Converted models are not guaranteed to work with other programs that support ONNX models. This is for a variety of reasons and cannot be changed.",
     ],
@@ -224,8 +230,9 @@ FP16_ARCH_NAMES = ", ".join(
                 " at that size, padding smaller images. DUAL pools over its whole input,"
                 " so tiles and padding can change its output slightly against one whole"
                 " image.",
-                "RDUAL takes Fixed only, at the video's frame size (any height and"
-                " width): its engines are built for one size.",
+                "RDUAL, RSR, TFDAT and TFDATv2 take Fixed only, at the video's frame size"
+                " (any height and"
+                " width): their engines are built for one size.",
                 hint=True,
             ),
         ),
@@ -237,7 +244,7 @@ FP16_ARCH_NAMES = ", ".join(
             .with_id(5)
             .with_docs("The fixed input width (for DUAL a multiple of 4)."),
         ),
-        if_group(IS_DUAL)(
+        if_group(HAS_ROUTING)(
             BoolInput("High Quality", default=False)
             .with_id(8)
             .with_docs(
@@ -271,6 +278,9 @@ FP16_ARCH_NAMES = ", ".join(
                 match Input0.arch {{
                     "DUAL" => "mixed",
                     "RDUAL" => "mixed",
+                    "RSR" => "fp16",
+                    "TFDAT" => "fp16",
+                    "TFDATv2" => "fp16",
                     "DRFT" => "mixed" | "fp32",
                     {FP16_ARCHS_NAVI} => "fp16" | "fp32",
                     _ => "fp32",
@@ -284,6 +294,9 @@ FP16_ARCH_NAMES = ", ".join(
                 match Input0.arch {
                     "DUAL" => "opset20",
                     "RDUAL" => "opset20",
+                    "RSR" => "opset20",
+                    "TFDAT" => "opset20",
+                    "TFDATv2" => "opset20",
                     _ => match opset {
                         Opset::Opset14 => "opset14",
                         Opset::Opset15 => "opset15",
@@ -340,8 +353,8 @@ def convert_to_onnx_node(
         _keep_export(model, context.node_id, key, _Export(result, verified=False))
         return result
 
-    if model.architecture.id == "RDUAL":
-        return _rdual_onnx(
+    if model.architecture.id in ("RDUAL", "RSR", "TFDAT", "TFDATv2"):
+        return _temporal_onnx(
             context, model, dual_shape, (dual_height, dual_width), dual_high_quality
         )
 
@@ -454,43 +467,59 @@ def convert_to_onnx_node(
     return result
 
 
-def _rdual_onnx(
+def _temporal_onnx(
     context: NodeContext,
     model: ImageModelDescriptor,
     shape: DualShape,
     size: tuple[int, int],
     high_quality: bool,
 ) -> tuple[OnnxGeneric, str, str]:
-    """RDUAL's ONNX bundle (rdual_bundle.py) of rdual_export.py's parts for frames of
-    `size` (height, width), with `high_quality` the expert routing per position; the flow
-    part is traced on the settings' GPU if there is one."""
-    # The model's spandrel holds RDUAL, which rdual_export imports.
-    from nodes.impl.tensorrt import rdual, rdual_export
-
+    """A video model's ONNX bundle (rdual_bundle.py) of its parts for frames of `size`
+    (height, width): rdual_export.py's, with `high_quality` the expert routing per
+    position and the flow part traced on the settings' GPU if there is one, or
+    rsr_export.py's or tfdat_export.py's (traced there too; High Quality does not
+    apply)."""
+    architecture = model.architecture.id
+    if architecture == "RSR" and is_aligned(model.model):
+        raise ValueError("RSR's flow variant (aligned read) has no ONNX export yet.")
     if shape != DualShape.FIXED:
         raise ValueError(
-            "RDUAL converts to ONNX for one frame size: set TensorRT Shape to Fixed with"
-            " the video's height and width."
+            f"{architecture} converts to ONNX for one frame size: set TensorRT Shape to"
+            " Fixed with the video's height and width."
         )
-    key = ("RDUAL", model.dtype, size, high_quality)
+    # The models whose parts are in FP16 with FP32 images, without expert routing
+    fp16 = architecture in ("RSR", "TFDAT", "TFDATv2")
+    key = (architecture, model.dtype, size, high_quality and not fp16)
     kept = _kept_export(model, context.node_id, key)
     if kept is not None:
         return kept.result
     settings = get_settings(context)
     gpu_index = settings.gpu_index if settings.device.type == "cuda" else None
-    with tempfile.TemporaryDirectory(prefix="chaiNNer-rdual-onnx-") as temporary:
+    source = full_precision_source(model, "Convert To ONNX")
+    with tempfile.TemporaryDirectory(prefix="chaiNNer-temporal-onnx-") as temporary:
         folder = Path(temporary)
-        rdual.export(
-            full_precision_source(model, "Convert To ONNX"),
-            *size,
-            folder,
-            gpu_index,
-            context,
-            routing_na=high_quality,
-        )
-        onnx_model = load_onnx_model(rdual_bundle.pack(folder, rdual_export.OPSET))
+        # The model's spandrel holds the architecture, which its export imports.
+        if architecture == "RSR":
+            from nodes.impl.tensorrt import rsr_export
+            from nodes.impl.tensorrt.rsr import export
+
+            export(source, *size, folder, gpu_index, context)
+            opset = rsr_export.OPSET
+        elif fp16:
+            from nodes.impl.tensorrt import tfdat, tfdat_export
+
+            tfdat.export(source, *size, folder, gpu_index, context)
+            opset = tfdat_export.OPSET
+        else:
+            from nodes.impl.tensorrt import rdual, rdual_export
+
+            rdual.export(
+                source, *size, folder, gpu_index, context, routing_na=high_quality
+            )
+            opset = rdual_export.OPSET
+        onnx_model = load_onnx_model(rdual_bundle.pack(folder, opset))
     assert onnx_model.sub_type == "Generic"
-    result = onnx_model, MIXED, "opset20"
+    result = onnx_model, "fp16" if fp16 else MIXED, "opset20"
     _keep_export(model, context.node_id, key, _Export(result, verified=False))
     return result
 

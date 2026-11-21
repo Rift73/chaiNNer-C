@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Final, Literal, TypedDict, Union, cast
+from typing import Dict, Final, Literal, NotRequired, TypedDict, Union, cast
 
 import navi
 from api import BroadcastData, ErrorValue, InputId, IterOutputId, NodeId, OutputId
@@ -35,7 +35,26 @@ class BackendNodesRegisteredEvent(TypedDict):
     data: BackendNodesRegisteredData
 
 
-BackendEvent = Union[BackendStatusEvent, BackendStateEvent, BackendNodesRegisteredEvent]
+class StartupInstallFailedData(TypedDict):
+    # "name version" of each package the start tried to install
+    packages: list[str]
+    error: str
+
+
+class StartupInstallFailedEvent(TypedDict):
+    """The start's install of package dependencies failed: the worker runs with the
+    packages it had, and the next start tries again."""
+
+    event: Literal["startup-install-failed"]
+    data: StartupInstallFailedData
+
+
+BackendEvent = Union[
+    BackendStatusEvent,
+    BackendStateEvent,
+    BackendNodesRegisteredEvent,
+    StartupInstallFailedEvent,
+]
 InputsDict = Dict[InputId, ErrorValue]
 
 
@@ -103,6 +122,9 @@ class NodeBroadcastData(TypedDict):
     data: dict[OutputId, BroadcastData | None]
     types: dict[OutputId, navi.ExpressionJson | None]
     sequenceTypes: dict[IterOutputId, navi.ExpressionJson] | None
+    # A run with preview sizes (a seek's): the views' widths its previews were made for;
+    # absent for a run that made every preview.
+    previewSizes: NotRequired[list[int]]
 
 
 class NodeBroadcastEvent(TypedDict):
@@ -177,8 +199,8 @@ class BackendEventBroadcast:
 
     The app's main process and its window each listen, and either may connect after
     an event: a new listener first gets the latest backend status, then backend-ready,
-    the latest backend-nodes-registered and backend-nodes-loaded once they have
-    happened.
+    the latest backend-nodes-registered, backend-nodes-loaded and startup-install-failed
+    once they have happened.
     """
 
     def __init__(self) -> None:
@@ -187,6 +209,7 @@ class BackendEventBroadcast:
         self._ready: BackendEvent | None = None
         self._nodes_registered: BackendEvent | None = None
         self._nodes_loaded: BackendEvent | None = None
+        self._install_failed: BackendEvent | None = None
 
     def put(self, event: BackendEvent) -> None:
         if event["event"] == "backend-status":
@@ -197,6 +220,8 @@ class BackendEventBroadcast:
             self._nodes_registered = event
         elif event["event"] == "backend-nodes-loaded":
             self._nodes_loaded = event
+        elif event["event"] == "startup-install-failed":
+            self._install_failed = event
         for listener in self._listeners:
             listener.put(event)
 
@@ -207,6 +232,7 @@ class BackendEventBroadcast:
             self._ready,
             self._nodes_registered,
             self._nodes_loaded,
+            self._install_failed,
         ):
             if event is not None:
                 listener.put(event)

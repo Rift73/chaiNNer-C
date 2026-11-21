@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 export interface EventBacklog<T> {
     readonly push: (event: T) => void;
     readonly processAll: () => void;
+    /** Drops the events waiting that `isDropped` picks. */
+    readonly discard: (isDropped: (event: T) => boolean) => void;
 }
 
 export interface BacklogOption<T> {
@@ -29,10 +31,14 @@ export const useEventBacklog = <T>({ process, interval }: BacklogOption<T>): Eve
         }
     }, []);
 
+    const discard = useCallback((isDropped: (event: T) => boolean) => {
+        backlogRef.current = backlogRef.current.filter((event) => !isDropped(event));
+    }, []);
+
     useEffect(() => {
         const timeout = setInterval(processAll, interval);
         return () => clearInterval(timeout);
     }, [processAll, interval]);
 
-    return useMemo(() => ({ push, processAll }), [push, processAll]);
+    return useMemo(() => ({ push, processAll, discard }), [push, processAll, discard]);
 };

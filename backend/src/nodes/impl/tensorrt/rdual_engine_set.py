@@ -1,4 +1,5 @@
-"""An RDUAL model's TensorRT engines for one input size as one container: the bytes of a
+"""A video model's (RDUAL's, RSR's) TensorRT engines for one input size as one container
+(its magic line still names RDUAL, the first): the bytes of a
 `TensorRTEngine` whose info has `temporal` set, and so of an Engine Cache entry, a file
 Save Engine writes and Load Engine reads (compressed or not, compressed_file.py).
 
@@ -24,7 +25,7 @@ MAGIC = b"chaiNNer-C RDUAL engine set\n"
 # The layout `pack_container` writes: a new one takes the next version.
 FORMAT_VERSION = 1
 _LENGTH = 8
-_WHAT = "RDUAL engine set"
+_WHAT = "engine set"
 _REMEDY = "Build the engine again."
 
 
@@ -63,7 +64,7 @@ def unpack_container(
     magic: bytes, data: bytes, what: str, part: str, remedy: str
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     """The header and parts of `pack_container`'s bytes, each part checked by size and
-    SHA-256. Messages name the container `what` (after "an": "RDUAL engine set"), a
+    SHA-256. Messages name the container `what` (after "an": "engine set"), a
     part as "<what>'s <name> <part>", and end a version mismatch with `remedy`."""
     if not data.startswith(magic):
         raise EngineSetError(f"This is not an {what}")
@@ -122,6 +123,7 @@ def info_from_dict(info: dict[str, Any]) -> TensorRTEngineInfo:
             plugin_key=str(temporal["plugin_key"]),
             parts=tuple(str(part) for part in temporal["parts"]),
             flow_precision=str(temporal.get("flow_precision", "mixed")),
+            clip_size=int(temporal.get("clip_size", 0)),
         )
     return TensorRTEngineInfo(**values)
 

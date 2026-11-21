@@ -146,7 +146,7 @@ def get_item_types(info: FramesInfo):
             " each run renders it, and so does moving the bar, through the nodes"
             " before this one only. The bar is empty until the first run, which"
             " evaluates the chain to count the frames. Run this frame renders only that"
-            " frame through the whole chain.",
+            " frame through what this node feeds (and what that needs).",
             hint=True,
         ),
         EnumInput(
@@ -304,37 +304,38 @@ def clip_frames_node(
             return plane + np.float32(0.5) if chroma else plane
         return code_to_float(plane, colour.bit_depth, colour.full_range, chroma)
 
-    def items() -> Iterator[Item]:
+    def items(first: int, stop: int) -> Iterator[Item]:
+        """The frames first..stop-1, numbered as the clip numbers them."""
         if invalid is not None:
             raise invalid
         if mode is VideoMode.RGB:
-            if is_frame and (start, end) == (shown, shown + 1):
+            if is_frame and (first, stop) == (shown, shown + 1):
                 # Run this frame: the Preview is the frame, without a second vspipe.
                 yield preview, shown, None, None, None
                 return
             # The info above: vspipe evaluates the script once more, for the frames.
-            frames = read_frames(script, 0, start, end, info=info, context=context)
+            frames = read_frames(script, 0, first, stop, info=info, context=context)
             # Stops vspipe when the run ends before the last frame.
             context.add_cleanup(frames.close)
-            for index, frame in enumerate(frames, start):
+            for index, frame in enumerate(frames, first):
                 yield frame, index, None, None, None
             return
         planes = read_planes(
             script,
             0,
-            start,
-            end,
+            first,
+            stop,
             info=info,
             rgb=mode is VideoMode.BOTH,
             context=context,
         )
         context.add_cleanup(planes.close)
-        for index, (frame, y, u, v) in enumerate(planes, start):
+        for index, (frame, y, u, v) in enumerate(planes, first):
             yield frame, index, values(y, False), values(u, True), values(v, True)
 
-    def frames() -> Iterator[Item]:
+    def frames(first: int = start, stop: int = end) -> Iterator[Item]:
         try:
-            yield from items()
+            yield from items(first, stop)
         except VSScriptError as error:
             # A plugin's error at frame time names no line of the script. The
             # iteration's error arrives without this node, so it goes on it here.
@@ -342,13 +343,23 @@ def clip_frames_node(
                 error.node_id = context.node_id
             raise
 
+    def around(before: int, after: int) -> tuple[Iterator[Item], int, int]:
+        """The context frames around a Range (api/iter.py Generator.context), as Load
+        Video reads them: up to `before` frames before Start and `after` after End, as
+        far as the clip has them; none for All or a Range that cannot run."""
+        b = a = 0
+        if selection is FrameSelection.RANGE and invalid is None:
+            b = max(0, min(before, start))
+            a = max(0, min(after, info.num_frames - end))
+        return frames(start - b, end + a), b, a
+
     # As Load Video's: items numbered from Start, and a one-frame Range (Run this frame)
     # is a one-item run of that frame, which Save Video saves as an image.
     one = selection is FrameSelection.RANGE and end - start == 1
     generator = (
         Generator.from_iter(supplier=frames, expected_length=end - start)
         .with_metadata(FramesInfo(info, mode, colour))
-        .with_range(start, start if one else None)
+        .with_range(start, start if one else None, around)
     )
     # Frames come from vspipe's pipe, as Load Video's come from FFmpeg's.
     generator.source_paths = ()

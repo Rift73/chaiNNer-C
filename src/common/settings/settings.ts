@@ -1,5 +1,11 @@
 import { PackageSettings, SchemaId, WindowSize } from '../common-types';
 
+/**
+ * What a large image preview shows where there is no image: the theme's colour (with a checkerboard
+ * behind transparent images), or a solid white or black that transparent pixels show too.
+ */
+export type ImagePreviewBackground = 'theme' | 'white' | 'black';
+
 export interface ChainnerSettings {
     // renderer
     theme: string;
@@ -11,6 +17,7 @@ export interface ChainnerSettings {
     snapToGridAmount: number;
     viewportExportPadding: number;
     showMinimap: boolean;
+    imagePreviewBackground: ImagePreviewBackground;
 
     experimentalFeatures: boolean;
     hardwareAcceleration: boolean;
@@ -36,6 +43,7 @@ export const defaultSettings: Readonly<ChainnerSettings> = {
     snapToGridAmount: 16,
     viewportExportPadding: 20,
     showMinimap: false,
+    imagePreviewBackground: 'theme',
 
     experimentalFeatures: false,
     hardwareAcceleration: false,

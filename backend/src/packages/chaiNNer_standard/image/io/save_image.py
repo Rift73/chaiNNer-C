@@ -422,7 +422,7 @@ def dds_inputs() -> list[BaseInput | NestedGroup]:
                 )
                 .with_id(28)
                 .with_docs(
-                    "1 is the fastest and is the method used until now; higher values give smaller files and take longer. Every value is lossless."
+                    "1 is the fastest and is the method used until now; higher values usually give smaller files and take longer, and 5 refines only pictures up to about 2 megapixels (1.6 with alpha). Every value is lossless."
                 ),
             ),
         ),

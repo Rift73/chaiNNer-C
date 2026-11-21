@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import weakref
+from typing import Any, cast
 
 import numpy as np
 import psutil
@@ -16,20 +17,22 @@ from nodes.impl.image_op import ImageOp
 from nodes.impl.pytorch import hat_export, offload
 from nodes.impl.pytorch.auto_engine import (
     ENGINE_MODEL_NAVI,
+    PROGRAM_MODEL_NAVI,
     migraphx_here,
     release_engine,
     upscale_through_engine,
 )
 from nodes.impl.pytorch.auto_split import pytorch_auto_split
-from nodes.impl.pytorch.rdual_engine import temporal_upscale_through_engine
-from nodes.impl.pytorch.rdual_window import (
-    TILE_OVERLAP,
-    RDUALWindows,
+from nodes.impl.pytorch.rdual_engine import (
+    model_unavailable,
+    temporal_upscale_through_engine,
+)
+from nodes.impl.pytorch.rdual_window import TILE_OVERLAP, release_memory
+from nodes.impl.pytorch.temporal_models import (
     context_applies,
+    context_of,
     is_temporal,
-    lighter_modes,
-    release_memory,
-    takes_tiles,
+    pytorch_windows,
 )
 from nodes.impl.pytorch.utils import is_out_of_memory, safe_cuda_cache_empty
 from nodes.impl.upscale.auto_split_tiles import (
@@ -45,11 +48,13 @@ from nodes.impl.upscale.basic_upscale import PaddingType, UpscaleInfo, basic_ups
 from nodes.impl.upscale.temporal_window import (
     LOOK_AHEAD,
     WARM_UP,
+    Executor,
     Fit,
     temporal_upscale,
 )
 from nodes.impl.upscale.tile_report import TileReport
-from nodes.impl.upscale.tiler import MaxTileSize
+from nodes.impl.upscale.tiler import MaxTileSize, NoTiling
+from nodes.impl.upscale.whole_image import WHOLE_IMAGE_ONLY, warn_tiled
 from nodes.properties.inputs import (
     BoolInput,
     ImageInput,
@@ -106,15 +111,28 @@ WHOLE_IMAGE_WIDTH = {"ESRGAN": "num_filters", "FIGSR": "dim", "GaterV3": "dim"}
 # The same input (id 8) on a PC where MIGraphX runs, so a saved chain keeps its value on
 # either kind of PC; only a PC with neither has none.
 ON_MIGRAPHX = migraphx_here()
-# Auto's error for a temporal model whose lightest whole-frame window does not fit.
+# Auto's error for a temporal model whose lightest whole-frame window does not fit; it
+# names the engine route only to a model that has one (auto_exhausted).
 AUTO_EXHAUSTED = (
-    "The temporal model (RDUAL) does not fit the GPU's memory at this frame size, even in its"
-    " lighter memory modes with no frames read ahead and in its smallest tiles. Turn on Use"
-    " TensorRT Engine, or use a smaller frame."
+    "The temporal model (RDUAL, RSR, TFDAT) does not fit the GPU's memory at this frame size, even"
+    " with no frames read ahead (RDUAL: also in its lighter memory modes and its smallest"
+    " tiles)."
 )
+
+
+def auto_exhausted(model: ImageModelDescriptor) -> str:
+    """AUTO_EXHAUSTED with what the user can do for this model: an engine set where the
+    model may have one (on NVIDIA's route), else only a smaller frame."""
+    if not ON_MIGRAPHX and model_unavailable(model) is None:
+        return f"{AUTO_EXHAUSTED} Turn on Use TensorRT Engine, or use a smaller frame."
+    return f"{AUTO_EXHAUSTED} Use a smaller frame."
+
+
 # A temporal model runs one model pass per frame on RGB: Custom Scale and Separate Alpha
 # do not apply to it.
-TEMPORAL = Condition.type(0, 'PyTorchModel { arch: "RDUAL" }')
+TEMPORAL = Condition.type(
+    0, 'PyTorchModel { arch: "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" }'
+)
 NOT_TEMPORAL = ~TEMPORAL
 
 
@@ -247,14 +265,24 @@ def upscale(
             " manual number of tiles if you are having issues with the automatic mode. "
         ),
         (
-            "A temporal model (RDUAL) reads the frames around each one through optical flow"
-            " and carries what it saw from frame to frame. Inside a loop such as Load Video or"
+            "A temporal model (RDUAL, RSR) reads the frames around each one (RDUAL through"
+            " optical flow) and carries what it saw from frame to frame. Inside a loop such as Load Video or"
             " Load Images, it upscales the frames it can read ahead as one window and keeps the"
             f" outputs of the frames followed by at least {LOOK_AHEAD} more in that window for"
             " the items that follow; at the end of a video it keeps all of them. When no frames"
             " ahead can be read, each frame is upscaled with the frames before it only. When the"
             f" loop starts inside a video (Run this frame, a Range), it also runs the {WARM_UP}"
             " frames before it. Outside a loop, the image is upscaled on its own."
+        ),
+        (
+            "TFDAT and TFDATv2 (video models) carry nothing from frame to frame: each frame"
+            " is upscaled with the clip of frames centred on it (5 for most models, the"
+            " model's clip size). Where the clip reaches past the frames there are (the first"
+            " and last frames of a video, or of the frames that can be read ahead), the"
+            " nearest frame is repeated; outside a loop, the image is repeated as a clip."
+            " A Range of Load Video, and Run this frame, also read the frames the clips"
+            " need before and after them, so each frame comes out as in a run of the whole"
+            " video."
         ),
         (
             "A temporal model upscales the color of an image with transparency and resizes its"
@@ -274,7 +302,11 @@ def upscale(
             " the optical flow still sees the whole frame and only the model's trunk runs per"
             f" tile, with {TILE_OVERLAP} px of overlap and its own state per tile; the result"
             " changes slightly, measured against the whole frame in 2x2 tiles at an RMS of"
-            " 0.0007 (1488x837) to 0.00095 (1920x1080) on values from 0 to 1."
+            " 0.0007 (1488x837) to 0.00095 (1920x1080) on values from 0 to 1. RSR has no"
+            " lighter memory modes and no tiles: it always runs the whole frame, and reads"
+            " fewer frames ahead when it does not fit, whatever the Tile Size. TFDAT and"
+            " TFDATv2 have none either: they always run the whole frame, and a frame's"
+            " memory does not depend on the frames read ahead."
         ),
     ],
     icon="PyTorch",
@@ -376,8 +408,13 @@ def upscale(
         if_group(
             Condition.const(nvidia.is_available or ON_MIGRAPHX)
             & (
-                Condition.type(0, ENGINE_MODEL_NAVI, if_not_connected=True)
-                # RDUAL's engines are TensorRT's only: it stays on PyTorch on AMD GPUs.
+                Condition.type(
+                    0,
+                    PROGRAM_MODEL_NAVI if ON_MIGRAPHX else ENGINE_MODEL_NAVI,
+                    if_not_connected=True,
+                )
+                # The temporal models' engines are TensorRT's only: they stay on PyTorch on
+                # AMD GPUs.
                 | (Condition.const(not ON_MIGRAPHX) & TEMPORAL)
             )
         )(
@@ -435,6 +472,9 @@ def upscale(
                 " from PyTorch's: the set runs its body in BF16 and its optical flow in mixed"
                 " FP16 and FP32. When the set cannot be built or fails, the video goes on with"
                 " PyTorch from that frame, and a warning says why.",
+                "For RSR (a video model), the set is three engines in FP16 with images in FP32,"
+                " built in about 30 seconds at 960x540 and taking about 8 MB there (20 MB at"
+                " 1920x1080); the rest is as for RDUAL.",
                 hint=True,
             ),
         ),
@@ -445,7 +485,7 @@ def upscale(
             image_type="""
                 let img = Input1;
                 let model = Input0;
-                let useCustomScale = match model.arch { "RDUAL" => false, _ => Input4 };
+                let useCustomScale = match model.arch { "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" => false, _ => Input4 };
                 let customScale = Input5;
 
                 let singleUpscale = convenientUpscale(model, img);
@@ -460,7 +500,8 @@ def upscale(
                     singleUpscale
                 }
             """,
-            assume_normalized=True,  # pytorch_auto_split already does clipping internally
+            # spandrel's call clamps a PyTorch output, the engine's node its own
+            assume_normalized=True,
         ),
         TextOutput("Tile Size").with_docs(
             "The size of the tiles the model ran, with their overlap and after any cut for"
@@ -471,7 +512,7 @@ def upscale(
     key_info=KeyInfo.type(
         """
         let model = Input0;
-        let useCustomScale = match model.arch { "RDUAL" => false, _ => Input4 };
+        let useCustomScale = match model.arch { "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" => false, _ => Input4 };
         let customScale = Input5;
 
         let scale = if useCustomScale and model.scale >= 2 and model.inputChannels == model.outputChannels {
@@ -486,6 +527,7 @@ def upscale(
     node_context=True,
     temporal_context=(WARM_UP, LOOK_AHEAD),
     temporal_if=(0, context_applies),
+    temporal_context_of=context_of,
 )
 def upscale_image_node(
     context: NodeContext,
@@ -503,21 +545,19 @@ def upscale_image_node(
         report = TileReport()
         settings = get_settings(context)
         budget = max(0, settings.budget_limit) * 1024**3
-
-        def windows() -> RDUALWindows:
-            # Made only where it runs: it moves the model to the device.
-            return RDUALWindows(model, settings.device, budget)
-
+        windows, lighter, tiles = pytorch_windows(model, settings, budget)
         frame_tiles = TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size
         auto = frame_tiles == ESTIMATE
         fit = Fit(
-            parse_tile_size_input(frame_tiles, MaxTileSize),
-            shorten=auto,
+            # Without tiles, a Tile Size runs the whole frame, as Maximum does.
+            parse_tile_size_input(frame_tiles, MaxTileSize) if tiles else NoTiling(),
+            # Without tiles, a shorter window is the only way to fit a frame.
+            shorten=auto or not tiles,
             out_of_memory=is_out_of_memory,
             release=release_memory,
-            lighter=lighter_modes(),
-            tiles=takes_tiles(),
-            exhausted=AUTO_EXHAUSTED if auto else "",
+            lighter=lighter,
+            tiles=tiles,
+            exhausted=auto_exhausted(model) if auto else "",
         )
         if use_engine and not ON_MIGRAPHX:
             image = temporal_upscale_through_engine(
@@ -533,7 +573,8 @@ def upscale_image_node(
             )
         else:
             release_engine(context.node_id)
-            image = temporal_upscale(context, img, windows(), report, padding, fit)
+            executor = cast(Executor[Any, Any, Any], windows())
+            image = temporal_upscale(context, img, executor, report, padding, fit)
         return image, report.text
 
     exec_options = get_settings(context)
@@ -559,7 +600,7 @@ def upscale_image_node(
             scale=custom_scale,
             separate_alpha=separate_alpha,
             padding=padding,
-            clip=False,  # pytorch_auto_split and the engine's node already clip
+            clip=False,  # spandrel's call and the engine's node already clamp
         )
 
     size = TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size
@@ -588,4 +629,19 @@ def upscale_image_node(
     else:
         release_engine(context.node_id)
         image = upscale_with(pytorch)
+    name = model.architecture.name
+    if name in WHOLE_IMAGE_ONLY and report.tiled:
+        if size > 0:
+            # The user's choice, kept
+            why = f"as its Tile Size of {size} px says"
+            hint = ": Auto or Maximum runs the whole image where it fits"
+        else:
+            why = "as the whole image does not fit in memory"
+            hint = ""
+        warn_tiled(
+            context,
+            model,
+            f"Upscale Image runs this {name} model in tiles, {why}, and {name}'s"
+            f" output changes in tiles{hint}.",
+        )
     return image, report.text

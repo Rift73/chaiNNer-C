@@ -3,6 +3,7 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { Node } from 'reactflow';
 import { useContext } from 'use-context-selector';
 import {
+    ImageCompare,
     InputData,
     InputHeight,
     InputId,
@@ -99,6 +100,17 @@ export const NodeExample = memo(({ selectedSchema }: NodeExampleProps) => {
         [setOutputHeight]
     );
 
+    const [imageCompare, setImageCompare] = useStateForSchema<ImageCompare | undefined>(
+        selectedSchema,
+        undefined
+    );
+    const setExampleImageCompare = useCallback(
+        (value: ImageCompare): void => {
+            setImageCompare(() => value);
+        },
+        [setImageCompare]
+    );
+
     const nodeIdPrefix = 'FakeId ';
     const suffixLength = 36 - nodeIdPrefix.length;
     const nodeId =
@@ -160,6 +172,8 @@ export const NodeExample = memo(({ selectedSchema }: NodeExampleProps) => {
         outputHeight,
         setOutputHeight: setSingleOutputHeight,
         setWidth,
+        imageCompare,
+        setImageCompare: setExampleImageCompare,
         setInputHeight: setSingleInputHeight,
         isLocked: false,
         passthrough: undefined,

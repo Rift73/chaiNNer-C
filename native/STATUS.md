@@ -280,7 +280,7 @@ User rulings (pre-program handoff section 2, at the tag; still binding):
 Program decisions (spec section 2, 2026-10-01, as amended): bit-exact float32 against the installed chaiNNer as the user receives outputs (user, 2026-10-04; judged
 too: where it is wrong the port does the correct thing and records a deviation, ARCHITECTURE section 7; B0 and B3 are regression proxies), SIMD only where
 bit-identical, no FMA contraction, reordered reductions or fast-math; one tracked backend; checkpoint and tag, one reviewed commit per task, no `Co-Authored-By`, no
-pushes unless asked; decisions as 2-4 options with a recommendation (the user does not write code); GPU work deferred. Distribution (2026-10-02): the port ships on GitHub, so optimization is generalized and
+pushes unless asked; decisions as 2-4 options with a recommendation; GPU work deferred. Distribution (2026-10-02): the port ships on GitHub, so optimization is generalized and
 deterministic first (same bits on every machine); superseded on 2026-10-06 by the clang-cl `-march=icelake-server` build with
 ThinLTO and no PGO (State, Pending); corrected on 2026-10-07: baseline x86-64 with runtime AVX2/AVX-512
 dispatch, `-march` local-only.

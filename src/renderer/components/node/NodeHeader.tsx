@@ -1,16 +1,6 @@
 import { ChevronDownIcon, ChevronRightIcon } from '@chakra-ui/icons';
-import {
-    Box,
-    Center,
-    HStack,
-    Heading,
-    IconButton,
-    Input,
-    Spacer,
-    Text,
-    VStack,
-} from '@chakra-ui/react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Center, HStack, Heading, IconButton, Spacer, Text, VStack } from '@chakra-ui/react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactTimeAgo from 'react-time-ago';
 import { useContext } from 'use-context-selector';
@@ -24,6 +14,7 @@ import { interpolateColor } from '../../helpers/colorTools';
 import { NodeState } from '../../helpers/nodeState';
 import { useThemeColor } from '../../hooks/useThemeColor';
 import { IconFactory } from '../CustomIcons';
+import { RenameInput } from '../RenameInput';
 import { ValidityIndicator } from './NodeFooter/ValidityIndicator';
 
 interface IteratorProcessProps {
@@ -150,58 +141,6 @@ const KeyInfoLabel = memo(({ nodeState }: KeyInfoLabelProps) => {
         >
             {info}
         </Text>
-    );
-});
-
-interface RenameInputProps {
-    name: string;
-    onChangeName: (name: string) => void;
-    onCancel: () => void;
-}
-const RenameInput = memo(({ name, onChangeName, onCancel }: RenameInputProps) => {
-    const [tempName, setTempName] = useState<string>(name);
-
-    useEffect(() => {
-        setTempName(name);
-    }, [name]);
-
-    const inputRef = useRef<HTMLInputElement>(null);
-    useEffect(() => {
-        inputRef.current?.select();
-    }, []);
-
-    return (
-        <Input
-            autoFocus
-            borderColor="transparent"
-            className="nodrag"
-            flex={1}
-            height="auto"
-            htmlSize={0}
-            lineHeight="100%"
-            my="-0.25rem"
-            px={2}
-            py="calc(0.25rem - 1px)"
-            ref={inputRef}
-            size="md"
-            textAlign="center"
-            value={tempName}
-            onBlur={() => {
-                onChangeName(tempName);
-            }}
-            onChange={(e) => {
-                setTempName(e.target.value);
-            }}
-            onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Enter') {
-                    onChangeName(tempName);
-                }
-                if (e.key === 'Escape') {
-                    onCancel();
-                }
-            }}
-        />
     );
 });
 

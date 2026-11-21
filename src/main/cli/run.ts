@@ -7,7 +7,11 @@ import { activateLanguage } from '../../common/i18n';
 import { log } from '../../common/log';
 import { checkNodeValidity } from '../../common/nodes/checkNodeValidity';
 import { getConnectedInputs } from '../../common/nodes/connectedInputs';
-import { formatDroppedNodes, toEditorChain } from '../../common/nodes/editorChain';
+import {
+    formatDroppedNodes,
+    formatReplacedInputs,
+    toEditorChain,
+} from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { optimizeChain } from '../../common/nodes/optimize';
 import { parseFunctionDefinitions } from '../../common/nodes/parseFunctionDefinitions';
@@ -181,8 +185,8 @@ const runChain = async (
     }
 
     // Load the chain as the editor opens it (e.g. older chains lack inputs added in newer node
-    // versions) before applying explicit CLI overrides. The editor shows what it dropped and
-    // lets the user save the rest; the CLI runs only the whole chain.
+    // versions) before applying explicit CLI overrides. The editor shows what it dropped or
+    // replaced and lets the user save the rest; the CLI runs only the whole chain as saved.
     const chain = toEditorChain(schemata, saveFile.nodes, saveFile.edges);
     if (chain.droppedNodes.length > 0) {
         // the run would leave an unknown node out as having no effect
@@ -198,6 +202,16 @@ const runChain = async (
             `There are ${chain.droppedEdges} connection(s) in the chain that do not fit their nodes` +
                 ` (a connection to an input or output that its node does not have, a second connection into one input, or a loop).` +
                 ` Open the chain in chaiNNer and save it to remove them.`
+        );
+        throw new Exit(1);
+    }
+    if (chain.replacedInputs.length > 0) {
+        // the run would use the default instead, e.g. another method than the saved one
+        log.error(
+            `There are ${chain.replacedInputs.length} value(s) in the chain that their inputs cannot take:` +
+                `\n${formatReplacedInputs(chain.replacedInputs)}` +
+                `\nThis means that either (1) the chain was produced by a newer version of chaiNNer, (2) the option was removed, or (3) a third-party plugin that provides it is not installed.` +
+                ` Open the chain in chaiNNer to see the default values these inputs would get, and save it to keep them.`
         );
         throw new Exit(1);
     }

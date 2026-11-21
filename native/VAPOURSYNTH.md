@@ -12,7 +12,8 @@ archived vspreview).
 Install the **VapourSynth** package in the dependency manager: VapourSynth 81, vs-jetpack 2.2.6 with its source,
 deinterlacing, denoising and scaling plugins, MVTools 9, CAS, the noise plugin (Deband and Grain's Grainer), vszip CUDA
 (BM3D, NL-Means, DFTTest on NVIDIA GPUs),
-DFTTest2 and vsview 0.13.0, about 1.75 GB. It goes into chaiNNer-C's own Python; a VapourSynth you installed yourself
+DFTTest2, the rainbow and dot crawl removers Bifrost 4.0, DotKill 4.0 and DeDot 4.0 (Denoise), and vsview 0.13.0, about
+1.75 GB. It goes into chaiNNer-C's own Python; a VapourSynth you installed yourself
 is not used, changed or loaded. Uninstall removes it with what pip pulled in for it that nothing else installed needs
 (vsview's PySide6, the plugins); NumPy, SciPy and what chaiNNer-C or your user modules need stay. VapourSynth runs in its own processes (vspipe, its command-line runner, and vsview),
 never in chaiNNer's, so a plugin crash costs only that process; the setting **VapourSynth cache (MB)** (default 4096)
@@ -38,6 +39,10 @@ Routes, as node > Method:
 - Wrong levels (too dark and contrasty, or washed out): Convert Format > Range fix: full or limited (range_fix).
 - Deinterlace: Deinterlace > Deinterlace, fast (Bwdif), or Deinterlace, best and slow (QTempGaussMC).
 - Denoise: Denoise > Denoise, gentle (NL-Means), or Denoise, strong (BM3D).
+- Rainbows (colour stripes on fine detail) and dot crawl (crawling dots on colour edges) of composite video, on 8 to 16
+  bit integer YUV: Denoise > Remove rainbows in still areas (Bifrost), Remove rainbows and dot crawl in still areas
+  (DeDot), Remove dot crawl, one frame (DotKillS), or, on telecined NTSC whose artefacts came after the pulldown (most
+  anime DVDs), Remove dot crawl and rainbows, telecined (DotKillT) before Detelecine.
 - Descale (undo an upscale): Resize > Descale: undo an upscale (descale). Half or double size: Resize > Scale by a
   factor (0.5 = half size).
 - AI upscale: Load Clip > Convert Format, Convert format and colours (Point) to RGBS > AI Upscale > Convert Format >
@@ -52,6 +57,8 @@ work on (Frames to Clip warns of it).
 ## The nodes
 
 22 nodes in the groups Clips, Filters and Functions; 23 once you add functions of your own. Method counts are about.
+Denoise's five rainbow and dot crawl methods appear once their plugins are installed: an install from before them lists
+the three plugins as missing in the VapourSynth package, whose Install button adds them.
 
 | Node | What it does | Methods |
 | --- | --- | ---: |
@@ -62,7 +69,7 @@ work on (Frames to Clip warns of it).
 | Clip Properties, Convert Format | Colour info, aspect ratio, frame rate, frame statistics; format, bit depth, colour space, range fix | 15, 13 |
 | Resize, Cut and Splice, Planes | Scale with any kernel or by a factor, descale, crop, pad, turn; trim, join, replace and shift frames; split, join, merge planes | 40, 16, 21 |
 | Deinterlace | Detelecine in one step, field matching (VFM), decimation, NNEDI3, Bwdif, fields | 26 |
-| Denoise | BM3D, NL-Means, Motion-compensated degrain, DFTTest, prefilters | 29 |
+| Denoise | BM3D, NL-Means, Motion-compensated degrain, DFTTest, prefilters, rainbow and dot crawl removal | 34 |
 | Sharpen and Blur, Anti-alias, Dehalo | Sharpening and blurring; jagged edges; halos | 26, 21, 9 |
 | Deband and Grain, Masks, Colour, Expression | Banding and grain; masks; levels, tone mapping, CLAHE; per-pixel formulas | 16, 71, 4, 14 |
 | AI Upscale | Runs an upscaling model on every frame (below) | |
@@ -124,7 +131,9 @@ equals the same frame of a full run, and **Index** is the frame's number in the 
 from the last run, so it is empty until the first; it stays off for a variable frame rate (FPS 0). The **Preview** is
 the Seek frame in RGB (a YUV matrix RGB cannot convert shows the Y plane in gray), rendered in the run's first
 evaluation of the chain; Run this frame in Mode RGB uses that render as its frame, one vspipe start in all (a Range or
-All: two).
+All: two). Before a video model (Upscale Image with RDUAL, RSR, TFDAT or TFDATv2), a Range and Run this frame also
+render the frames the model reads around them, as Load Video reads them (two vspipe starts): a TFDAT frame then equals
+the same frame of a full run, and RDUAL and RSR start from their warm-up frames as with Load Video.
 Every frame needs one size and format. **Frames to Clip** ends a loop of RGB or gray images, with an FPS, and saves
 them as a file that BestSource reads as a clip; the next run replaces it. **Precision** 16-bit (default) rounds the
 values to 16 bits, clipped to 0-1, in a lossless FFV1 video (`.mkv`, an RGB48 or Gray16 clip); 32-bit float keeps every
@@ -310,6 +319,13 @@ The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and t
 - BM3D's backends other than Old take only 32-bit float, so Denoise's BM3D (`chainner_vs.bm3d`) runs another clip
   through 32-bit float and back to its own format, as Convert Format's Bit depth (depth) does both ways, and gives
   a Search or Reference clip 32-bit float too. A 32-bit float clip and the Old backend go to vs-jetpack's BM3D as they are.
+- Bifrost, DotKill and DeDot take 8 to 16 bit integer clips only (Bifrost and DotKill YUV, DotKillS and DeDot also
+  gray, DotKill 4:2:0 only); another format stops the node with the plugin's message, so put Convert Format first.
+  They take clips only, not images. Bifrost's Fields apart (on by default) always takes the top field first. DotKillT
+  and DotKillZ need their Pulldown phase found by trying; DotKillT writes the phase it used into each frame's
+  `DotKillTOffset`. Their help texts follow the plugins' own documentation. Licences: Bifrost WTFPL, DotKill MIT, DeDot
+  GPL-2.0-only; the dependency manager installs each from its own wheel on PyPI, by hash, and VapourSynth loads them
+  in its own processes.
 - What always fails with vs-jetpack 2.2.6 is left out: base classes in Class and kernel dropdowns (Kernel, Scaler,
   Descaler...), MVTools' compensate, degrain, flow and mask methods (they need an analyze on the same object first; use
   Motion-compensated degrain), functions that need an object no input gives, and methods that give no clip. Another

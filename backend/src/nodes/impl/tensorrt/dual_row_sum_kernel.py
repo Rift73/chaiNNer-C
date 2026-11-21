@@ -1,6 +1,8 @@
 """Row sums of an NHWC BF16 tensor in FP32 for the dynamic convolution's router: out[0, y, c] =
 sum over x of in[0, y, x, c]. One program per row, coalesced 32-pixel x C tiles; the graph then
-sums the H rows and divides by H * W (a few hundred values). Arguments: inputs, scalars, outputs."""
+sums the H rows and divides by H * W (a few hundred values). The channel block is C rounded up to
+a power of two (Triton's ranges are powers of two), masked to C. Arguments: inputs, scalars,
+outputs."""
 
 from __future__ import annotations
 
@@ -14,21 +16,23 @@ def row_sum(
     width: tl.int32,
     out_ptr: tl.tensor,
     channels: tl.constexpr,
+    block_c: tl.constexpr,
     block: tl.constexpr,
 ) -> None:
     row = tl.program_id(0)
-    c = tl.arange(0, channels)
+    c = tl.arange(0, block_c)
+    inside = c < channels
     p = tl.arange(0, block)
-    acc = tl.zeros((channels,), tl.float32)
+    acc = tl.zeros((block_c,), tl.float32)
     for x0 in range(0, width, block):
         px = x0 + p
         tile = tl.load(
             x_ptr + (row * width + px)[:, None] * channels + c[None, :],
-            (px < width)[:, None],
+            (px < width)[:, None] & inside[None, :],
             0,
         )
         acc += tl.sum(tile.to(tl.float32), 0)
-    tl.store(out_ptr + row * channels + c, acc)
+    tl.store(out_ptr + row * channels + c, acc, inside)
 
 
 LAUNCH = {"block": 32}

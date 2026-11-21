@@ -20,7 +20,7 @@ class Generator(Generic[I]):
     # iteration views count from it.
     index_base: int = 0
     # The item's number when the generator runs exactly one chosen item (Load Video's
-    # "Run this frame"), else None; nodes of the loop read it as NodeContext.chosen_item.
+    # "Run this frame"), else None; nodes of the loop read it in NodeContext.chosen_items.
     chosen_item: int | None = None
     # Context frames: given the wanted (before, after), a fresh iterable over the items
     # index_base - b' .. index_base + expected_length + a' - 1 and the b', a' it yields,

@@ -119,6 +119,7 @@ class NodeGroup:
         generated: bool = False,
         temporal_context: tuple[int, int] | None = None,
         temporal_if: tuple[int, Callable[[object], bool]] | None = None,
+        temporal_context_of: Callable[[object], tuple[int, int]] | None = None,
     ):
         """Registers a node. `keywords` are more words node search finds it by (a
         generated node's method names). `generated`: the node is made at run time,
@@ -126,7 +127,9 @@ class NodeGroup:
         not apply. `temporal_context`: the (before, after) neighbours the node needs in
         a generator loop (NodeData.temporal_context). `temporal_if`: (input id,
         predicate), the context applies only when the predicate is true for that
-        input's value (NodeData.temporal_if)."""
+        input's value (NodeData.temporal_if). `temporal_context_of`: the neighbours for
+        that input's known value, in place of `temporal_context`
+        (NodeData.temporal_context_of)."""
         if temporal_context is not None:
             assert len(temporal_context) == 2 and all(
                 isinstance(count, int) and count >= 0 for count in temporal_context
@@ -135,6 +138,9 @@ class NodeGroup:
             assert temporal_context is not None, (
                 f"{schema_id}: temporal_if gates a temporal_context"
             )
+        assert temporal_context_of is None or temporal_if is not None, (
+            f"{schema_id}: temporal_context_of reads the input temporal_if names"
+        )
         if not isinstance(description, str):
             description = "\n\n".join(description)
 
@@ -218,6 +224,7 @@ class NodeGroup:
                 temporal_if=None
                 if temporal_if is None
                 else (InputId(temporal_if[0]), temporal_if[1]),
+                temporal_context_of=temporal_context_of,
             )
 
             run_check(

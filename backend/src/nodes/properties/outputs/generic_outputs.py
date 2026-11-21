@@ -35,8 +35,13 @@ class TextOutput(BaseOutput):
         self,
         label: str,
         output_type: navi.ExpressionJson = "string",
+        has_handle: bool = True,
     ):
-        super().__init__(navi.intersect_with_error("string", output_type), label)
+        super().__init__(
+            navi.intersect_with_error("string", output_type),
+            label,
+            has_handle=has_handle,
+        )
 
     def get_broadcast_type(self, value: str):
         return navi.literal(value)

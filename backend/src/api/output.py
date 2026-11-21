@@ -70,10 +70,10 @@ class BaseOutput(Generic[T]):
         return self
 
     def null_unless(self, input_id: InputId | int, variants: navi.ExpressionJson):
-        """Makes this output exist only while the dropdown `input_id` has one of
-        `variants` (its options' types, e.g. "Mode::Planes | Mode::Both"). Under the other
-        options its type is `null`, which the frontend does not connect, and the node
-        returns None for it."""
+        """Makes this output exist only while the input `input_id` has one of
+        `variants` (a dropdown's options' types, e.g. "Mode::Planes | Mode::Both", or
+        "Image" for an optional image input). Otherwise its type is `null`, which the
+        frontend does not connect, and the node returns None for it."""
         self.output_type = navi.match(
             f"Input{input_id}", (variants, None, self.output_type), default="null"
         )

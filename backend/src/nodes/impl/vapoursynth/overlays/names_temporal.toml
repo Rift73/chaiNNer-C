@@ -143,6 +143,41 @@ rank = 7
 label = "Deblock (deblock_qed)"
 labels = { quant = "Strength (edges, insides)", alpha = "Alpha (edges, insides)", beta = "Detection (edges, insides)", chroma_mode = "Colour mode (0-2)", interlaced = "Separated fields" }
 
+# Rainbows and dot crawl of composite video (the bifrost, dotkill and dedot plugins).
+
+[method."bifrost.Bifrost"]
+rank = 8
+label = "Remove rainbows in still areas (Bifrost)"
+simple = ["interlaced", "luma_thresh", "variation", "altclip"]
+labels = { altclip = "Colour for moving areas from", luma_thresh = "Still area threshold (8-bit)", variation = "Rainbow threshold (8-bit)", conservative_mask = "Only pixels found as rainbows (0 or 1)", interlaced = "Fields apart (0 or 1)", blockx = "Block width", blocky = "Block height" }
+
+[method."dedot.Dedot"]
+rank = 9
+label = "Remove rainbows and dot crawl in still areas (DeDot)"
+simple = ["luma_2d", "luma_t", "chroma_t1", "chroma_t2"]
+labels = { luma_2d = "Dot threshold (8-bit, 510 = off)", luma_t = "Luma steadiness limit (8-bit)", chroma_t1 = "Colour steadiness limit (8-bit)", chroma_t2 = "Colour flicker threshold (8-bit, 255 = off)" }
+
+[method."dotkill.DotKillS"]
+rank = 10
+label = "Remove dot crawl, one frame (DotKillS)"
+simple = ["iterations"]
+labels = { iterations = "Passes (1-10)" }
+
+[method."dotkill.DotKillT"]
+rank = 11
+label = "Remove dot crawl and rainbows, telecined (DotKillT)"
+simple = ["offset", "dupthresh", "order"]
+labels = { order = "Field order (0 or 1)", offset = "Pulldown phase (0-4)", dupthresh = "Still block threshold (8-bit)", tratio = "Moving blocks limit (1 in N)", show = "Show still blocks (0 or 1)" }
+
+[method."dotkill.DotKillZ"]
+rank = 12
+label = "Remove dot crawl and rainbows, telecined, fields only (DotKillZ)"
+simple = ["offset", "order"]
+labels = { order = "Field order (0 or 1)", offset = "Pulldown phase (0-4)" }
+
+[method."bifrost.BlockDiff"]
+hide = true
+
 [method."vsdenoise.bm3d"]
 rank = 2
 label = "Denoise, strong (BM3D)"

@@ -9,6 +9,8 @@ import numpy as np
 from ...utils.utils import Region
 from .auto_split import Split, SplitImageOp
 
+WHOLE_IMAGE = "Whole image"
+
 
 class TileReport:
     """The tiles of a node's upscale. An image can take several passes (transparency,
@@ -18,7 +20,12 @@ class TileReport:
         self.text = ""
 
     def record(self, height: int, width: int, *, whole: bool) -> None:
-        self.text = "Whole image" if whole else f"{width}x{height} px"
+        self.text = WHOLE_IMAGE if whole else f"{width}x{height} px"
+
+    @property
+    def tiled(self) -> bool:
+        """Whether the last pass ran in tiles, also when a route copied its `text`."""
+        return self.text not in ("", WHOLE_IMAGE)
 
     def recording(self, img: np.ndarray, upscale: SplitImageOp) -> SplitImageOp:
         """`upscale`, for auto_split's pass over `img`: records the largest tile the model

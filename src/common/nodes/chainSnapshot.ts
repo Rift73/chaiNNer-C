@@ -49,6 +49,7 @@ const nodeText = (n: Node<NodeData>): string => {
                 inputHeight: data.inputHeight,
                 outputHeight: data.outputHeight,
                 nodeWidth: data.nodeWidth,
+                imageCompare: data.imageCompare,
                 isDisabled: data.isDisabled,
                 isLocked: data.isLocked,
                 isCollapsed: data.isCollapsed,

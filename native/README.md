@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.12, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.13, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 UI in `src/` (the release zips; the local package uses the nightly's UI bundles with pinned patches), the single
-backend in `backend/src`, and a native C17/C++20 layer. The UI shows v0.3.12 (header, About, startup log, system information with `app.upstream`), while
+backend in `backend/src`, and a native C17/C++20 layer. The UI shows v0.3.13 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -106,16 +106,16 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` of 2026-11-06,
-`_chainner_graph.pyd`, `_chainner_trt.pyd` and `chainner_trt_vs.dll` of 2026-11-06, `drft_trt_plugins.dll` of 2026-10-20, `vosr2_qkv.dll` of 2026-10-18, with TensorRT 11.4.0.106 and
-CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2; the AMD GPU parts of 2026-11-07, built with `-RocmRoot` and
+map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` of 2026-11-16,
+`_chainner_graph.pyd` of 2026-11-20, `_chainner_trt.pyd` and `chainner_trt_vs.dll` of 2026-11-06, `drft_trt_plugins.dll` of 2026-10-20, `vosr2_qkv.dll` of 2026-10-18, with TensorRT 11.4.0.106 and
+CUDA 13.4.92; `chainner_ext.pyd` as in v0.3.12; the AMD GPU parts of 2026-11-07, built with `-RocmRoot` and
 `-MigraphxRoot` for ROCm 10.0.0 and MIGraphX 2.17.0), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `f4da1a5e2b04370f72672b3e9de2f7e1c78e560edcb226b9b1d7eb7cb7999d8a` |
-| `_chainner_graph.pyd` | `72897c2b1672035850d9033908cae315d0fbb297b09a94c2cf5f9d0e1215e611` |
-| `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
+| `chainner_native.dll` | `d6e3df0698342834080e3cc3dd02cd0ce6a83b9aef53cb8cf1ad58e3a0af6618` |
+| `_chainner_graph.pyd` | `9a7a776536d4feeb00c86e04135aa924bbc3e3ecdbe450d5c4edd5638224b3f0` |
+| `chainner_ext.pyd` | `17c43006a6c6ac1e00b5ad4cc2a7751f6807ae688aa27fa8071610862ecd9b6c` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
 | `_chainner_trt.pyd` | `6b9037300ddfc3f5422baef5e0ffbbc5320a086a71bcfcdfd00145088ca22bb0` |

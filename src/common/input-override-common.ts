@@ -47,6 +47,35 @@ export const withInputOverrides = (
     };
 };
 
+/** The nodes reached from `start` along the connections, forwards or backwards, `start` too. */
+const reached = (
+    edges: readonly Edge<EdgeData>[],
+    start: Iterable<string>,
+    direction: 'forwards' | 'backwards'
+): Set<string> => {
+    const kept = new Set(start);
+    const pending = [...kept];
+    for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+        for (const { source, target } of edges) {
+            const [from, to] = direction === 'forwards' ? [source, target] : [target, source];
+            if (from === id && !kept.has(to)) {
+                kept.add(to);
+                pending.push(to);
+            }
+        }
+    }
+    return kept;
+};
+
+const withOnly = (
+    nodes: readonly Node<NodeData>[],
+    edges: readonly Edge<EdgeData>[],
+    kept: ReadonlySet<string>
+): { nodes: Node<NodeData>[]; edges: Edge<EdgeData>[] } => ({
+    nodes: nodes.filter((n) => kept.has(n.id)),
+    edges: edges.filter((e) => kept.has(e.source) && kept.has(e.target)),
+});
+
 /**
  * The part of the graph a node's outputs come from, for one run: the node, every node it depends
  * on through its connections, and the connections between them. Nodes after it do not run.
@@ -55,22 +84,32 @@ export const withOnlyUpTo = (
     nodes: readonly Node<NodeData>[],
     edges: readonly Edge<EdgeData>[],
     nodeId: string
-): { nodes: Node<NodeData>[]; edges: Edge<EdgeData>[] } => {
-    const kept = new Set([nodeId]);
-    const pending = [nodeId];
-    for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
-        for (const { source, target } of edges) {
-            if (target === id && !kept.has(source)) {
-                kept.add(source);
-                pending.push(source);
-            }
-        }
-    }
-    return {
-        nodes: nodes.filter((n) => kept.has(n.id)),
-        edges: edges.filter((e) => kept.has(e.source) && kept.has(e.target)),
-    };
-};
+): { nodes: Node<NodeData>[]; edges: Edge<EdgeData>[] } =>
+    withOnly(nodes, edges, reached(edges, [nodeId], 'backwards'));
+
+/**
+ * The part of the graph a node feeds, for one run: the node, every node after it (all it feeds,
+ * on and on), and every node those depend on, with the connections between them. A node reached
+ * only as a dependency feeds nothing more into the run: a source shared with another branch (a
+ * model, a folder, a number) does not take that branch along, nor does another video joined into
+ * the part take its own outputs.
+ */
+export const withOnlyDownstreamOf = (
+    nodes: readonly Node<NodeData>[],
+    edges: readonly Edge<EdgeData>[],
+    nodeId: string
+): { nodes: Node<NodeData>[]; edges: Edge<EdgeData>[] } =>
+    withOnly(nodes, edges, reached(edges, reached(edges, [nodeId], 'forwards'), 'backwards'));
+
+/**
+ * The part of the chain a run with overrides takes (runWithOverrides): node `nodeId` and what it
+ * depends on (`up-to`, as a Preview renders it), or what it feeds with what that depends on
+ * (`downstream`).
+ */
+export interface RunPart {
+    readonly nodeId: string;
+    readonly kind: 'up-to' | 'downstream';
+}
 
 const PREVIEW_CLIPS = 'chainner:vapoursynth:preview_clips' as SchemaId;
 

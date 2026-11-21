@@ -1,10 +1,11 @@
 import { NeverType } from '@chainner/navi';
 import { Box, Center, HStack } from '@chakra-ui/react';
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { useContextSelector } from 'use-context-selector';
 import { Input, InputKind, InputValue, Size } from '../../../common/common-types';
 import { getInputValue } from '../../../common/util';
 import { BackendContext } from '../../contexts/BackendContext';
+import { getNameableInputs, withImageName } from '../../helpers/imageCompare';
 import { NodeState, getPassthroughIgnored } from '../../helpers/nodeState';
 import { OutputHandle } from '../outputs/OutputContainer';
 import { TypeTags } from '../TypeTag';
@@ -15,7 +16,7 @@ import { FileInput } from './FileInput';
 import { GenericInput } from './GenericInput';
 import { InputContainer, InputHandle } from './InputContainer';
 import { NumberInput } from './NumberInput';
-import { InputProps } from './props';
+import { InputProps, InputRename } from './props';
 import { SliderInput } from './SliderInput';
 import { StaticValueInput } from './StaticValueInput';
 import { TextInput } from './TextInput';
@@ -51,6 +52,7 @@ export const SchemaInput = memo(({ input, nodeState, afterInput }: SingleInputPr
     const { id: inputId, kind, hasHandle, fused } = input;
     const {
         schemaId,
+        schema,
         id: nodeId,
         inputData,
         setInputValue,
@@ -64,6 +66,8 @@ export const SchemaInput = memo(({ input, nodeState, afterInput }: SingleInputPr
         iteratedOutputs,
         type,
         testCondition,
+        imageCompare,
+        setImageCompare,
     } = nodeState;
 
     const functionDefinition = useContextSelector(BackendContext, (c) =>
@@ -96,6 +100,23 @@ export const SchemaInput = memo(({ input, nodeState, afterInput }: SingleInputPr
         [inputId, setInputHeight, setWidth]
     );
 
+    // the images of a node's viewer are named in the viewer's saved choice, outside the input hash
+    const nameable = useMemo(() => getNameableInputs(schema).has(inputId), [schema, inputId]);
+    const name = imageCompare?.names?.[inputId];
+    const rename = useMemo(
+        (): InputRename | undefined =>
+            nameable
+                ? {
+                      name,
+                      setName: (newName) =>
+                          setImageCompare(
+                              withImageName(imageCompare, inputId, newName, input.label)
+                          ),
+                  }
+                : undefined,
+        [nameable, name, imageCompare, setImageCompare, inputId, input.label]
+    );
+
     const inputType = type.instance?.inputs.get(inputId) ?? NeverType.instance;
     const inputLength = type.instance?.inputSequence.get(inputId);
 
@@ -110,6 +131,7 @@ export const SchemaInput = memo(({ input, nodeState, afterInput }: SingleInputPr
             isLocked={isLocked}
             nodeId={nodeId}
             nodeSchemaId={schemaId}
+            rename={rename}
             resetValue={resetValue}
             sequenceType={inputLength}
             setSize={setSize}

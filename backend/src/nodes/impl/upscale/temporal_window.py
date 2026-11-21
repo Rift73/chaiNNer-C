@@ -91,7 +91,9 @@ class Executor(Protocol[F, O, S]):
     frame fits. A
     runtime that knows or estimates its memory says so before the first window: the
     temporal path chooses its first step by it and caps each window's frames ahead by it,
-    and running out of memory stays the second line of defence (`Fit`)."""
+    and running out of memory stays the second line of defence (`Fit`). Optional:
+    `look_ahead`, the frames after a kept frame that its output reads (LOOK_AHEAD
+    without it): a window keeps the frames with that many after them in it."""
 
     @property
     def key(self) -> Hashable: ...
@@ -310,7 +312,9 @@ def temporal_upscale(
         if fitting is not None:
             step_ahead = min(step_ahead, max(0, fitting((height, width), step_ahead)))
         if run.planner is None or run.planner.key != base.key:
-            run.planner = WindowPlanner(img.shape, base.key, LOOK_AHEAD)
+            run.planner = WindowPlanner(
+                img.shape, base.key, getattr(base, "look_ahead", LOOK_AHEAD)
+            )
         planner = run.planner
         kept = planner.past, dict(planner.outputs)
         try:

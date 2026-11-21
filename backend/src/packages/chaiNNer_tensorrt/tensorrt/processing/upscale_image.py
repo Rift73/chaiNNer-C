@@ -32,6 +32,18 @@ def context_applies(engine: object) -> bool:
     return not isinstance(engine, TensorRTEngine) or engine.info.temporal is not None
 
 
+def context_of(engine: object) -> tuple[int, int]:
+    """Upscale Image's context items (before, after) for an engine the loop knows before
+    its first item (`temporal_context_of`), as PyTorch's Upscale Image gives its model's
+    (temporal_models.context_of): a TFDAT or TFDATv2 set's clip reads half of it on each
+    side of its centre; every other value keeps (WARM_UP, LOOK_AHEAD)."""
+    if isinstance(engine, TensorRTEngine) and engine.info.temporal is not None:
+        side = engine.info.temporal.clip_size // 2
+        if side > 0:
+            return side, side
+    return WARM_UP, LOOK_AHEAD
+
+
 def engine_upscale(
     context: NodeContext,
     img: np.ndarray,
@@ -43,12 +55,19 @@ def engine_upscale(
     """Upscale Image's image and its tiles' size, also for PyTorch's Upscale Image with Use
     TensorRT Engine. before_clip: sees each result before its clip (tiled_upscale)."""
     settings = get_settings(context)
-    if engine.info.temporal is not None:
-        # The session imports PyTorch and spandrel, which image engines do not need.
-        from nodes.impl.tensorrt.rdual_session import temporal_engine_upscale
+    temporal = engine.info.temporal
+    if temporal is not None:
+        # The sessions import PyTorch and spandrel, which image engines do not need.
+        from nodes.impl.pytorch.temporal_models import runtime
 
+        found = runtime(temporal.architecture)
+        if found is None:
+            raise ValueError(
+                f"This engine set is of {temporal.architecture}, a model this"
+                " chaiNNer-C does not run on its temporal path."
+            )
         report = TileReport()
-        image = temporal_engine_upscale(
+        image = found[1].temporal_engine_upscale(
             context, img, engine, settings.gpu_index, report
         )
         return image, report.text
@@ -111,7 +130,7 @@ if processing_group is not None:
         schema_id="chainner:tensorrt:upscale_image",
         description=[
             "Upscales an image using a TensorRT engine. Images of any size are split into overlapping tiles that fit the engine's optimization profile, and the tiles are blended back together without seams. When the GPU's memory runs out, a Dynamic engine goes on with smaller tiles.",
-            "An RDUAL engine set (a video model's engines, from Build Engine or Load Engine) runs inside a loop with the frames around each one, as PyTorch's Upscale Image runs the model: the frame must have the set's size, Separate Alpha and Balanced Tiles do not apply, and when the GPU's memory runs out it reads fewer frames ahead.",
+            "An RDUAL engine set (a video model's engines, from Build Engine or Load Engine) runs inside a loop with the frames around each one, as PyTorch's Upscale Image runs the model: the frame must have the set's size, Separate Alpha and Balanced Tiles do not apply, and when the GPU's memory runs out it reads fewer frames ahead. A TFDAT or TFDATv2 engine set (one engine) runs each frame on the clip of frames centred on it, the loop reading half a clip before and after a Range.",
         ],
         inputs=[
             ImageInput().with_id(1),
@@ -162,6 +181,7 @@ if processing_group is not None:
         node_context=True,
         temporal_context=(WARM_UP, LOOK_AHEAD),
         temporal_if=(0, context_applies),
+        temporal_context_of=context_of,
     )
     def upscale_image_node(
         context: NodeContext,

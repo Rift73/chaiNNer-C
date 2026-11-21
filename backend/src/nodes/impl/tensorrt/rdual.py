@@ -125,11 +125,11 @@ def engine_key(
 
 
 def write_weights(model: torch.nn.Module, path: Path) -> Path:
-    """The weights file the export reads: the folded model's state dict, with its
-    hyperparameters in the metadata."""
+    """The weights file the export reads (rdual_export.py, rsr_export.py): the folded
+    model's state dict, with its hyperparameters in the metadata."""
     hyperparameters = getattr(model, "hyperparameters", None)
     if not isinstance(hyperparameters, dict):
-        raise ValueError("An RDUAL model records its hyperparameters")
+        raise ValueError("A temporal model's export needs its hyperparameters")
     save_file(
         {k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()},
         str(path),

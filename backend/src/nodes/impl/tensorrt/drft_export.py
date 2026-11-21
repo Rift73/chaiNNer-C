@@ -27,7 +27,7 @@ PLUGINS = "legacy-v1"
 # The relative-bias plugin's (query, key) OCAB windows; other windows keep the dense
 # bias as plain maths.
 BIAS_WINDOWS = {(32, 40), (32, 48)}
-# A barrier after every third ACT block (Codex: blocks 2 and 5 of each group).
+# A barrier after every third ACT block (blocks 2 and 5 of each group).
 BARRIER_EVERY = 3
 
 
@@ -431,7 +431,7 @@ class _DenseFusion(torch.autograd.Function):
     """The dense skip's Linear over the concatenated block outputs (exactly, from the
     weight's per-block slices, given transposed), exported as one MatMul per block and
     their sum: TensorRT 11 computes the concatenated BF16 form wrongly in this graph
-    (DRFT-L x4: 19 dB against PyTorch, 46.6 dB split; Codex split it too)."""
+    (DRFT-L x4: 19 dB against PyTorch, 46.6 dB split; an independent export split it too)."""
 
     @staticmethod
     def forward(

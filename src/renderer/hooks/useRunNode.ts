@@ -5,6 +5,7 @@ import { log } from '../../common/log';
 import { delay, mapInputValues } from '../../common/util';
 import { AlertBoxContext } from '../contexts/AlertBoxContext';
 import { BackendContext } from '../contexts/BackendContext';
+import { ExecutionContext } from '../contexts/ExecutionContext';
 import { GlobalContext, GlobalVolatileContext } from '../contexts/GlobalNodeState';
 import { useAsyncEffect } from './useAsyncEffect';
 import { useAutomaticFeatures } from './useAutomaticFeatures';
@@ -23,9 +24,14 @@ export const useRunNode = (
     const { addIndividuallyRunning, removeIndividuallyRunning } = useContext(GlobalContext);
     const { schemata, backend, isBackendReady, isNodeLoaded } = useContext(BackendContext);
     const { packageSettings } = useSettings();
+    const takeReserved = useContextSelector(ExecutionContext, (c) => c.takeReserved);
+    const forgetReserved = useContextSelector(ExecutionContext, (c) => c.forgetReserved);
+    const registerRunAgain = useContextSelector(ExecutionContext, (c) => c.registerRunAgain);
 
     const [reloadCounter, setReloadCounter] = useState(0);
     const reload = useCallback(() => setReloadCounter((c) => c + 1), []);
+    // a seek bar's reserved frame that ended without being shown has the node run again
+    useEffect(() => registerRunAgain(id, reload), [registerRunAgain, id, reload]);
     // Loading a chain clears all output data, so a node that is kept with the same inputs has to
     // run again.
     const chainLoads = useContextSelector(GlobalVolatileContext, (c) => c.chainLoads);
@@ -39,11 +45,14 @@ export const useRunNode = (
         () => mapInputValues(schema, (inputId) => inputData[inputId] ?? null),
         [inputData, schema]
     );
+    const inputsKey = useMemo(() => JSON.stringify(inputs), [inputs]);
     const inputHash = useMemo(
-        () => `${reloadCounter};${chainLoads};${JSON.stringify(inputs)}`,
-        [reloadCounter, chainLoads, inputs]
+        () => `${reloadCounter};${chainLoads};${inputsKey}`,
+        [reloadCounter, chainLoads, inputsKey]
     );
     const lastInputHash = useRef<string>();
+    // the reloads and chain loads of the last run
+    const lastRuns = useRef<string>();
 
     const { isAutomatic, hasIncomingConnections } = useAutomaticFeatures(id, schemaId);
     const shouldRun = isValid && isAutomatic;
@@ -58,6 +67,14 @@ export const useRunNode = (
             if (!isBackendReady || !nodeLoaded || inputHash === lastInputHash.current) {
                 return;
             }
+            // A seek bar's gesture ended at these values with their frame reserved (rendered, in
+            // flight or to render by itself): the node is not run again for them.
+            const runs = `${reloadCounter};${chainLoads}`;
+            if (shouldRun && lastRuns.current === runs && takeReserved(id, inputsKey)) {
+                lastInputHash.current = inputHash;
+                didEverRun.current = true;
+                return;
+            }
             // give it some time for other effects to settle in
             await delay(50);
             token.checkCanceled();
@@ -65,7 +82,9 @@ export const useRunNode = (
             if (shouldRun) {
                 // only a run counts: a connected node has not run with the inputs it has now
                 lastInputHash.current = inputHash;
+                lastRuns.current = runs;
                 didEverRun.current = true;
+                forgetReserved(id);
 
                 runningPreviews.current += 1;
                 addIndividuallyRunning(id);

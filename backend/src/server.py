@@ -5,6 +5,7 @@ import functools
 import gc
 import importlib
 import itertools
+import math
 import os
 import sys
 import tempfile
@@ -14,10 +15,10 @@ import traceback
 import uuid
 from collections.abc import Callable, Coroutine, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Final, TypedDict
+from typing import Any, Final, NotRequired, TypedDict, cast
 
 import psutil
 from sanic import Sanic
@@ -39,7 +40,7 @@ from chain.cache import OutputCache
 from chain.chain import Chain, FunctionNode, GeneratorNode
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
-from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
+from events import Event, EventConsumer, EventQueue, ExecutionErrorData, event_text
 from folder_videos import FolderVideosRun, run_executor
 from linux_libraries import log_missing_libraries
 from native_executor import NativeExecutor, ending_runs, executor_kind
@@ -527,6 +528,9 @@ class RunRequest(TypedDict):
     data: list[JsonNode]
     options: JsonExecutionOptions
     sendBroadcastData: bool
+    # A seek render's: the widths of the views that show its large images, as
+    # RunIndividualRequest's (preview_sizes reads it). Absent: every preview.
+    previewSizes: NotRequired[object]
 
 
 @app.route("/run", methods=["POST"])
@@ -598,6 +602,7 @@ async def run(request: Request):
             storage_dir=ctx.storage_dir,
             parent_cache=OutputCache(static_data=ctx.cache.copy()),
             pool_size=POOL_SIZE,
+            preview_sizes=preview_sizes(full_data.get("previewSizes")),
         )
         try:
             native_profile.reset()
@@ -623,10 +628,11 @@ async def run(request: Request):
             line = native_profile.log_line()
             if line is not None:
                 logger.info(line)
-            # The VRAM offload's pinned RAM (given back when a run ends).
-            offload = sys.modules.get("nodes.impl.pytorch.offload")
-            if offload is not None:
-                offload.release_pinned_memory()
+            # The RAM pinned through PyTorch (the VRAM offload's, the temporal routes'),
+            # given back when a run ends.
+            pytorch_utils = sys.modules.get("nodes.impl.pytorch.utils")
+            if pytorch_utils is not None:
+                pytorch_utils.release_pinned_memory()
 
         return json(success_response(), status=200)
     except Exception as exception:
@@ -759,6 +765,54 @@ class RunIndividualRequest(TypedDict):
     inputs: list[object]
     schemaId: str
     options: JsonExecutionOptions
+    # A seek preview's request: its run's node-broadcast and node-finish events carry it,
+    # and the reply, sent once the broadcasts are queued, says whether a broadcast came.
+    token: NotRequired[str]
+    # A seek preview's request: the widths of the views that show the node's large
+    # images; its broadcast has only their previews (LargeImageOutput.get_broadcast_data's
+    # sizes). Absent or empty: every preview; preview_sizes reads it, whatever it holds.
+    previewSizes: NotRequired[object]
+
+
+# The widest view a previewSizes entry names: wider ones get the largest tier all the same.
+PREVIEW_SIZE_LIMIT = 65536
+
+
+def preview_sizes(field: object) -> list[int]:
+    """A request's previewSizes as the executors take them: its finite numbers above 0, in
+    whole px (rounded up, so the tier made is at least as wide) and at most
+    PREVIEW_SIZE_LIMIT. Anything else is left out, and a field that is no list, or keeps
+    no entry, makes every preview: a malformed field never fails the run."""
+    if not isinstance(field, list):
+        return []
+    return [
+        min(math.ceil(size), PREVIEW_SIZE_LIMIT)
+        for size in field
+        if isinstance(size, (int, float))
+        and not isinstance(size, bool)
+        and math.isfinite(size)
+        and size > 0
+    ]
+
+
+@dataclass
+class TokenEvents(EventConsumer):
+    """An individual run's events, its node-broadcast and node-finish with the request's
+    token; whether a node-broadcast came."""
+
+    queue: EventConsumer
+    token: str
+    broadcast: bool = False
+
+    def put(self, event: Event) -> None:
+        if event["event"] == "node-broadcast":
+            self.broadcast = True
+            data: dict[str, object] = {**event["data"], "token": self.token}
+            event = cast(Event, {"event": "node-broadcast", "data": data})
+        elif event["event"] == "node-finish":
+            data = {**event["data"], "token": self.token}
+            event = cast(Event, {"event": "node-finish", "data": data})
+        self.queue.put(event)
 
 
 @app.route("/run/individual", methods=["POST"])
@@ -819,6 +873,10 @@ async def run_individual(request: Request):
 
             # only yield certain types of events
             queue = EventConsumer.filter(ctx.queue, EventConsumer.INDIVIDUAL_RUN_EVENTS)
+            token = full_data.get("token")
+            token_events = None if token is None else TokenEvents(queue, token)
+            if token_events is not None:
+                queue = token_events
 
             execution_id = ExecutionId("individual-executor " + node_id)
             executor_class = NativeExecutor if executor_kind() == "native" else Executor
@@ -832,6 +890,7 @@ async def run_individual(request: Request):
                 storage_dir=ctx.storage_dir,
                 pool=ctx.pool,
                 pool_size=POOL_SIZE,
+                preview_sizes=preview_sizes(full_data.get("previewSizes")),
             )
 
             try:
@@ -855,11 +914,16 @@ async def run_individual(request: Request):
             finally:
                 if ctx.individual_executors.get(execution_id, None) == executor:
                     ctx.individual_executors.pop(execution_id, None)
-                # The response does not wait for the broadcasts, as upstream's;
-                # the NumPy pool is released once they are sent.
+                # The NumPy pool is released once the broadcasts are sent. The
+                # response waits for that only with a token (a seek preview's).
                 release = asyncio.create_task(release_after_broadcasts(ctx, executor))
                 individual_releases.add(release)
                 release.add_done_callback(individual_releases.discard)
+            if token_events is not None:
+                # The reply of a seek preview says whether its broadcast came. A
+                # cancelled handler (its client gone) leaves the shared release to
+                # finish: it closes the run's engine and releases the pool.
+                await asyncio.shield(release)
 
         # From the request's arrival, a wait for the node to load included: the time
         # from a launch to a startup chain's first preview reads from the log.
@@ -867,7 +931,14 @@ async def run_individual(request: Request):
             f"Individual run of {full_data['schemaId']} finished in"
             f" {(time.perf_counter() - start) * 1000:.0f} ms"
         )
-        return json({"success": True, "data": None})
+        return json(
+            {
+                "success": True,
+                "data": None
+                if token_events is None
+                else {"broadcast": token_events.broadcast},
+            }
+        )
     except Exception as exception:
         logger.error(exception, exc_info=True)
         return json({"success": False, "error": str(exception)})

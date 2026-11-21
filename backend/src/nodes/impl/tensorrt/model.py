@@ -21,6 +21,8 @@ class TemporalInfo:
     parts: tuple[str, ...]
     # The flow's precision recipe (rdual_export.FLOW_RECIPES)
     flow_precision: str = "mixed"
+    # The frames of each clip of a clip-window model (TFDAT, TFDATv2); 0 for the others
+    clip_size: int = 0
 
 
 @dataclass

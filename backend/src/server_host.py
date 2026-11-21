@@ -556,6 +556,22 @@ async def import_packages(
             await worker.stop()
             try:
                 await install_dependencies(deps_to_install, update_progress_cb, logger)
+            except Exception as ex:
+                # The app warns of it: the worker restarts with the packages it had, so
+                # the nodes and models that need the new ones do not load, silently.
+                cxt.setup_events.put(
+                    {
+                        "event": "startup-install-failed",
+                        "data": {
+                            "packages": [
+                                f"{d.display_name or d.package_name} {d.version}"
+                                for d in deps_to_install
+                            ],
+                            "error": str(ex),
+                        },
+                    }
+                )
+                raise
             finally:
                 # Also after a failed install, as the dependency manager's routes do:
                 # a stopped worker would fail every route until the next start. Each

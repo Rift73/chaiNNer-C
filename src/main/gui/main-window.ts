@@ -9,6 +9,7 @@ import {
 } from 'electron/main';
 import EventSource from 'eventsource';
 import fs from 'fs/promises';
+import { t } from 'i18next';
 import os from 'os';
 import path from 'path';
 import { BackendEventMap } from '../../common/Backend';
@@ -635,6 +636,30 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
                     statusProgress: data.statusProgress ?? undefined,
                 });
             }
+        });
+        // a failed update of a package leaves the backend on the older one: the nodes and models
+        // that need the new one do not load, which nothing else would tell
+        sse.addEventListener('startup-install-failed', (e: MessageEvent<string>) => {
+            if (!e.data) return;
+            const data = JSON.parse(e.data) as BackendEventMap['startup-install-failed'];
+            progressController
+                .submitInterrupt({
+                    type: 'warning',
+                    title: t('setup.installFailedTitle', 'A package could not be updated'),
+                    message:
+                        `${t(
+                            'setup.installFailed',
+                            '{{packages}} could not be installed, so chaiNNer runs with the older version: models that need the new one (such as RSR) will not load. The next start tries again.',
+                            { packages: data.packages.join(', ') }
+                        )} ${t(
+                            'setup.installProxyHint',
+                            'It needs internet access; a proxy must be set in HTTPS_PROXY.'
+                        )}` +
+                        `
+
+${t('setup.errorLabel', 'Error:')} ${data.error}`,
+                })
+                .catch(log.error);
         });
 
         await loading;

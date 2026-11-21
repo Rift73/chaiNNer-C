@@ -77,6 +77,58 @@ NOISE_WHEELS = {
     ),
 }
 
+# Denoise's rainbow and dot crawl removers, which vs-jetpack does not wrap: each plugin's
+# own wheels on PyPI, by hash. Bifrost (github.com/dubhatervapoursynth/vapoursynth-bifrost,
+# WTFPL) and DotKill (github.com/myrsloik/DotKill, MIT), both 8-16 bit integer YUV.
+BIFROST_WHEELS = {
+    "win32": (
+        "https://files.pythonhosted.org/packages/d5/01/"
+        "863a55724fd35b175e571b20946736717852e7c8ed6ed7a10462c9f76a5b/"
+        "vapoursynth_bifrost-4.0-py3-none-win_amd64.whl"
+        "#sha256=8d30dd3c99b09b71c470486440a2143d02a01f05eb5d9760126289692b9dc7fa"
+    ),
+    "linux": (
+        "https://files.pythonhosted.org/packages/8c/e1/"
+        "a40673957ecfb50254a34ce4f172d3f3e602785bdc5a461a683479279f00/"
+        "vapoursynth_bifrost-4.0-py3-none-"
+        "manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"
+        "#sha256=f0144ea7596aa0bfcd9780da0a8979a3a150b4552bd8364d93111be090ba52b9"
+    ),
+}
+DOTKILL_WHEELS = {
+    "win32": (
+        "https://files.pythonhosted.org/packages/8b/6c/"
+        "61785800126669c46c067f27d001e7315e72550f80401b5bdbde0df0faef/"
+        "vapoursynth_dotkill-4.0-py3-none-win_amd64.whl"
+        "#sha256=1d367651a252d0c70c5a539f8775d351e8e3e3d33a2cd1f4c1ce140a35edc3d3"
+    ),
+    "linux": (
+        "https://files.pythonhosted.org/packages/34/be/"
+        "acae6b4886127dfad619b90da880d1246666f4199e553f72eacccdffbef0/"
+        "vapoursynth_dotkill-4.0-py3-none-"
+        "manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"
+        "#sha256=cb23808a9a5b7bb82fe593f09e23830a0c4f5c142d1789b801394cdfd5bd3a5b"
+    ),
+}
+# DeDot (github.com/dubhatervapoursynth/vapoursynth-dedot, GPL-2.0-only), 8-16 bit integer
+# YUV or gray. VapourSynth loads it in its own processes; chaiNNer-C neither links nor ships
+# it.
+DEDOT_WHEELS = {
+    "win32": (
+        "https://files.pythonhosted.org/packages/cd/1f/"
+        "9dd3d68a2f7ac76b4f3f349a04e49e596b7dd1565dc29e77381c972b810e/"
+        "vapoursynth_dedot-4.0-py3-none-win_amd64.whl"
+        "#sha256=a85330f71d47cde7b3381f0e141c2d764b195d9c9f8990c9feae9f068c5fb03b"
+    ),
+    "linux": (
+        "https://files.pythonhosted.org/packages/06/f7/"
+        "6764a8974f1d5b65f92bb81201aec5e6cb5005f01c4640408cf6508b449a/"
+        "vapoursynth_dedot-4.0-py3-none-manylinux2014_x86_64."
+        "manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+        "#sha256=0a386e6ede263dfa55eb58c622d13fcd50c7e8c0f51d3a81342715deb1b0ed8e"
+    ),
+}
+
 
 def vsview_unavailable_reason(glibc: tuple[int, int] | None) -> str | None:
     """The reason the package leaves vsview out on a system with this glibc, or None
@@ -132,6 +184,27 @@ def vapoursynth_dependencies(glibc: tuple[int, int] | None) -> list[Dependency]:
             version="1.3",
             size_estimate=500 * KB,
             url=NOISE_WHEELS.get(sys.platform),
+        ),
+        Dependency(
+            display_name="Bifrost",
+            pypi_name="vapoursynth-bifrost",
+            version="4.0",
+            size_estimate=700 * KB,
+            url=BIFROST_WHEELS.get(sys.platform),
+        ),
+        Dependency(
+            display_name="DotKill",
+            pypi_name="vapoursynth-dotkill",
+            version="4.0",
+            size_estimate=700 * KB,
+            url=DOTKILL_WHEELS.get(sys.platform),
+        ),
+        Dependency(
+            display_name="DeDot",
+            pypi_name="vapoursynth-dedot",
+            version="4.0",
+            size_estimate=30 * KB,
+            url=DEDOT_WHEELS.get(sys.platform),
         ),
         # The CUDA BM3D, NLMeans and DFTTest that vs-jetpack prefers on NVIDIA GPUs.
         Dependency(

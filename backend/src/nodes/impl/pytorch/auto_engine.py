@@ -27,7 +27,7 @@ from functools import cache, partial
 from importlib.util import find_spec
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from weakref import WeakKeyDictionary
 
 import numpy as np
@@ -40,8 +40,9 @@ from api import Aborted, NodeContext, NodeId
 from gpu import amd, nvidia
 
 from ..image_op import ImageOp
-from ..onnx.model import FP16_ARCHS_NAVI, converts_in_fp16
+from ..onnx.model import FP16_ARCHS, FP16_ARCHS_NAVI, converts_in_fp16
 from ..upscale.auto_split_tiles import TileSize
+from ..upscale.whole_image import WHOLE_IMAGE_ONLY
 from .utils import is_finite, safe_cuda_cache_empty, weights_digest
 
 if TYPE_CHECKING:
@@ -53,6 +54,18 @@ if TYPE_CHECKING:
 # The navi type of a model the setting applies to; a legacy DRFT cannot be told from
 # another DRFT by its type.
 ENGINE_MODEL_NAVI = f'PyTorchModel {{ arch: "DUAL" | "DRFT" | {FP16_ARCHS_NAVI} }}'
+# The architectures of FP16_ARCHS with no automatic program on MIGraphX, which keep
+# PyTorch there. WSR: its program would take DEFAULT_TILE tiles, which change its output
+# far from their seams (WHOLE_IMAGE_TILE), and Build Program would quantize its FP32
+# upsampling to FP16; not checked on AMD GPUs.
+NO_PROGRAM_ARCHS = frozenset({"WSR"})
+PROGRAM_MODEL_NAVI = "PyTorchModel {{ arch: {} }}".format(
+    " | ".join(
+        f'"{arch}"'
+        for arch in ("DUAL", "DRFT", *FP16_ARCHS)
+        if arch not in NO_PROGRAM_ARCHS
+    )
+)
 
 # Every automatic engine is dynamic, up to the node's Tile Size, so an image below the tile
 # runs at its own size. Its smallest size is Build Engine's default; these, which are all
@@ -76,8 +89,8 @@ DEFAULT_TILE = 512
 # a larger engine: a 4x DAT2 builds at 1408 px and fails at 1536. Such an engine keeps the
 # optimum of its profile at DEFAULT_TILE (_build), and takes about 2 GiB more at any size
 # (the DAT2's 2.8 GiB at 128x128, against 0.8 GiB at 256x256 for the 512 px engine), with
-# 11.7 GiB for a whole 1200x864 image: a GPU with less memory than WHOLE_IMAGE_MEMORY (a
-# card sold as 16 GB reports a little under 16 GiB) keeps DEFAULT_TILE. A program (MIGraphX)
+# 11.7 GiB for a whole 1200x864 image: a GPU with less memory than its WHOLE_IMAGE_MEMORY
+# (a card sold as 16 GB reports a little under 16 GiB) keeps DEFAULT_TILE. A program (MIGraphX)
 # has one size, DEFAULT_TILE.
 # DUAL's tiles change its output too: a 2x DUAL Light read 52.1 dB at 1200x864 and 48.9 dB
 # at 1920x1080 in 512 px tiles (48 codes off at worst), and runs 0.093 -> 0.070 s and
@@ -88,8 +101,28 @@ DEFAULT_TILE = 512
 # the whole tile: in 512 px tiles a 4x FIGSR read 47.3 dB at 1200x864 and 43.5 dB at
 # 960x540 (118 codes off at worst). Up to 1408 px every multiple of 64 runs; an engine up
 # to 1920 or 2048 px fails to run its DFTs at widths from 832 px (cuFFT: no workspace).
-WHOLE_IMAGE_TILE = {"DAT": 1408, "HAT": 1408, "DUAL": 1920, "FIGSR": 1408}
-WHOLE_IMAGE_MEMORY = 15 * 1024**3
+# WSR's context gates and attention read past the tiles' overlap: a 2x WSR Compact in
+# 512 px tiles read RMSE 8.4e-3 against the whole frame (0.17 at worst). It takes a
+# 1920x1080 frame whole, as DUAL does. Those of WHOLE_IMAGE_ONLY (upscale/whole_image.py)
+# take whole images or none: for a Tile Size with no number, an image larger than the
+# whole-image engine, or a GPU with less than its WHOLE_IMAGE_MEMORY, runs on PyTorch,
+# never through the engine in tiles. The others tile within it.
+WHOLE_IMAGE_TILE = {"DAT": 1408, "HAT": 1408, "DUAL": 1920, "FIGSR": 1408, "WSR": 1920}
+# The GPU memory, per architecture of WHOLE_IMAGE_TILE, from which its engine takes whole
+# images: DAT's measurement for DAT, HAT, DUAL and FIGSR. WSR's whole-frame engines
+# reported this device memory at their profile's largest size, 1920x1920 (TensorRT's
+# device_memory_size_v2; 952 and 1997 MiB at 1920x1080): 1688 MiB for a trained 2x
+# Compact, WSR_WHOLE_ENGINE_MIB for a 4x Default (Halo), the larger, taken with
+# rsr_window's margin (20 % and 256 MiB), 4.4 GiB: a card of 6 GB or more takes WSR's
+# 1920x1080 frames whole, as PyTorch does.
+WSR_WHOLE_ENGINE_MIB = 3544
+WHOLE_IMAGE_MEMORY = {
+    "DAT": 15 * 1024**3,
+    "HAT": 15 * 1024**3,
+    "DUAL": 15 * 1024**3,
+    "FIGSR": 15 * 1024**3,
+    "WSR": int(WSR_WHOLE_ENGINE_MIB * 1.20 + 256) * 2**20,
+}
 DUAL_WHOLE_IMAGE_CHANNELS = 128
 # The largest size an architecture's engine takes, whatever the Tile Size. RGT's attention
 # holds every token against its reduced keys: a Dynamic engine at 512 px nearly filled a
@@ -140,7 +173,10 @@ _rebuilt: set[str] = set()
 
 
 def _recipe(model: ImageModelDescriptor) -> str | None:
-    # Both routes take one list, whose FP16 was measured on TensorRT.
+    # Both routes take one list, whose FP16 was measured on TensorRT, but for
+    # NO_PROGRAM_ARCHS on MIGraphX.
+    if model.architecture.name in NO_PROGRAM_ARCHS and migraphx_here():
+        return None
     if converts_in_fp16(model.architecture.name, model.tags):
         return "fp16"
     if model.architecture.id == "DUAL":
@@ -214,14 +250,14 @@ def _whole_images(
 ) -> bool:
     """Whether the model's engine for the node's Tile Size takes whole images: a Tile Size
     with no number, an architecture WHOLE_IMAGE_TILE lists, TensorRT, and a CUDA GPU of
-    WHOLE_IMAGE_MEMORY or more."""
+    its WHOLE_IMAGE_MEMORY or more."""
     return (
         tile_size <= 0
         and model.architecture.name in WHOLE_IMAGE_TILE
         and _route() is _TensorRT
         and torch.cuda.is_available()
         and torch.cuda.get_device_properties(gpu_index).total_memory
-        >= WHOLE_IMAGE_MEMORY
+        >= WHOLE_IMAGE_MEMORY[model.architecture.name]
     )
 
 
@@ -708,6 +744,18 @@ def _engine_of(
         reason = no_engine_here(device)
         if reason is not None:
             return _no_engine(context, model, where, reason)
+        name = model.architecture.name
+        if name in WHOLE_IMAGE_ONLY and tile_size <= 0 and not whole:
+            # A number for the Tile Size tiles on PyTorch as well; Auto would not.
+            return _no_engine(
+                context,
+                model,
+                where,
+                f"{name} runs only on whole images through an engine (its output"
+                " changes in tiles), and its whole-image engine needs"
+                f" {WHOLE_IMAGE_MEMORY[name] / 2**30:.1f} GiB of GPU memory, more than"
+                " this GPU has.",
+            )
         if route is _MIGraphX and recipe == "dual":
             from ..migraphx import dual as dual_program
 
@@ -736,9 +784,22 @@ def _engine_of(
             key, engine = engine_of_size(tile, whole)
         except Aborted:
             raise
-        except Exception:
+        except Exception as e:
             if not whole:
                 raise
+            if name in WHOLE_IMAGE_ONLY:
+                # A DEFAULT_TILE engine would take only images up to that size: the
+                # model runs on PyTorch, and the next process tries again.
+                logger.exception(
+                    "%s: no %s px engine for whole images", route.input, tile
+                )
+                return _no_engine(
+                    context,
+                    model,
+                    where,
+                    f"its whole-image {route.made} could not be built"
+                    f" ({_described(e)}), and {name}'s output changes in tiles.",
+                )
             # An engine for whole images that does not build (a variant not measured,
             # or the GPU short of memory at the time) leaves this process's images to
             # DEFAULT_TILE's engine; the next process tries again.
@@ -847,6 +908,33 @@ def _program_op(
     return run
 
 
+class _NotWhole(Exception):
+    """An image larger than the whole-image engine of a WHOLE_IMAGE_ONLY model."""
+
+
+def _whole_images_only(
+    model: ImageModelDescriptor, engine: TensorRTEngine, op: ImageOp
+) -> ImageOp:
+    """`op`, refusing (_NotWhole) an image larger than the engine's largest size, which
+    it would run in tiles."""
+    top = engine.info.max_shape
+    # Every image engine records its profile; an automatic one is one.
+    assert top is not None
+    _, _, height, width = top
+
+    def run(img: np.ndarray) -> np.ndarray:
+        h, w = img.shape[:2]
+        if h > height or w > width:
+            raise _NotWhole(
+                f"this {w}x{h} px image is larger than the {width}x{height} px its"
+                f" engine takes whole, and {model.architecture.name}'s output changes"
+                " in tiles."
+            )
+        return op(img)
+
+    return run
+
+
 def _drop_refused_file(model: ImageModelDescriptor, error: Exception) -> bool:
     """Whether `error`, which PyTorch did not repeat on the same image, is the route refusing
     the engine or program read from its file: then the file goes, and the next image builds.
@@ -883,10 +971,22 @@ def upscale_through_engine(
         release_engine(context.node_id)
         return upscale_with(pytorch)
     hold_engine(context.node_id)
+    op = route.op(context, model, engine, report)
+    if model.architecture.name in WHOLE_IMAGE_ONLY and tile_size <= 0:
+        # On TensorRT: MIGraphX has no program for these (NO_PROGRAM_ARCHS).
+        op = _whole_images_only(model, cast("TensorRTEngine", engine), op)
     try:
-        output = upscale_with(route.op(context, model, engine, report))
+        output = upscale_with(op)
     except Aborted:
         raise
+    except _NotWhole as e:
+        # Not the engine's failure: this model takes such an image on PyTorch.
+        release_engine(context.node_id)
+        output = upscale_with(pytorch)
+        tile = _engine_tile(model, tile_size, gpu_index)
+        where = (device, gpu_index, tile, _whole_images(model, tile_size, gpu_index))
+        _no_engine(context, model, where, str(e))
+        return output
     except Exception as e:
         logger.exception("%s: the %s failed on this image", route.input, route.made)
         error = e

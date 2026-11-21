@@ -20,4 +20,4 @@ master branch does (`file->read(p->rec.marker_points, p->rec.num_points) == p->r
 four-byte cases already read one point at a time. SHA-256 upstream / patched: `codestream/ojph_params.cpp`
 `df30d31c64a8bc0b53561c6f21f0e788c96d5e21642a2f4b7493f02552f5b3d3` /
 `5a74eb9c4291fd41cc39d335089ae0f768c81c99f001b8ca1cefdd39674d9e5f`. At the next OpenJPH refresh, take a release
-that carries upstream's fix and drop this patch (stand-in's ruling 9, 2026-10-23).
+that carries upstream's fix and drop this patch (decision of 2026-10-23).

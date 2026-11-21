@@ -14,6 +14,7 @@
 #include "run_kernels.h"
 #include "save_path.hpp"
 #include <pybind11/numpy.h>
+#include <pybind11/stl.h>
 #include <pybind11/stl/filesystem.h>
 #include <algorithm>
 #include <bit>
@@ -779,9 +780,10 @@ O save_prepare(py::dict g,py::tuple args) {
     Encoding encoded=encoding(g,args[0],args);
     return tagged(g,args,encoded.pillow?pillow_bytes(g,encoded,extension):encode(g,extension,encoded.image,encoded.params,encoded.png_effort),args[0]);
 }
-// LargeImageOutput.get_broadcast_data's previews of an enforced image (cn::image_preview, without the GIL): a list
-// of {"width", "height", "url"}, or None when the native path declines and the Python loop runs.
-O previews(O value) {
+// LargeImageOutput.get_broadcast_data's previews of an enforced image (cn::image_preview, without the GIL; full_size:
+// LargeImageOutput.full_size): a list of {"width", "height", "url"}, or None when the native path declines and the
+// Python loop runs. sizes: cn::image_preview::previews's (the views' widths; empty: every preview).
+O previews(O value,bool full_size,const std::vector<uint32_t>&sizes) {
     if(!cn::image_decode::enabled() || !py::isinstance<py::array>(value))return py::none();
     py::array a=py::reinterpret_borrow<py::array>(value);
     if(a.dtype().kind()!='f' || a.itemsize()!=4 || (a.ndim()!=2 && a.ndim()!=3) || !(a.flags()&py::array::c_style))return py::none();
@@ -792,7 +794,7 @@ O previews(O value) {
     {
         py::gil_scoped_release release;
         ok=cn::image_preview::previews(static_cast<const float*>(a.data()),uint32_t(a.shape(0)),uint32_t(a.shape(1)),
-            uint32_t(channels),out);
+            uint32_t(channels),full_size,out,sizes);
     }
     if(!ok)return py::none();
     py::list list;
@@ -1245,7 +1247,17 @@ void cn_bind_image_io(py::module_& module) {
     module.def("image_io_save_prepare",&save_prepare);module.def("image_io_orient",&orient_tag);
     module.def("image_io_cv_save",&cv_save,py::arg("g"),py::arg("path"),py::arg("image"),py::arg("params"),
         py::arg("png_effort")=0);
-    module.def("image_io_previews",&previews);
+    module.def("image_io_previews",&previews,py::arg("value"),py::arg("full_size")=false,
+        py::arg("sizes")=std::vector<uint32_t>{});
+    module.attr("image_io_full_size_preview_pixels")=py::int_(cn::image_preview::full_size_pixels);
+    module.attr("image_io_preview_centichars_per_pixel")=py::int_(cn::image_preview::preview_centichars_per_pixel);
+    module.attr("image_io_node_preview_chars")=py::int_(cn::image_preview::node_preview_chars);
+    // numpy_outputs.preview_shapes' native twin, which the tests compare.
+    module.def("image_io_preview_shapes",[](uint32_t height,uint32_t width){
+        py::list shapes;
+        for(const auto& shape:cn::image_preview::tier_shapes(height,width))shapes.append(py::make_tuple(shape.height,shape.width));
+        return shapes;
+    });
     module.def("image_io_decode_bytes",&decode_bytes);module.def("image_io_run_texconv",&run_texconv);
     module.def("image_io_dds_read",&dds_read);module.def("image_io_save_dds",&save_dds);module.def("image_io_dds_info",&dds_info);
     module.def("image_io_dds_read_all",&dds_read_all);module.def("image_io_save_dds_inputs",&save_dds_inputs);

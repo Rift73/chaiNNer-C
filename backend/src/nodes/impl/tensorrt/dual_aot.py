@@ -314,7 +314,11 @@ def row_sum_kernel(channels: int, sm: int) -> Any:
         compile_kernel(
             dual_row_sum_kernel.row_sum,
             {"x_ptr": "*bf16", "width": "i32", "out_ptr": "*fp32"},
-            {"channels": channels, **dual_row_sum_kernel.LAUNCH},
+            {
+                "channels": channels,
+                "block_c": 1 << (channels - 1).bit_length(),
+                **dual_row_sum_kernel.LAUNCH,
+            },
             sm,
             dual_row_sum_kernel.OPTIONS,
         ),
@@ -2026,6 +2030,10 @@ def attach(network: trt.INetworkDefinition, lowered: Lowered) -> None:
             tensors[tensor.name] = tensor
     outputs = {network.get_output(i).name for i in range(network.num_outputs)}
     namespace = getattr(trtp.op, NAMESPACE)
+    # The plugin layer that gave each name its tensor so far. Two chains can both write
+    # one sum (a residual that two Norms read): the later plugin's output takes the
+    # consumers over, and the earlier one's is renamed after its layer.
+    attached: dict[str, str] = {}
     for plugin in lowered.plugins:
         attributes = plugin.attributes
         call = getattr(namespace, plugin.op)
@@ -2035,7 +2043,10 @@ def attach(network: trt.INetworkDefinition, lowered: Lowered) -> None:
         layer.name = f"{plugin.op}/{plugin.outputs[0]}"
         for k, name in enumerate(plugin.outputs):
             stand_in = tensors[name]
-            stand_in.name = name + "/stand_in"
+            stand_in.name = (
+                f"{name}/{attached[name]}" if name in attached else name + "/stand_in"
+            )
+            attached[name] = layer.name
             replacement = layer.get_output(k)
             replacement.name = name
             tensors[name] = replacement

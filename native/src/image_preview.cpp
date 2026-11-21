@@ -19,6 +19,8 @@ namespace {
 constexpr int filter_box = 4;    // ResizeFilter.BOX
 constexpr int type_float32 = 0;  // native_buffers._TYPES
 constexpr int output_uint8 = 1;  // cn_pixels_convert_checked's uint8 output
+constexpr int sizes[] = {2048, 1024, 512, 256};  // get_broadcast_data's preview sizes
+constexpr double grace = 1.2;
 
 struct Pixels {
     const float *data;
@@ -61,23 +63,24 @@ std::string base64(std::span<const uint8_t> bytes) {
     return text;
 }
 
-// preview_encode(img, target_size, grace, lossless): a resize when a side exceeds target_size * grace, then
+// preview_encode(img, shape, lossless): a resize to `shape` (a tier_shapes entry) when the image has another, then
 // to_uint8(img) as a PNG (more than 3 channels, or lossless; chaiNNer-C's default PNG, cn::image_encode::png) or as
 // cv2.imencode's JPEG with OpenCV's defaults (quality 95, 4:2:0, baseline), as a data URL. `image` becomes the
 // encoded image, held in `owned` when resized.
-bool encode_step(Pixels &image, int target, double grace, bool lossless, std::vector<float> &owned, std::string &url) {
-    const double largest = target * grace;
-    if (image.width > largest || image.height > largest) {
-        const double f = std::max(double(image.width) / target, double(image.height) / target);
-        const auto side = [&](uint32_t value) {
-            return uint32_t(std::max(1.0, std::floor(double(value) / f + 0.5))); // max(1, round_half_up(value / f))
-        };
-        const uint32_t width = side(image.width), height = side(image.height);
+// The resize of encode_step alone, for a tier that is not encoded but a smaller one is made from.
+bool resize_step(Pixels &image, Shape shape, std::vector<float> &owned) {
+    if (shape.width != image.width || shape.height != image.height) {
+        const uint32_t width = shape.width, height = shape.height;
         std::vector<float> resized;
         if (!box_resize(image, height, width, resized)) return false;
         owned.swap(resized);
         image = Pixels{owned.data(), height, width, image.channels};
     }
+    return true;
+}
+
+bool encode_step(Pixels &image, Shape shape, bool lossless, std::vector<float> &owned, std::string &url) {
+    if (!resize_step(image, shape, owned)) return false;
     const size_t count = size_t(image.height) * image.width * image.channels;
     std::vector<uint8_t> pixels(count);
     int events = 0;
@@ -109,9 +112,7 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
 
 } // namespace
 
-bool previews(const float *data, uint32_t height, uint32_t width, uint32_t channels, std::vector<Preview> &out) {
-    static constexpr int sizes[] = {2048, 1024, 512, 256};
-    constexpr double grace = 1.2;
+std::vector<Shape> tier_shapes(uint32_t height, uint32_t width) {
     const uint32_t image_size = std::max(height, width);
     size_t start = std::size(sizes) - 1;
     for (size_t i = 0; i < std::size(sizes); ++i) {
@@ -124,11 +125,68 @@ bool previews(const float *data, uint32_t height, uint32_t width, uint32_t chann
             break;
         }
     }
+    std::vector<Shape> shapes;
+    Shape shape{height, width};
+    for (size_t i = start; i < std::size(sizes); ++i) {
+        // Each tier from the one before: resized when a side exceeds the size by more than the grace.
+        const int target = sizes[i];
+        if (shape.width > target * grace || shape.height > target * grace) {
+            const double f = std::max(double(shape.width) / target, double(shape.height) / target);
+            const auto side = [&](uint32_t value) {
+                return uint32_t(std::max(1.0, std::floor(double(value) / f + 0.5))); // max(1, round_half_up(value / f))
+            };
+            shape = Shape{side(shape.height), side(shape.width)};
+        }
+        shapes.push_back(shape);
+    }
+    return shapes;
+}
+
+uint64_t tier_pixels(uint32_t height, uint32_t width) {
+    uint64_t pixels = 0;
+    for (const Shape &shape : tier_shapes(height, width)) pixels += uint64_t(shape.height) * shape.width;
+    return pixels;
+}
+
+uint64_t full_size_cost(uint32_t height, uint32_t width) {
+    const uint64_t pixels = uint64_t(height) * width;
+    return std::max(height, width) > sizes[0] * grace && pixels <= full_size_pixels ? pixels : 0;
+}
+
+bool previews(const float *data, uint32_t height, uint32_t width, uint32_t channels, bool full_size,
+              std::vector<Preview> &out, const std::vector<uint32_t> &sizes) {
     Pixels image{data, height, width, channels};
     std::vector<float> owned;
-    for (size_t i = start; i < std::size(sizes); ++i) {
+    const std::vector<Shape> shapes = tier_shapes(height, width);
+    // Whether each tier, and the full-size preview, is made; a tier's format does not depend on it.
+    std::vector<bool> made(shapes.size(), sizes.empty());
+    bool full_shown = sizes.empty();
+    for (const uint32_t size : sizes) {
+        size_t tier = 0;
+        for (size_t i = shapes.size(); i-- > 0;)
+            if (shapes[i].width >= size) {
+                tier = i;
+                break;
+            }
+        made[tier] = true;
+        if (size > shapes[0].width) full_shown = true;
+    }
+    const bool full = full_size && full_size_cost(height, width) > 0;
+    if (full && full_shown) {
+        Preview preview{{}, width, height};
+        if (!encode_step(image, Shape{height, width}, true, owned, preview.url)) return false; // not resized
+        out.push_back(std::move(preview));
+    }
+    size_t last = 0;
+    for (size_t i = 0; i < shapes.size(); ++i)
+        if (made[i]) last = i;
+    for (size_t i = 0; i <= last; ++i) {
+        if (!made[i]) {
+            if (!resize_step(image, shapes[i], owned)) return false;
+            continue;
+        }
         Preview preview;
-        if (!encode_step(image, sizes[i], grace, i == start, owned, preview.url)) return false;
+        if (!encode_step(image, shapes[i], i == 0 && !full, owned, preview.url)) return false;
         preview.width = image.width;
         preview.height = image.height;
         out.push_back(std::move(preview));

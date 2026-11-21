@@ -31,7 +31,7 @@ if io_group is not None:
             "Load a TensorRT engine file (.engine, .trt, .plan), compressed by Save Engine or not. "
             "TensorRT engines are built for a specific GPU architecture and may not work "
             "on different GPUs. The node will warn you if there's a potential compatibility issue. "
-            "An RDUAL engine set (a video model's engines, from Build Engine) is one file, which "
+            "A video model's engine set (RDUAL, RSR; from Build Engine) is one file, which "
             "only chaiNNer-C reads; a damaged one, or one saved by another chaiNNer-C version, "
             "is refused before TensorRT reads it."
         ),

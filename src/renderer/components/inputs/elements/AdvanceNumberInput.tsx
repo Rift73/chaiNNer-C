@@ -79,6 +79,11 @@ interface AdvancedNumberInputProps {
     inputString: string;
     setInputString: (input: string) => void;
     setInput: (value: number) => void;
+    /**
+     * If given, a click of a stepper button sets its value through this at once (a seek bar's
+     * step) instead of with setInput after a pause.
+     */
+    onStep?: (value: number) => void;
     /** If given, committing an empty input calls this instead of using the default value. */
     onClear?: () => void;
 
@@ -106,6 +111,7 @@ export const AdvancedNumberInput = memo(
         inputString,
         setInputString,
         setInput,
+        onStep,
         onClear,
 
         onContextMenu,
@@ -233,7 +239,14 @@ export const AdvancedNumberInput = memo(
             if (e.target instanceof HTMLElement || e.target instanceof SVGElement) {
                 const buttonSelector = 'div.small-stepper > div[role=button]';
                 const isStepperButton = e.target.matches(`${buttonSelector}, ${buttonSelector} *`);
-                if (isStepperButton) {
+                if (isStepperButton && onStep) {
+                    cancelAutoCommit();
+                    const value = getNumericValue();
+                    if (value !== undefined) {
+                        changedSinceCommit.current = false;
+                        onStep(value);
+                    }
+                } else if (isStepperButton) {
                     autoCommit();
                 }
             }

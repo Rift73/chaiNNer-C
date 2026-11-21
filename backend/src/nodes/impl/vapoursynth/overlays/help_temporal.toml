@@ -350,6 +350,52 @@ beta = "How easily blocking is detected, block edges then insides. Higher finds 
 chroma_mode = "Colour planes: 0 the adaptive method, 1 the normal deblock, 2 the strong deblock. Example: 0"
 interlaced = "On for a clip of separated fields (from Split into fields (SeparateFields)), so each field is deblocked on its own."
 
+# ---------------------------------------------------------------- Rainbows and dot crawl
+
+[method."bifrost.Bifrost"]
+help = "Removes rainbows (cross-colour: shimmering colour stripes on fine detail of composite video) where the picture stands still: the image is cut into small blocks, and in a block whose brightness hardly changes from frame to frame a colour that swings back and forth is replaced by its steady value. Moving blocks keep their colour, or take it from the clip wired into Colour for moving areas from (for example the same clip through a stronger colour filter). Takes 8 to 16 bit integer YUV only; use Convert Format first for anything else. Order matters on telecined film: if the rainbows repeat on one frame in five, detelecine first and turn Fields apart off; if they change on every frame, run it right after Load Clip with Fields apart on (the default), then detelecine. Example: a DVD of an anime series with colour stripes on hair lines."
+
+[method."bifrost.Bifrost".docs]
+altclip = "Where Bifrost cannot work (moving blocks, and the right and bottom edges when the size is not a multiple of the block size), the colour comes from this clip. Empty: the clip's own colour stays there. It must have the clip's format, size and length. Example: the clip after a stronger colour denoise"
+luma_thresh = "A block counts as still, and is worked on, when its brightness changes by less than this per pixel, in 8-bit steps at any bit depth. Higher works on more of the picture and risks smearing slow motion. Empty uses 10.\n\nExample: `10`"
+variation = "How big a colour swing must be to count as a rainbow, in 8-bit steps at any bit depth. Higher leaves weaker rainbows and avoids touching real colour changes. Empty uses 5.\n\nExample: `5`"
+conservative_mask = "1: only pixels found to be rainbows are changed. Empty or 0: pixels with rainbows above and below them too, which catches more.\n\nExample: `1`"
+interlaced = "1 (empty means 1): the two fields of each frame are worked on apart, always as top field first, for rainbows added after telecine (they change on every frame); run it before detelecining. 0: whole frames, for progressive video or after detelecine when the rainbows repeat on one frame in five.\n\nExample: `0` after Detelecine"
+blockx = "Block width in pixels; a multiple of the colour subsampling and at least two colour samples wide (4 for 4:2:0). Smaller is usually better. Empty uses 4.\n\nExample: `4`"
+blocky = "Block height in pixels; a multiple of the colour subsampling and at least two colour samples tall (4 for 4:2:0). Empty uses 4.\n\nExample: `4`"
+
+[method."dedot.Dedot"]
+help = "Removes rainbows (colour stripes) and dot crawl (crawling dots along colour edges) of composite video by comparing each pixel with the two frames before and after it: where a value flips back and forth from frame to frame but is the same two frames away, it is averaged with its closer neighbour. Brightness and colour are handled apart; moving objects are left alone. Takes 8 to 16 bit integer YUV or gray only. Works best on progressive frames: after deinterlacing or detelecining. Example: a VHS or laserdisc capture with dot crawl on titles."
+
+[method."dedot.Dedot".docs]
+luma_2d = "Dot crawl: a pixel is checked only where it stands out from its neighbours left and right, or two rows up and down, by more than this, in 8-bit steps at any bit depth. Lower checks more pixels. 0 to 510; 510 leaves brightness untouched. Empty uses 20.\n\nExample: `20`"
+luma_t = "Dot crawl: how much a pixel may change two frames away (and between the frames before and after) and still be treated. Higher treats more pixels and risks touching motion. 0 to 255, in 8-bit steps. Empty uses 20.\n\nExample: `20`"
+chroma_t1 = "Rainbows: how much a colour may change two frames away (and between the frames before and after) and still be treated. Higher treats more pixels. 0 to 255, in 8-bit steps. Empty uses 15.\n\nExample: `15`"
+chroma_t2 = "Rainbows: how much a colour must differ from both neighbouring frames to count as a rainbow. Lower treats more pixels. 0 to 255; 255 leaves colour untouched (not together with a Dot threshold of 510). Empty uses 5.\n\nExample: `5`"
+
+[method."dotkill.DotKillS"]
+help = "Removes dot crawl (crawling dots along colour edges of composite video) from each frame on its own, so it is safe on most material, also after detelecining. Works on brightness (luma) only, and clips luma to the limited range 16-235 (scaled to the bit depth). Takes 8 to 16 bit integer YUV 4:2:0 or gray, at least 6x6 pixels. Example: Passes `4` after Detelecine step 1: field match (VFM)."
+
+[method."dotkill.DotKillS".docs]
+iterations = "How many times the filter runs. 1 to 4 usually works best; more can add artefacts. Values outside 1 to 10 are taken as 1 or 10. Empty uses 1.\n\nExample: `4`"
+
+[method."dotkill.DotKillT"]
+help = "Removes dot crawl and rainbows of telecined NTSC video (film at 24 fps put on 29.97 fps video by 3:2 pulldown) whose artefacts were added after the pulldown, as on most anime DVDs. It uses the repeated fields of the pulldown and, where blocks stand still, the neighbouring frames. Run it before detelecining, then Detelecine step 1 and 2 (optionally with Remove dot crawl, one frame (DotKillS) in between). Takes 8 to 16 bit integer YUV 4:2:0, at least 24x24. Each output frame gets the property DotKillTOffset, its pulldown phase, to check Pulldown phase with. Example: Pulldown phase `1`, Still block threshold `64`."
+
+[method."dotkill.DotKillT".docs]
+order = "Field order: 0 (empty) for most sources, 1 for the other order (untested by the plugin's author).\n\nExample: `0`"
+offset = "Where the clip starts in the 5-frame pulldown pattern, 0 to 4; other values stop the node with an error. Found by trying: the right one removes the most dots without new artefacts. Empty uses 0.\n\nExample: `1`"
+dupthresh = "How much a block may change between fields and still count as still, in 8-bit steps at any bit depth; 32 to 128 suit most sources. Too high gives strong artefacts. 0 makes it work as DotKillZ. Empty uses 64.\n\nExample: `64`"
+tratio = "When more than 1 in this many blocks change between fields, the neighbouring frame in that direction is not used. Higher makes fast motion less likely to give artefacts. Empty uses 3.\n\nExample: `3`"
+show = "1: draws the blocks taken as still, white where they blend with the next frame and black with the previous one, to check the settings. Empty or 0: off.\n\nExample: `1`"
+
+[method."dotkill.DotKillZ"]
+help = "Removes dot crawl and rainbows of telecined NTSC video whose artefacts were added after the 3:2 pulldown (most anime DVDs), from the pulldown's repeated fields alone. Only every other final frame is cleaned, but it rarely adds artefacts when the source fits. Run it before detelecining. Takes 8 to 16 bit integer YUV 4:2:0. Pick Remove dot crawl and rainbows, telecined (DotKillT) to clean more frames. Example: Pulldown phase `1`."
+
+[method."dotkill.DotKillZ".docs]
+order = "Field order: 0 (empty) for most sources, 1 for the other order (untested by the plugin's author).\n\nExample: `0`"
+offset = "Where the clip starts in the 5-frame pulldown pattern, 0 to 4; other values stop the node with an error. Found by trying. Empty uses 0.\n\nExample: `1`"
+
 [method."vsdenoise.decrease_size"]
 help = "YUV only. Blurs away grain only in very bright areas, where it is hard to see but costs bitrate, keeping edges with a mask. Meant to lower encoding size, not to clean the picture. Example: bright sky with fine grain before encoding."
 

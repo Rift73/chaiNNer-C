@@ -35,9 +35,9 @@ if utility_group is not None:
                 "Shape Info",
             ),
             TextOutput("Temporal Info").with_docs(
-                "For an RDUAL engine set (a video model's engines for one frame size):"
-                " its architecture, frame size, engines and plugin key. None for an"
-                " image engine.",
+                "For a video model's engine set (RDUAL, RSR; its engines for one frame"
+                " size): its architecture, frame size, engines and, for RDUAL, plugin key."
+                " None for an image engine.",
             ),
         ],
     )
@@ -71,8 +71,9 @@ if utility_group is not None:
         if temporal is not None:
             temporal_info = (
                 f"{temporal.architecture} engine set: {temporal.width}x{temporal.height}"
-                f" frames (width x height), engines {', '.join(temporal.parts)},"
-                f" plugins {temporal.plugin_key}"
+                f" frames (width x height), engines {', '.join(temporal.parts)}"
             )
+            if temporal.plugin_key:
+                temporal_info += f", plugins {temporal.plugin_key}"
 
         return scale, precision, gpu_arch, trt_version, shape_info, temporal_info

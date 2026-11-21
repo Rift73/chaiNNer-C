@@ -14,19 +14,14 @@ import torch
 from spandrel import ImageModelDescriptor
 
 from ..upscale.temporal_window import LOOK_AHEAD
-from .utils import safe_cuda_cache_empty
-
-
-def is_temporal(model: object) -> bool:
-    """Whether Upscale Image runs this model on its temporal path."""
-    return isinstance(model, ImageModelDescriptor) and model.architecture.id == "RDUAL"
-
-
-def context_applies(model: object) -> bool:
-    """Upscale Image's gate (`temporal_if` on its model input): the context items apply
-    to a temporal model, and to a value that is no model descriptor, which it cannot
-    judge."""
-    return not isinstance(model, ImageModelDescriptor) or is_temporal(model)
+from .utils import (
+    Output,
+    host_image,
+    safe_cuda_cache_empty,
+    to_host,
+    upload_frame,
+    window_memory,
+)
 
 
 def release_memory() -> None:
@@ -145,9 +140,9 @@ def window_peak(
 
 
 class RDUALWindows:
-    """Frames are RGB CHW float32 tensors on the device, outputs RGB CHW tensors left on
-    the device until their items take them (a warm-up item's never reaches the host),
-    and the state is the model's carried trunk state."""
+    """Frames are RGB CHW float32 tensors on the device, outputs `Output`s, each on its
+    way to the host as soon as its window ran (in page-locked memory on a GPU), and the
+    state is the model's carried trunk state."""
 
     def __init__(
         self,
@@ -188,16 +183,7 @@ class RDUALWindows:
         fits; on a CPU, `ahead`."""
         if self.device.type != "cuda":
             return ahead
-        # The settings' device may name no index: inside it, the calls take its index.
-        with torch.cuda.device(self.device):
-            free, total = torch.cuda.mem_get_info()
-            allocated = torch.cuda.memory_allocated()
-            reserved = torch.cuda.memory_reserved()
-            fraction = torch.cuda.get_per_process_memory_fraction()
-        available = free + reserved - allocated
-        available = min(available, int(fraction * total) - allocated)
-        if self.budget > 0:
-            available = min(available, self.budget - allocated)
+        available = window_memory(self.device, self.budget)
         flow_volume = self.options.get("flow_volume", True)
         hold_encodes = self.options.get("hold_encodes", True)
         for frames in range(ahead, -1, -1):
@@ -218,8 +204,7 @@ class RDUALWindows:
 
     def convert(self, frame: np.ndarray) -> torch.Tensor:
         # BGR HWC -> RGB CHW in 0..1 on the model's device
-        tensor = torch.from_numpy(np.ascontiguousarray(frame)).to(self.device)
-        return tensor.float().clamp(0, 1).permute(2, 0, 1).flip(0)
+        return upload_frame(frame, self.device)
 
     def run(
         self,
@@ -227,7 +212,7 @@ class RDUALWindows:
         keep: int,
         past: tuple[torch.Tensor, torch.Tensor] | None,
         _first: int,
-    ) -> tuple[list[torch.Tensor], torch.Tensor]:
+    ) -> tuple[list[Output], torch.Tensor]:
         # Every frame is computed in the window that reads it: the index is not needed.
         # spandrel before 0.4.2+c20 has no run_window: imported here, so that Upscale Image
         # loads with it and only an RDUAL model needs the newer spandrel.
@@ -245,11 +230,9 @@ class RDUALWindows:
                 **self.options,
                 **tiles,
             )
-        return list(outputs[0]), state
+            # Each kept frame's copy to the host starts now, behind the window's work.
+            return [to_host(output) for output in outputs[0]], state
 
     @staticmethod
-    def to_image(output: torch.Tensor) -> np.ndarray:
-        """RGB CHW -> BGR HWC float32 in 0..1."""
-        return np.ascontiguousarray(
-            output.clamp(0, 1).flip(0).permute(1, 2, 0).float().cpu().numpy()
-        )
+    def to_image(output: Output) -> np.ndarray:
+        return host_image(output)

@@ -92,6 +92,10 @@ FP16_ARCHS: Final[dict[str, tuple[str, ...]]] = {
     "HEART": (),  # 67.73 to 74.41; 65.76 to 71.06
     # Its Dynamic FP16 engine against eager FP32 (TF32 off), a trained 2x, 8 real crops
     "GaterV3": (),  # 68.56 on its worst crop, 70.49 on average
+    # Its context gates' upsampling in FP32 (wsr_export.py), as RSR's engine sets take it.
+    # A trained 2x Compact and a 4x Default (Halo), 8 real crops and 20 smooth gradients:
+    # 65.50 to 69.44, smooth 65.61 to 66.90; 65.23 to 69.45, smooth 67.08 to 67.80
+    "WSR": ("Compact", "Default"),
 }
 # The names, as a navi union of strings: a type knows no sizes.
 FP16_ARCHS_NAVI: Final = " | ".join(f'"{arch}"' for arch in FP16_ARCHS)

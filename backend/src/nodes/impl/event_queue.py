@@ -14,17 +14,31 @@ class LatestEventQueue(asyncio.Queue):
         # typeshed does not declare. Queue.__init__ has just made it an empty deque
         # and nothing is queued yet, so binding a fresh one here changes nothing.
         self._queue: deque[Any] = deque()
-        self._latest: dict[tuple[str, str], dict] = {}
+        self._latest: dict[
+            tuple[str, str, str | None, tuple[int, ...] | None], dict
+        ] = {}
 
     @staticmethod
     def _key(event: Any):
+        # A seek preview's events carry its request's token (server.py TokenEvents): the
+        # window waits for that run's node-broadcast, so they fold only into their own
+        # run's, never into another run's state of the node. A reduced run's broadcasts
+        # (previewSizes, the views' widths) fold only into broadcasts made for the same
+        # widths: the window tells a reduced picture from a complete one by it.
         if event.get("event") in {
             "node-start",
             "node-finish",
             "node-progress",
             "node-broadcast",
         }:
-            return event["event"], event["data"]["nodeId"]
+            data = event["data"]
+            sizes = data.get("previewSizes")
+            return (
+                event["event"],
+                data["nodeId"],
+                data.get("token"),
+                None if sizes is None else tuple(sizes),
+            )
         return None
 
     def put_nowait(self, item: Any):

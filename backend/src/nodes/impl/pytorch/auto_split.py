@@ -19,7 +19,15 @@ from ..upscale.bounded_tiler import BoundedTiler
 from ..upscale.tile_report import TileReport
 from ..upscale.white_pass import current_white_pass
 from .offload import offloaded
-from .utils import is_finite, is_out_of_memory, on_device, safe_cuda_cache_empty
+from .utils import (
+    PINNED_IMAGE_LIMIT,
+    host_image,
+    is_finite,
+    is_out_of_memory,
+    on_device,
+    safe_cuda_cache_empty,
+    to_host,
+)
 
 
 class _Stopped(Exception):
@@ -130,6 +138,19 @@ def _into_tensor(
 # Architectures measured at least 5 % slower on the CPU in FP32 with a channels-last
 # input (default networks at 128 px): they keep NCHW.
 _NCHW_ON_CPU = frozenset({"MixDehazeNet"})
+# Architectures measured faster on CUDA in FP16 with a contiguous channels-last input:
+# the batched form is channels-last in memory, but its batch stride (3, from the
+# unsqueeze of a permuted view) makes cuDNN take it for NCHW: the first convolution
+# writes NCHW, and cuDNN converts to NHWC and back around each FP16 convolution after it
+# (a 2x Compact at 960x540: 72 of 112 kernels move layouts, 18 of 76 from a contiguous
+# input). On an RTX 5090, the route per image through the node's output at 960x540 and
+# 1920x1080: a 2x WSR Compact 11.71 -> 10.02 and 51.23 -> 46.30 ms, a 4x WSR Default
+# (Halo) 28.40 -> 26.38 and 132.81 -> 128.61 ms, the same peak memory; a 2x Compact
+# 9.47 -> 6.89 and 38.71 -> 28.30 ms (peak 258 -> 131 MiB at 960x540), a 2x SPAN 9.72
+# -> 7.92 and 47.82 -> 36.77 ms, a 2x MoSR 108.90 -> 87.15 and 448.75 -> 354.36 ms; in
+# 512 px tiles a 1920x1080 image 10 % faster for Compact and SPAN. RMSE against FP32 the
+# same. FP32 is not measured and keeps NCHW; OmniSR copies its input itself (no change).
+_CHANNELS_LAST_ON_CUDA = frozenset({"WSR", "Compact", "SPAN", "MoSR"})
 
 
 def _channels_last_input(
@@ -139,13 +160,23 @@ def _channels_last_input(
     use_bf16: bool,
 ) -> bool:
     """Whether the forward gets its input in channels-last order: on the CPU in FP32
-    and in BF16. oneDNN's convolutions on NCHW reorder each layer's input and output;
-    in channels-last order they run on them directly (a 4x ESRGAN 1.5x faster, in FP32
-    as in BF16). GPUs and FP16 keep NCHW."""
-    return use_bf16 or (
-        device.type == "cpu"
-        and dtype == torch.float32
-        and model.architecture.id not in _NCHW_ON_CPU
+    and in BF16, and on CUDA in FP16 for _CHANNELS_LAST_ON_CUDA. oneDNN's convolutions
+    on NCHW reorder each layer's input and output; in channels-last order they run on
+    them directly (a 4x ESRGAN 1.5x faster, in FP32 as in BF16). Other GPU models and
+    precisions keep NCHW."""
+    architecture = model.architecture.id
+    return (
+        use_bf16
+        or (
+            device.type == "cpu"
+            and dtype == torch.float32
+            and architecture not in _NCHW_ON_CPU
+        )
+        or (
+            device.type == "cuda"
+            and dtype == torch.float16
+            and architecture in _CHANNELS_LAST_ON_CUDA
+        )
     )
 
 
@@ -169,6 +200,30 @@ def _interleaved(t: torch.Tensor) -> tuple[np.ndarray, bool] | None:
     )
 
 
+# The devices whose one-tile outputs _device_image makes where they are
+_DEVICE_IMAGE_TYPES = frozenset({"cuda"})
+
+
+def _device_image(t: torch.Tensor) -> np.ndarray | None:
+    """A (1, 3, H, W) or (3, H, W) float16 or float32 output on a GPU, finite and of at
+    most PINNED_IMAGE_LIMIT bytes as float32, as _interleaved's BGR float32 image made on
+    the device (layout, channel order and cast in one pass, no clamp: spandrel's call
+    clamped it) and copied into page-locked memory: the host makes no pass over it.
+    Bit for bit _interleaved's image. Else None: the caller converts it as before."""
+    if t.ndim == 4 and t.shape[0] == 1:
+        t = t[0]
+    if (
+        t.device.type not in _DEVICE_IMAGE_TYPES
+        or t.ndim != 3
+        or t.shape[0] != 3
+        or t.dtype not in (torch.float16, torch.float32)
+        or t.numel() * 4 > PINNED_IMAGE_LIMIT
+        or not bool(torch.isfinite(t).all())
+    ):
+        return None
+    return host_image(to_host(t, clamp=False))
+
+
 @torch.inference_mode()
 def pytorch_auto_split(
     img: np.ndarray,
@@ -189,6 +244,8 @@ def pytorch_auto_split(
     channels_last = _channels_last_input(model, device, dtype, use_bf16)
     # Other devices' float16 casts were not compared with the host's.
     tiles = current_white_pass() if not use_fp16 or device.type == "cuda" else None
+
+    img_h, img_w = img.shape[:2]
 
     def model_input(img: np.ndarray) -> np.ndarray:
         return cast_numpy(img, np.dtype(np.float16)) if use_fp16 else img
@@ -229,8 +286,13 @@ def pytorch_auto_split(
                     torch.cuda.synchronize(device)
                 raise Aborted()
 
-            # convert back to numpy
-            interleaved = _interleaved(output_tensor)
+            # convert back to numpy: an image that runs as one tile is made on the GPU,
+            # where it is; the tiles of a split image keep the host's interleave
+            whole = (region.width, region.height) == (img_w, img_h)
+            on_gpu = _device_image(output_tensor) if whole else None
+            interleaved = (
+                (on_gpu, True) if on_gpu is not None else _interleaved(output_tensor)
+            )
             if interleaved is not None and interleaved[1]:
                 result, finite = interleaved
             else:
