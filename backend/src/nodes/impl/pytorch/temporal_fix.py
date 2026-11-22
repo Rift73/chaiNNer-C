@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import weakref
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -106,6 +107,12 @@ def uses_fp16(device: torch.device) -> bool:
     )
 
 
+def even_size(height: int, width: int) -> tuple[int, int]:
+    """The size the network runs frames of height x width at: upstream needs even sizes,
+    so an odd one gains a row or column."""
+    return height + height % 2, width + width % 2
+
+
 def build_model(
     state: OrderedDict[str, torch.Tensor], hw: tuple[int, int], device: torch.device
 ) -> temporalfix_arch:
@@ -137,12 +144,19 @@ def window(index: int, first: int, last: int) -> list[int]:
 class FrameWindow(Generic[T]):
     """Per loop run: the converted frames of the last RADIUS items and of the frames read
     ahead. `ahead` is False when the loop cannot serve RADIUS frames ahead; every frame
-    is then the clip's last one, so the future side mirrors the past."""
+    is then the clip's last one, so the future side mirrors the past. `further`: the loop
+    serves one frame more, so the next item's window can be gathered (gather_ahead)
+    while this item's is computed."""
 
-    def __init__(self, ahead: bool, shape: tuple[int, ...]):
+    def __init__(self, ahead: bool, shape: tuple[int, ...], further: bool = False):
         self.ahead = ahead
+        self.further = ahead and further
         self.shape = shape
         self.frames: dict[int, T] = {}
+        # The next item's window, gathered ahead
+        self.next: tuple[int, list[T]] | None = None
+        # The PyTorch route's pyramid levels of the kept frames
+        self.levels = LevelCache()
 
     def gather(
         self,
@@ -153,6 +167,9 @@ class FrameWindow(Generic[T]):
         """The window of item `index`. `current` converts this item's frame; `peek(k)`
         converts the frame k items ahead, None when it does not exist (end of clip). A
         missing earlier item (one this node did not run for) starts the clip afresh."""
+        gathered, self.next = self.next, None
+        if gathered is not None and gathered[0] == index:
+            return gathered[1]
         frames = {i: f for i, f in self.frames.items() if i >= index - RADIUS}
         if index not in frames:
             frames[index] = current()
@@ -169,3 +186,50 @@ class FrameWindow(Generic[T]):
             last += 1
         self.frames = {i: f for i, f in frames.items() if i > index - RADIUS}
         return [frames[i] for i in window(index, first, last)]
+
+    def gather_ahead(
+        self, index: int, peek: Callable[[int], T | None]
+    ) -> list[T] | None:
+        """The window of item `index + 1`, gathered now (its newest frame read and
+        converted through `peek`, as gather's) and kept for that item's gather; None
+        when the loop does not serve the frame further ahead, or `index` is the clip's
+        last item."""
+        following = index + 1
+        if not self.further or following not in self.frames:
+            return None
+        frames = self.gather(
+            following, lambda: self.frames[following], lambda k: peek(k + 1)
+        )
+        self.next = (following, frames)
+        return frames
+
+
+class LevelCache:
+    """Per loop run on PyTorch: the six pyramid levels of each frame the window keeps,
+    known by the frame's object (FrameWindow hands on the same tensor for a frame while
+    it keeps it), so a sliding window computes one new frame's levels per output. The
+    levels are those of the weights that computed them (`source`, compared by equality):
+    other weights (a Strength that changes from item to item) start the cache afresh."""
+
+    def __init__(self) -> None:
+        self.source: Hashable = None
+        self.entries: dict[
+            int, tuple[weakref.ref[torch.Tensor], tuple[torch.Tensor, ...]]
+        ] = {}
+
+    def levels(
+        self,
+        frame: torch.Tensor,
+        source: Hashable,
+        compute: Callable[[torch.Tensor], tuple[torch.Tensor, ...]],
+    ) -> tuple[torch.Tensor, ...]:
+        if source != self.source:
+            self.source = source
+            self.entries = {}
+        entry = self.entries.get(id(frame))
+        if entry is not None and entry[0]() is frame:
+            return entry[1]
+        self.entries = {k: e for k, e in self.entries.items() if e[0]() is not None}
+        levels = compute(frame)
+        self.entries[id(frame)] = (weakref.ref(frame), levels)
+        return levels

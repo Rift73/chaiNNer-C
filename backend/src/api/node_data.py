@@ -211,6 +211,10 @@ class NodeData:
     # loop knows it before its first item, in place of temporal_context: a model that
     # reads more neighbours asks for them. None: temporal_context for every value.
     temporal_context_of: Callable[[object], tuple[int, int]] | None = None
+    # The loop's item window (its items read ahead plus one) the node needs for the gate
+    # input's known value, as temporal_context_of: the loop widens its own to it, never
+    # narrows it. 0, or None for every value: the loop's own window.
+    temporal_window_of: Callable[[object], int] | None = None
 
     @property
     def single_iterable_input(self) -> IteratorInputInfo:

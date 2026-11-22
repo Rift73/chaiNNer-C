@@ -33,6 +33,7 @@ from nodes.impl.pytorch.temporal_models import (
     context_of,
     is_temporal,
     pytorch_windows,
+    window_of,
 )
 from nodes.impl.pytorch.utils import is_out_of_memory, safe_cuda_cache_empty
 from nodes.impl.upscale.auto_split_tiles import (
@@ -114,7 +115,7 @@ ON_MIGRAPHX = migraphx_here()
 # Auto's error for a temporal model whose lightest whole-frame window does not fit; it
 # names the engine route only to a model that has one (auto_exhausted).
 AUTO_EXHAUSTED = (
-    "The temporal model (RDUAL, RSR, TFDAT) does not fit the GPU's memory at this frame size, even"
+    "The temporal model (RDUAL, RSR, SMoVSR, TFDAT) does not fit the GPU's memory at this frame size, even"
     " with no frames read ahead (RDUAL: also in its lighter memory modes and its smallest"
     " tiles)."
 )
@@ -131,7 +132,7 @@ def auto_exhausted(model: ImageModelDescriptor) -> str:
 # A temporal model runs one model pass per frame on RGB: Custom Scale and Separate Alpha
 # do not apply to it.
 TEMPORAL = Condition.type(
-    0, 'PyTorchModel { arch: "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" }'
+    0, 'PyTorchModel { arch: "RDUAL" | "RSR" | "SMoVSR" | "TFDAT" | "TFDATv2" }'
 )
 NOT_TEMPORAL = ~TEMPORAL
 
@@ -283,6 +284,15 @@ def upscale(
             " A Range of Load Video, and Run this frame, also read the frames the clips"
             " need before and after them, so each frame comes out as in a run of the whole"
             " video."
+        ),
+        (
+            "SMoVSR (a video model) carries what it saw forward from frame to frame and"
+            " also reads the frames after each one: inside a loop, each frame is upscaled"
+            " with up to 16 frames after it (fewer at the end of a video, which it then"
+            " reads whole, or when memory limits the frames read ahead), and a Range of"
+            " Load Video, and Run this frame, also run the 8 frames before them. Use TensorRT"
+            " Engine runs it through an engine set of three engines in FP16 with FP32"
+            " images, built for the video's frame size and kept in the Engine Cache."
         ),
         (
             "A temporal model upscales the color of an image with transparency and resizes its"
@@ -485,7 +495,7 @@ def upscale(
             image_type="""
                 let img = Input1;
                 let model = Input0;
-                let useCustomScale = match model.arch { "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" => false, _ => Input4 };
+                let useCustomScale = match model.arch { "RDUAL" | "RSR" | "SMoVSR" | "TFDAT" | "TFDATv2" => false, _ => Input4 };
                 let customScale = Input5;
 
                 let singleUpscale = convenientUpscale(model, img);
@@ -512,7 +522,7 @@ def upscale(
     key_info=KeyInfo.type(
         """
         let model = Input0;
-        let useCustomScale = match model.arch { "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" => false, _ => Input4 };
+        let useCustomScale = match model.arch { "RDUAL" | "RSR" | "SMoVSR" | "TFDAT" | "TFDATv2" => false, _ => Input4 };
         let customScale = Input5;
 
         let scale = if useCustomScale and model.scale >= 2 and model.inputChannels == model.outputChannels {
@@ -528,6 +538,7 @@ def upscale(
     temporal_context=(WARM_UP, LOOK_AHEAD),
     temporal_if=(0, context_applies),
     temporal_context_of=context_of,
+    temporal_window_of=window_of,
 )
 def upscale_image_node(
     context: NodeContext,

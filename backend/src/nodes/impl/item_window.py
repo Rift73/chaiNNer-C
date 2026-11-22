@@ -98,6 +98,15 @@ def window_size(cpus: int) -> tuple[int, str]:
     return min(max(cpus // 4, 6), 8), "auto"
 
 
+def widened_window(k: int, reason: str, wanted: int) -> tuple[int, str]:
+    """K and its reason after the loop's temporal nodes asked for a window of `wanted`
+    (NodeData.temporal_window_of): the automatic window widens to it when it is
+    larger; K = 1 (forced, or a read-ahead blocker) and an override stay as they are."""
+    if reason == "auto" and 1 < k < wanted:
+        return wanted, f"{reason}, widened for a temporal model"
+    return k, reason
+
+
 def affinity_cpus() -> int:
     """The CPUs this process may run on (its affinity mask), as the native pool counts.
 

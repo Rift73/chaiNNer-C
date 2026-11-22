@@ -35,6 +35,7 @@ from sanic.log import logger
 from api import NodeId, Progress
 from util import held, waiting
 
+from ..gpu_setup import gpu_setup_lock
 from ..native_framework_images import (
     interleaved_to_bfloat_planes,
     planar_to_interleaved,
@@ -43,7 +44,7 @@ from ..native_tensors import cast_into, cast_numpy
 from .cache import SharedCache, engines
 from .dual import input_alignment
 from .engine_info import deserialize_engine
-from .memory import CudaOutOfMemory, check_cuda, gpu_setup_lock
+from .memory import CudaOutOfMemory, check_cuda
 from .model import TensorRTEngine
 from .tiling import (
     TILE_ALIGNMENT,

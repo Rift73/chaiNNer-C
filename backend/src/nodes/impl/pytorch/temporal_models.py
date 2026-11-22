@@ -12,13 +12,14 @@ from spandrel import ImageModelDescriptor
 from ..upscale.temporal_window import LOOK_AHEAD, WARM_UP
 from .rdual_window import RDUALWindows, lighter_modes, takes_tiles
 from .rsr_window import RSRWindows
+from .smovsr_window import MAX_KEEP, SMoVSRWindows
 from .tfdat_window import TFDATWindows
 
 if TYPE_CHECKING:
     from packages.chaiNNer_pytorch.settings import PyTorchSettings
 
 # spandrel's ids of the temporal architectures.
-TEMPORAL_ARCHITECTURES = ("RDUAL", "RSR", "TFDAT", "TFDATv2")
+TEMPORAL_ARCHITECTURES = ("RDUAL", "RSR", "SMoVSR", "TFDAT", "TFDATv2")
 # Those that read a clip centred on each frame and carry nothing (tfdat_window.py).
 TFDAT_ARCHITECTURES = ("TFDAT", "TFDATv2")
 
@@ -28,11 +29,21 @@ TFDAT_ARCHITECTURES = ("TFDAT", "TFDATv2")
 def runtime(architecture: str) -> tuple[ModuleType, ModuleType] | None:
     """A temporal architecture's engine sets (`CHECKED_SCALES`, `engine_set`) and their
     session (`temporal_engine_upscale`), or None for another architecture."""
-    from ..tensorrt import rdual, rdual_session, rsr, rsr_session, tfdat, tfdat_session
+    from ..tensorrt import (
+        rdual,
+        rdual_session,
+        rsr,
+        rsr_session,
+        smovsr,
+        smovsr_session,
+        tfdat,
+        tfdat_session,
+    )
 
     return {
         "RDUAL": (rdual, rdual_session),
         "RSR": (rsr, rsr_session),
+        "SMoVSR": (smovsr, smovsr_session),
         "TFDAT": (tfdat, tfdat_session),
         "TFDATv2": (tfdat, tfdat_session),
     }.get(architecture)
@@ -57,20 +68,36 @@ def context_of(model: object) -> tuple[int, int]:
     """Upscale Image's context items (before, after) for a model the loop knows before
     its first item (`temporal_context_of`): TFDAT's and TFDATv2's clip reads half of it
     on each side of its centre, so a Range or Run this frame gets the frames the whole
-    video gives it; every other value keeps (WARM_UP, LOOK_AHEAD), RDUAL's and RSR's."""
+    video gives it; SMoVSR's sweeps read spandrel's WARM_UP frames before and its
+    LOOK_AHEAD after; every other value keeps (WARM_UP, LOOK_AHEAD), RDUAL's and RSR's."""
     if (
         isinstance(model, ImageModelDescriptor)
         and model.architecture.id in TFDAT_ARCHITECTURES
     ):
         side = model.model.clip_size // 2
         return side, side
+    if isinstance(model, ImageModelDescriptor) and model.architecture.id == "SMoVSR":
+        from spandrel.architectures import SMoVSR
+
+        return SMoVSR.WARM_UP, SMoVSR.LOOK_AHEAD
     return WARM_UP, LOOK_AHEAD
+
+
+def window_of(model: object) -> int:
+    """Upscale Image's item window for a model the loop knows before its first item
+    (`temporal_window_of`): SMoVSR's windows read spandrel's LOOK_AHEAD frames past the
+    MAX_KEEP they keep; every other value 0, the loop's own window."""
+    if isinstance(model, ImageModelDescriptor) and model.architecture.id == "SMoVSR":
+        from spandrel.architectures import SMoVSR
+
+        return MAX_KEEP + SMoVSR.LOOK_AHEAD
+    return 0
 
 
 def pytorch_windows(
     model: ImageModelDescriptor, settings: PyTorchSettings, budget: int
 ) -> tuple[
-    Callable[[], RDUALWindows | RSRWindows | TFDATWindows],
+    Callable[[], RDUALWindows | RSRWindows | SMoVSRWindows | TFDATWindows],
     Sequence[tuple[str, Callable[[Any], Any]]],
     bool,
 ]:
@@ -83,8 +110,12 @@ def pytorch_windows(
     FP16 as the node runs any model: when the settings' FP16 is on (they turn it off on
     the CPU) and the model supports it; else in FP32. TFDAT and TFDATv2 run as RSR, but
     without a memory estimate: each frame is one call on its clip, whatever the window,
-    and a tile would change what their optical flow and attention see."""
+    and a tile would change what their optical flow and attention see. SMoVSR runs as
+    RSR."""
     device = settings.device
+    if model.architecture.id == "SMoVSR":
+        use_fp16 = settings.use_fp16 and model.supports_half
+        return lambda: SMoVSRWindows(model, device, budget, use_fp16), (), False
     if model.architecture.id == "RSR":
         use_fp16 = settings.use_fp16 and model.supports_half
         return lambda: RSRWindows(model, device, budget, use_fp16), (), False

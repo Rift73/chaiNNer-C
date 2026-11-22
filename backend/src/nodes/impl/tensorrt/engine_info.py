@@ -8,9 +8,10 @@ import tensorrt as trt
 from cuda.bindings import runtime as cudart
 from sanic.log import logger
 
+from ..gpu_setup import gpu_setup_lock
 from .drft import load_plugins
 from .dual import input_alignment
-from .memory import check_cuda, get_cuda_compute_capability, gpu_setup_lock
+from .memory import check_cuda, get_cuda_compute_capability
 from .model import DeserializedEngine, TensorRTEngineInfo
 from .rdual_engine_set import engine_set, is_engine_set
 from .trt_logger import TRT_LOGGER

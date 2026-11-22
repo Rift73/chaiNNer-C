@@ -1,9 +1,9 @@
 # Minimal type stubs for the parts of tensorrt.plugin (TensorRT's Python plugin API)
-# that chaiNNer uses (nodes/impl/tensorrt/dual_aot.py).
+# that chaiNNer uses (nodes/impl/tensorrt/dual_aot.py, tfix_aot.py).
 
 from typing import Any, Callable, TypeVar
 
-from . import DataType
+from . import DataType, TensorFormat
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -23,6 +23,7 @@ class ShapeExprs:
 class TensorDesc:
     shape_expr: ShapeExprs
     dtype: DataType
+    format: TensorFormat
     def like(self) -> TensorDesc: ...
 
 class KernelLaunchParams:
@@ -46,6 +47,13 @@ class SymIntExprs(SymExprs):
 
 def register(plugin_id: str, lazy_register: bool = False) -> Callable[[_F], _F]: ...
 def aot_impl(plugin_id: str) -> Callable[[_F], _F]: ...
+def autotune(plugin_id: str) -> Callable[[_F], _F]: ...
+
+class AutoTuneCombination:
+    def __init__(
+        self, io_types: str, layouts: str = "LINEAR", tactics: list[int] | None = None
+    ) -> None: ...
+
 def from_shape_expr(
     shape_expr: tuple[ShapeExpr | int, ...], dtype: DataType
 ) -> TensorDesc: ...

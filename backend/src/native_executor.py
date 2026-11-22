@@ -61,6 +61,7 @@ from nodes.impl.item_window import (
     node_phases,
     output_nbytes,
     read_ahead_blocker,
+    widened_window,
     window_size,
 )
 from nodes.impl.native_graph import graph
@@ -103,6 +104,7 @@ from process import (
     temporal_applies,
     temporal_nodes,
     temporal_pure,
+    window_wanted,
     writer_directories,
 )
 from progress_controller import Aborted
@@ -582,6 +584,8 @@ class _Hooks:
         # The running loop's range: its first slot (context items before it) and that slot's item number.
         self.loop_first = 0
         self.loop_base = 0
+        # The item window the running loop's temporal nodes want (process.window_wanted); 0: the engine's own.
+        self.window_wanted = 0
         # The chosen item (Generator.chosen_item) of each generator whose items hook ran, by position.
         self.chosen: dict[int, int | None] = {}
         # The output of each generator whose items hook ran, by position, in the group's order, until the hook of its
@@ -834,6 +838,9 @@ class _Hooks:
                 self.contexts[node].unread_on_context = self.nodes[node].id in unread
             wanted = context_wanted(self.chain, loop, applying, gates)
             readers = {n: self.readers.pop(n) for n in members if n in self.readers}
+            if len(readers) == len(members):
+                # As process.Executor: when every generator of the group reads context items.
+                self.window_wanted = window_wanted(applying, gates)
             if (
                 len(readers) == len(members)
                 and wanted != (0, 0)
@@ -1095,6 +1102,7 @@ class _Hooks:
         self.loop_iterated = set()
         self.lineages = {}
         self.loop_first = self.loop_base = 0
+        self.window_wanted = 0
 
     def folder_sources(
         self, writers: list[int], iterated: list[int], computed: Callable[[int], bool]
@@ -1160,6 +1168,7 @@ class _Hooks:
                 cast("dict[str, object]", escaping_target_warning(self.chain, *target))
                 for target in escaping_targets(targets)
             ]
+        k, reason = widened_window(k, reason, self.window_wanted)
         logger.info("item window K=%d (%s)", k, reason)
         return k, reason, blocker, memory_budget() if k > 1 else 0, warnings
 

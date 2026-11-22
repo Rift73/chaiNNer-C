@@ -187,7 +187,13 @@ def to_host(output: Tensor, clamp: bool = True) -> Output:
     the host: on a GPU into page-locked memory, without waiting for the copy. The copy's
     end is recorded on that same stream, which is not the current device's when the
     output is on another GPU."""
-    image = swapped_channels(output.permute(1, 2, 0), clamp=clamp)
+    return host_copy(swapped_channels(output.permute(1, 2, 0), clamp=clamp))
+
+
+def host_copy(image: Tensor) -> Output:
+    """A contiguous image, on its device's current stream, copied to the host as it is:
+    on a GPU into page-locked memory, without waiting for the copy, whose end is recorded
+    on that stream."""
     if image.device.type != "cuda":
         return Output(image, None)
     note_pinned()

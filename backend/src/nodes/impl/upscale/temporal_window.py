@@ -93,7 +93,14 @@ class Executor(Protocol[F, O, S]):
     temporal path chooses its first step by it and caps each window's frames ahead by it,
     and running out of memory stays the second line of defence (`Fit`). Optional:
     `look_ahead`, the frames after a kept frame that its output reads (LOOK_AHEAD
-    without it): a window keeps the frames with that many after them in it."""
+    without it): a window keeps the frames with that many after them in it. Optional:
+    `grows`, True for a runtime whose state carries any window exactly into the next,
+    whatever their sizes: after a cold start its first window reads only as far as one
+    kept frame needs, and each carried window reads as far as twice the frames the one
+    before kept need, until it reads every frame it can (the first output after a seek
+    does not wait for a full window); its `fitting_ahead` also takes the state the
+    planner would carry into the window (None for a cold start), whose memory is
+    allocated already."""
 
     @property
     def key(self) -> Hashable: ...
@@ -110,12 +117,21 @@ class Executor(Protocol[F, O, S]):
 class WindowPlanner(Generic[F, O, S]):
     """Per loop run: the outputs of the last window not yet taken, and the state it
     carries with the index and frame it was carried from. `shape` and `key` are the
-    frames' and the executor's it plans for."""
+    frames' and the executor's it plans for; `grows` the executor's (`Executor`)."""
 
-    def __init__(self, shape: tuple[int, ...], key: Hashable, look_ahead: int):
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        key: Hashable,
+        look_ahead: int,
+        grows: bool = False,
+    ):
         self.shape = shape
         self.key = key
         self.look_ahead = look_ahead
+        self.grows = grows
+        # The frames the last window kept (`grows`).
+        self.kept = 0
         self.past: tuple[int, S, F] | None = None
         self.outputs: dict[int, O] = {}
 
@@ -167,7 +183,15 @@ class WindowPlanner(Generic[F, O, S]):
             return
         # Until the window succeeds the planner holds nothing: after a failure the next
         # item starts cold.
-        past, self.past, self.outputs = self.past, None, {}
+        # Only a state carried into this window stays referenced while it runs: a cold
+        # start's window does not hold the last one's state as well.
+        carried = None
+        if self.past is not None and self.past[0] == index - 1:
+            carried = (self.past[1], self.past[2])
+        self.past, self.outputs = None, {}
+        if self.grows:
+            wanted = 1 if carried is None else 2 * self.kept
+            ahead = min(ahead, wanted + self.look_ahead - 1)
         frames = [current()]
         ended = False
         for offset in range(1, ahead + 1):
@@ -177,15 +201,13 @@ class WindowPlanner(Generic[F, O, S]):
                 break
             frames.append(later)
         keep = len(frames) if ended else max(1, len(frames) - self.look_ahead)
-        carried = None
-        if past is not None and past[0] == index - 1:
-            carried = (past[1], past[2])
         outputs, state = run(frames, keep, carried, index)
         if len(outputs) != keep:
             raise ValueError(
                 f"a window keeping {keep} frames gave {len(outputs)} outputs"
             )
         self.past = (index + keep - 1, state, frames[keep - 1])
+        self.kept = keep
         self.outputs = {index + k: output for k, output in enumerate(outputs)}
 
 
@@ -194,7 +216,8 @@ class Fit:
     """How the temporal path fits a frame into the device's memory, from the node's
     Tile Size: `tiler` gives the first tile size and splits it (the whole frame when the
     tile covers it), and `shorten` (Auto) first shortens the window, to LOOK_AHEAD + 1
-    frames read ahead and then to none, before any tile, since a shorter window costs
+    frames read ahead and then to none (an executor that grows: `steps`), before any
+    tile, since a shorter window costs
     only speed and tiles cost seams at their borders. `lighter` are the executor's
     lighter memory modes, (a name, a function that makes the executor run in it), each
     lighter than the one before; at each tile size they come first, with the full
@@ -216,15 +239,28 @@ class Fit:
     min_tile: int = 128
 
     def steps(
-        self, width: int, height: int, ahead: int
+        self, width: int, height: int, ahead: int, look_ahead: int = 0
     ) -> list[tuple[int, tuple[int, int] | None, int]]:
         """(frames read ahead, tile or None for the whole frame, memory mode: 0 the
-        executor's own, k its k-th lighter one), in the order tried."""
+        executor's own, k its k-th lighter one), in the order tried. `look_ahead` is
+        that of an executor that `grows` (0: another one): its shorter windows first
+        halve the frames they keep, down to one, with all its look-ahead, then halve
+        the look-ahead down to none, in place of LOOK_AHEAD + 1 and none."""
         modes = [(ahead, m) for m in range(len(self.lighter) + 1)]
         if self.shorten:
+            shorter = {LOOK_AHEAD + 1, 0}
+            if look_ahead:
+                kept, reads = max(1, ahead + 1 - look_ahead), look_ahead
+                shorter = {0}
+                while kept > 1:
+                    kept //= 2
+                    shorter.add(look_ahead + kept - 1)
+                while reads > 0:
+                    reads //= 2
+                    shorter.add(reads)
             modes += [
                 (a, len(self.lighter))
-                for a in sorted({LOOK_AHEAD + 1, 0}, reverse=True)
+                for a in sorted(shorter, reverse=True)
                 if a < ahead
             ]
         tile = tuple(self.tiler.starting_tile_size(width, height, 3))
@@ -292,31 +328,67 @@ def temporal_upscale(
             if fit is None
             else [
                 step
-                for step in fit.steps(width, height, ahead)
+                for step in fit.steps(
+                    width,
+                    height,
+                    ahead,
+                    getattr(executor, "look_ahead", LOOK_AHEAD)
+                    if getattr(executor, "grows", False)
+                    else 0,
+                )
                 if step[1] is None or hasattr(executor, "with_tile")
             ]
         )
         run = _TemporalRun(img.shape, executor.key, steps)
+        if view is not None:
+            # Before the fit is measured: the last run's planner and its state go now.
+            view.state = run
+            wanted = getattr(executor, "look_ahead", LOOK_AHEAD)
+            if getattr(executor, "grows", False) and ahead < wanted:
+                logger.info(
+                    "Upscale Image: the temporal model reads %d frames ahead of the %d"
+                    " it wants at %dx%d, limited by the loop's window; its outputs are"
+                    " less exact",
+                    ahead,
+                    wanted,
+                    width,
+                    height,
+                )
         if fit is not None:
             run.at = _first_fitting(executor, fit, steps, height, width)
             if run.at:
                 _log_step(
                     "the temporal model's window would not fit;", fit, steps[run.at]
                 )
-        if view is not None:
-            view.state = run
     while True:
         step_ahead, tile, mode = run.steps[run.at]
         base = executor if fit is None else _step_executor(executor, fit, tile, mode)
-        fitting = getattr(base, "fitting_ahead", None)
-        if fitting is not None:
-            step_ahead = min(step_ahead, max(0, fitting((height, width), step_ahead)))
+        grows = getattr(base, "grows", False)
         if run.planner is None or run.planner.key != base.key:
             run.planner = WindowPlanner(
-                img.shape, base.key, getattr(base, "look_ahead", LOOK_AHEAD)
+                img.shape, base.key, getattr(base, "look_ahead", LOOK_AHEAD), grows
             )
         planner = run.planner
-        kept = planner.past, dict(planner.outputs)
+        # The state this item's window would carry on (None: it starts cold), which a
+        # retry keeps: a cold start's window does not hold the last state while it runs.
+        past = planner.past
+        if past is not None and (view is None or past[0] != view.index - 1):
+            past = None
+            if view is not None and view.index not in planner.outputs:
+                # This item's window starts cold: the last state goes before the fit
+                # is measured, not only before the window runs.
+                planner.past = None
+        fitting = getattr(base, "fitting_ahead", None)
+        if fitting is not None:
+            # An executor that grows counts the state carried into the window as part
+            # of the window's memory, already allocated.
+            fitted = (
+                fitting((height, width), step_ahead, None if past is None else past[1])
+                if grows
+                else fitting((height, width), step_ahead)
+            )
+            step_ahead = min(step_ahead, max(0, fitted))
+        kept = past, dict(planner.outputs)
         try:
             out = _item(context, img, base, planner, step_ahead, padding)
         except Exception as error:
@@ -348,14 +420,17 @@ def _first_fitting(
     width: int,
 ) -> int:
     """The first step whose frames ahead fit by the executor's `fitting_ahead`, before
-    any window runs; 0 when the executor cannot tell, and the last step when none fits."""
+    any window runs; 0 when the executor cannot tell, and the last step when none fits.
+    For an executor that `grows`, whose windows carry exactly whatever their sizes, a
+    step fits as soon as a window of one frame does: `fitting_ahead` then caps each
+    window's frames ahead, rather than a shorter step for the whole run."""
     for at, (ahead, tile, mode) in enumerate(steps):
-        fitting = getattr(
-            _step_executor(executor, fit, tile, mode), "fitting_ahead", None
-        )
+        base = _step_executor(executor, fit, tile, mode)
+        fitting = getattr(base, "fitting_ahead", None)
         if fitting is None:
             return 0
-        if fitting((height, width), ahead) >= ahead:
+        fitted = fitting((height, width), ahead)
+        if fitted >= ahead or (fitted >= 0 and getattr(base, "grows", False)):
             return at
     return len(steps) - 1
 

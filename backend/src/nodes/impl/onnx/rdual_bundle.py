@@ -1,7 +1,7 @@
 """A video model's ONNX bundle: the bytes of the `OnnxModel` Convert To ONNX gives for an
-RDUAL or RSR model at one input size. It holds rdual_export.py's or rsr_export.py's
-output (each part's model.onnx and weights.bin, and the manifest export.json, whose
-"architecture" names RSR; a manifest without it is RDUAL's) in the engine set's
+RDUAL, RSR or SMoVSR model at one input size. It holds rdual_export.py's, rsr_export.py's
+or smovsr_export.py's output (each part's model.onnx and weights.bin, and the manifest
+export.json, whose "architecture" names RSR or SMoVSR; a manifest without it is RDUAL's) in the engine set's
 container layout (rdual_engine_set.pack_container) with its own magic (which names
 RDUAL, the first). Save Model writes it as one file, Load Model reads it, and only Build
 Engine uses it (the architecture's engine worker builds the engine set from the files
@@ -78,7 +78,7 @@ def write(data: bytes, folder: Path) -> dict[str, Any]:
 
 def load(data: bytes) -> OnnxGeneric:
     """The ONNX model of a bundle: its architecture's fixed input size and scale, in
-    mixed precision (RDUAL) or FP16 with FP32 images (RSR)."""
+    mixed precision (RDUAL) or FP16 with FP32 images (the others)."""
     manifest, opset, _ = unpack(data)
     arch = architecture(manifest)
     height, width = int(manifest["height"]), int(manifest["width"])

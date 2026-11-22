@@ -35,7 +35,7 @@ if utility_group is not None:
                 "Shape Info",
             ),
             TextOutput("Temporal Info").with_docs(
-                "For a video model's engine set (RDUAL, RSR; its engines for one frame"
+                "For a video model's engine set (RDUAL, RSR, SMoVSR, TFDAT; its engines for one frame"
                 " size): its architecture, frame size, engines and, for RDUAL, plugin key."
                 " None for an image engine.",
             ),
@@ -69,9 +69,11 @@ if utility_group is not None:
         temporal = info.temporal
         temporal_info = "None"
         if temporal is not None:
+            # A part whose name holds a dot is data, not an engine (tfix_cut.LAYOUT)
+            engines = [part for part in temporal.parts if "." not in part]
             temporal_info = (
                 f"{temporal.architecture} engine set: {temporal.width}x{temporal.height}"
-                f" frames (width x height), engines {', '.join(temporal.parts)}"
+                f" frames (width x height), engines {', '.join(engines)}"
             )
             if temporal.plugin_key:
                 temporal_info += f", plugins {temporal.plugin_key}"

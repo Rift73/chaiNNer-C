@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from threading import Lock
 from typing import Any
 
 from cuda.bindings import runtime as cudart
-
-# TensorRT synchronizes the GPU's streams when it deserializes an engine or makes or
-# destroys an execution context, which invalidates a CUDA graph capture on any thread:
-# these take turns, across engines.
-gpu_setup_lock = Lock()
 
 
 class CudaOutOfMemory(RuntimeError):

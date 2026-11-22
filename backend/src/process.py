@@ -96,6 +96,7 @@ from nodes.impl.item_window import (
     output_nbytes,
     read_ahead_blocker,
     serial_producer,
+    widened_window,
     window_size,
 )
 from nodes.utils.utils import split_file_path
@@ -1759,6 +1760,20 @@ def context_wanted(
     )
 
 
+def window_wanted(temporal: Iterable[Node], gates: Mapping[NodeId, object]) -> int:
+    """
+    The item window the loop's temporal nodes whose context applies want: the largest temporal_window_of for a known gate's value (`gates`), 0 when none asks.
+    """
+    return max(
+        (
+            of(gates[node.id])
+            for node in temporal
+            if (of := node.data.temporal_window_of) is not None and node.id in gates
+        ),
+        default=0,
+    )
+
+
 class _ItemPlanner:
     """
     Which iterated nodes of a generator group run ahead for a later item, and their jobs; then the prepare phases of its sinks that registered them.
@@ -2597,10 +2612,11 @@ class Executor:
         first: int,
         end: int | None,
         context_nodes: frozenset[NodeId],
+        wanted: int,
         stops: int,
     ) -> tuple[ItemWindow | None, str | None]:
         """
-        Decides the group's item window K at the range's second slot (slot 1 without context items) and logs it.
+        Decides the group's item window K at the range's second slot (slot 1 without context items) and logs it: a window that reads ahead widens to `wanted`, the window its temporal nodes want (window_wanted), when that is larger.
 
         K = 1 builds no window and resolves no path. Else the writers' folder nodes not computed yet run first (folder_sources). Returns the window and the read-ahead blocker that set K = 1, if one did. The window learns the context items (before `first`, from `end` on), where it computes ahead only `context_nodes`.
         """
@@ -2653,6 +2669,7 @@ class Executor:
             )
             for writer, folder in escaping:
                 self.queue.put(escaping_target_warning(self.chain, writer, folder))
+        k, reason = widened_window(k, reason, wanted)
         logger.info("item window K=%d (%s)", k, reason)
         self.__item_bytes = None
         if k == 1:
@@ -2969,6 +2986,8 @@ class Executor:
         context_nodes: frozenset[NodeId] = frozenset()
         unread: frozenset[NodeId] = frozenset()
         before = after = 0
+        # The item window those temporal nodes want (window_wanted); 0: the loop's own.
+        window_size_wanted = 0
         # Each generator's collectors, side-effect nodes and the nodes it iterates (itself included).
         reached = {node.id: self.__get_iterated_nodes(node) for node in generator_nodes}
         group_iterated = {n.id for _, _, nodes in reached.values() for n in nodes}
@@ -3007,6 +3026,7 @@ class Executor:
             wanted = context_wanted(
                 self.chain, group_iterated, temporal_nodes, gates or {}
             )
+            window_size_wanted = window_wanted(temporal_nodes, gates or {})
             if wanted != (0, 0) and all(
                 generator.expected_length > 0 for generator in readers.values()
             ):
@@ -3087,6 +3107,7 @@ class Executor:
                 first,
                 end,
                 context_nodes,
+                window_size_wanted,
             ),
             first=first,
             base=bases.pop() if len(bases) == 1 else 0,

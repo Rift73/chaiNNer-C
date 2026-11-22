@@ -225,7 +225,7 @@ class StageExecution:
         fresh = False
         entry = self.graphs.get(key)
         if entry is None:
-            from nodes.impl.tensorrt.memory import gpu_setup_lock
+            from nodes.impl.gpu_setup import gpu_setup_lock
 
             if stage.context_taken:
                 with gpu_setup_lock:

@@ -109,7 +109,7 @@ PRECISION_APPLIES = Condition.type(
 SHAPE_APPLIES = Condition.type(
     0,
     'OnnxModel { arch: invStrSet("RDUAL") & invStrSet("RSR") & invStrSet("TFDAT")'
-    ' & invStrSet("TFDATv2") }',
+    ' & invStrSet("TFDATv2") & invStrSet("SMoVSR") }',
     if_not_connected=True,
 )
 
@@ -126,7 +126,7 @@ if utility_group is not None:
             "It is recommended to save the built engine for reuse, as building is slow.",
             "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
             "An ONNX from Convert To ONNX builds in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown; an earlier ESRGAN ONNX in FP16 also builds with the faster layout a new conversion has.",
-            "An RDUAL ONNX from Convert To ONNX (a video model's four parts for one frame size) builds into one engine set: four engines with their TensorRT plugins (Triton kernels compiled for your GPU), carried as one engine by Save Engine and Load Engine. Its frame size and mixed precision are its own, so Precision and the shape inputs do not apply and are hidden; Workspace (0: 8 GiB), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. An RSR ONNX (three parts) builds the same way into an engine set of three engines, without plugins, in FP16 with FP32 images, and a TFDAT or TFDATv2 ONNX (one part) into an engine set of one engine.",
+            "An RDUAL ONNX from Convert To ONNX (a video model's four parts for one frame size) builds into one engine set: four engines with their TensorRT plugins (Triton kernels compiled for your GPU), carried as one engine by Save Engine and Load Engine. Its frame size and mixed precision are its own, so Precision and the shape inputs do not apply and are hidden; Workspace (0: 8 GiB), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. An RSR ONNX (three parts) builds the same way into an engine set of three engines, without plugins, in FP16 with FP32 images, an SMoVSR ONNX (three parts) the same way as RSR's, and a TFDAT or TFDATv2 ONNX (one part) into an engine set of one engine.",
             "A legacy DRFT ONNX from Convert To ONNX also builds in its own mixed precision, with chaiNNer-C's DRFT TensorRT plugins (chaiNNer-C loads them with the engine; another program needs the plugin library too). Its sizes, Fixed or Dynamic, must be multiples of the ONNX's alignment and at least its minimum size on each side (Build Engine says which if not). Precision does not apply; Workspace (0: TensorRT's default), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
         ],
         icon="BsNvidia",
@@ -625,16 +625,21 @@ def build_temporal_engine(
 ) -> TensorRTEngine:
     """A video model's engine set (rdual_engine_set.py) of an ONNX bundle
     (rdual_bundle.py): the bundle's parts written out and built by its architecture's
-    worker (rdual_engine_worker.py, rsr_engine_worker.py), then packed. The bundle fixes
+    worker (rdual_engine_worker.py, rsr_engine_worker.py, which builds SMoVSR's and TFDAT's
+    too), then packed. The bundle fixes
     the frame size and precision; the node's workspace, TF32, sparsity, optimization
     level and tiling optimization apply."""
     # These import PyTorch, which the TensorRT package loads only for this.
-    from nodes.impl.tensorrt import rdual, rsr, tfdat
+    from nodes.impl.tensorrt import rdual, rsr, smovsr, tfdat
 
     architecture = rdual_bundle.architecture(rdual_bundle.unpack(onnx_model.bytes)[0])
-    sets = {"RDUAL": rdual, "RSR": rsr, "TFDAT": tfdat, "TFDATv2": tfdat}.get(
-        architecture
-    )
+    sets = {
+        "RDUAL": rdual,
+        "RSR": rsr,
+        "SMoVSR": smovsr,
+        "TFDAT": tfdat,
+        "TFDATv2": tfdat,
+    }.get(architecture)
     if sets is None:
         raise ValueError(
             f"This ONNX bundle is of {architecture}, which this chaiNNer-C does not"

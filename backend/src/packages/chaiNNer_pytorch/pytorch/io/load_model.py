@@ -49,13 +49,26 @@ class ReadModel:
     identity: Hashable
 
 
+def _load_file(path: Path, device: torch.device) -> ModelDescriptor:
+    """spandrel's model of the file at `path` on `device`, with the training settings
+    the file records beside its weights where the architecture needs them (SMoVSR's
+    bound on its carried state), which spandrel's loader does not see."""
+    model = ModelLoader(device).load_from_file(path)
+    if model.architecture.id == "SMoVSR":
+        # spandrel before 0.4.2+c25 has no SMoVSR, and no model of it to load.
+        from spandrel.architectures.SMoVSR import apply_training_settings
+
+        apply_training_settings(model, path)
+    return model
+
+
 def read_model(path: Path, device: torch.device) -> ReadModel:
     try:
         logger.debug(f"Reading state dict from path: {path}")
 
         identity = file_identity(path)
         with skip_random_init():
-            return ReadModel(path, ModelLoader(device).load_from_file(path), identity)
+            return ReadModel(path, _load_file(path, device), identity)
     except Exception as e:
         raise ValueError(
             f"Model {path.name} is unsupported by chaiNNer ({_described(e)})."
@@ -117,7 +130,7 @@ def full_precision(model: ModelDescriptor) -> ModelDescriptor | str | None:
         if file_identity(path) != identity:
             return f"{path.name} changed after Load Model loaded it"
         with skip_random_init():
-            reread = ModelLoader(torch.device("cpu")).load_from_file(path)
+            reread = _load_file(path, torch.device("cpu"))
     except Exception as e:
         logger.info(
             f"Reading {path.name} again in full precision failed", exc_info=True
@@ -158,13 +171,15 @@ def _derived_in_eval(model: torch.nn.Module) -> frozenset[str]:
     """`model` in evaluation mode, and the state's tensors that this replaced: weights
     a module derives from others there (SPAN's and GaterV3's Conv3XC fuse their
     branches into eval_conv), which a file may hold from before its last training
-    steps. Pointers only: nothing is copied."""
-    before = {key: value.data_ptr() for key, value in model.state_dict().items()}
+    steps. The state's tensors from before are held (views: nothing is copied) until
+    the comparison, so that no new weight takes a freed one's address: on a GPU the
+    caching allocator hands a replaced weight's memory straight to its replacement."""
+    before = model.state_dict()
     model.eval()
     return frozenset(
         key
         for key, value in model.state_dict().items()
-        if before.get(key) != value.data_ptr()
+        if key not in before or before[key].data_ptr() != value.data_ptr()
     )
 
 

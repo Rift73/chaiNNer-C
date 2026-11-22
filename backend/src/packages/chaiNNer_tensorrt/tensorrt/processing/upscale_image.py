@@ -36,12 +36,38 @@ def context_of(engine: object) -> tuple[int, int]:
     """Upscale Image's context items (before, after) for an engine the loop knows before
     its first item (`temporal_context_of`), as PyTorch's Upscale Image gives its model's
     (temporal_models.context_of): a TFDAT or TFDATv2 set's clip reads half of it on each
-    side of its centre; every other value keeps (WARM_UP, LOOK_AHEAD)."""
+    side of its centre; an SMoVSR set warms up and reads ahead as spandrel's SMoVSR
+    says; every other value keeps (WARM_UP, LOOK_AHEAD)."""
     if isinstance(engine, TensorRTEngine) and engine.info.temporal is not None:
         side = engine.info.temporal.clip_size // 2
         if side > 0:
             return side, side
+        if engine.info.temporal.architecture == "SMoVSR":
+            # spandrel, which image engines do not need, only for an SMoVSR set
+            from spandrel.architectures.SMoVSR import LOOK_AHEAD as AHEAD
+            from spandrel.architectures.SMoVSR import WARM_UP as WARM
+
+            return WARM, AHEAD
     return WARM_UP, LOOK_AHEAD
+
+
+def window_of(engine: object) -> int:
+    """Upscale Image's item window for an engine the loop knows before its first item
+    (`temporal_window_of`), as PyTorch's Upscale Image gives its model's
+    (temporal_models.window_of): an SMoVSR set's windows read spandrel's LOOK_AHEAD
+    frames past the MAX_KEEP they keep; every other value 0, the loop's own window."""
+    if (
+        isinstance(engine, TensorRTEngine)
+        and engine.info.temporal is not None
+        and engine.info.temporal.architecture == "SMoVSR"
+    ):
+        # PyTorch and spandrel, which image engines do not need, only for an SMoVSR set
+        from spandrel.architectures.SMoVSR import LOOK_AHEAD as AHEAD
+
+        from nodes.impl.pytorch.smovsr_window import MAX_KEEP
+
+        return MAX_KEEP + AHEAD
+    return 0
 
 
 def engine_upscale(
@@ -182,6 +208,7 @@ if processing_group is not None:
         temporal_context=(WARM_UP, LOOK_AHEAD),
         temporal_if=(0, context_applies),
         temporal_context_of=context_of,
+        temporal_window_of=window_of,
     )
     def upscale_image_node(
         context: NodeContext,

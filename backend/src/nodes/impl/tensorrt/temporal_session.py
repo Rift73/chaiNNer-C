@@ -1,7 +1,7 @@
 """What the run-time sessions of the temporal engine sets (rdual_session.py,
-rsr_session.py) share: an engine of a set with its context and CUDA graphs (`Part`),
-the session's memory arithmetic (`WindowMemory`), its outputs on their way to the host,
-and `SetSession`, the executor of Upscale Image's temporal path
+rsr_session.py, smovsr_session.py) share: an engine of a set with its context and CUDA
+graphs (`Part`), the session's memory arithmetic (`WindowMemory`), its outputs on their
+way to the host, and `SetSession`, the executor of Upscale Image's temporal path
 (temporal_window.Executor) minus what an architecture's engines compute per window.
 
 Every frame index owns a slot of buffers (a ring of `slots` frames, frame i in slot
@@ -24,10 +24,11 @@ import torch
 
 from util import held
 
+from ..gpu_setup import gpu_setup_lock
 from ..pytorch.utils import Output, host_image, to_host, upload_frame
 from ..upscale.temporal_window import Fit
 from ..upscale.tiler import NoTiling
-from .memory import check_cuda, gpu_setup_lock
+from .memory import check_cuda
 from .model import TensorRTEngine
 from .rdual_engine_set import unpack
 
@@ -60,14 +61,18 @@ class WindowMemory:
     fixed: int
     per_frame: int
     carried: int
+    # The ring's slots beyond a window's frames (SetSession.CARRY_SLOTS)
+    extra_slots: int = 1
 
     def window_bytes(self, frames: int) -> int:
         """The bytes of a session that has run windows of up to `frames` frames."""
-        return self.fixed + self.carried + (frames + 1) * self.per_frame
+        return self.fixed + self.carried + (frames + self.extra_slots) * self.per_frame
 
     def longest_window(self, free: int) -> int:
         """The most frames a window may hold within `free` bytes; 0 if none fits."""
-        return max(0, (free - self.fixed - self.carried) // self.per_frame - 1)
+        return max(
+            0, (free - self.fixed - self.carried) // self.per_frame - self.extra_slots
+        )
 
 
 class Part:
@@ -106,7 +111,7 @@ class Part:
         self._capture_handle = check_cuda(
             cudart.cudaStreamCreateWithFlags(cudart.cudaStreamNonBlocking)
         )
-        self._capture_stream = torch.cuda.ExternalStream(
+        self.capture_stream = torch.cuda.ExternalStream(
             int(self._capture_handle), device=torch.cuda.current_device()
         )
 
@@ -139,6 +144,15 @@ class Part:
             graph.replay()
             return
         label = f"{self.architecture} {self.name}"
+        self.bind(tensors)
+        if not self.enqueue(stream.cuda_stream):
+            raise RuntimeError(f"{label} engine failed to run.")
+        stream.synchronize()
+        self.graphs[key] = capture_graph(self.enqueue, self, f"{label} engine")
+
+    def bind(self, tensors: Tensors) -> None:
+        """Set every binding's address to its tensor's, checked against the engine."""
+        label = f"{self.architecture} {self.name}"
         if set(tensors) != set(self.names):
             raise ValueError(
                 f"{label} engine bindings {sorted(tensors)} are not its"
@@ -157,32 +171,10 @@ class Part:
                 )
             if not self.context.set_tensor_address(name, tensor.data_ptr()):
                 raise RuntimeError(f"TensorRT rejected {self.name}/{name}'s address.")
-        if not self.context.execute_async_v3(stream.cuda_stream):
-            raise RuntimeError(f"{label} engine failed to run.")
-        stream.synchronize()
-        # As inference.py captures: this thread only, and not while TensorRT makes or
-        # frees a context or an engine (which synchronizes every stream). The capture
-        # records and runs nothing; this call's outputs are the run above, and every
-        # replay is launched on the caller's stream, in its order.
-        # No garbage collection meanwhile: it can free CUDA objects (graphs, events,
-        # page-locked blocks) whose release ends a capture.
-        graph = torch.cuda.CUDAGraph()
-        capture = self._capture_stream
-        with held(gpu_setup_lock), torch.cuda.stream(capture):
-            collecting = gc.isenabled()
-            gc.disable()
-            try:
-                graph.capture_begin(capture_error_mode="thread_local")
-                try:
-                    captured = self.context.execute_async_v3(capture.cuda_stream)
-                finally:
-                    graph.capture_end()
-            finally:
-                if collecting:
-                    gc.enable()
-        if not captured:
-            raise RuntimeError(f"{label} engine capture failed.")
-        self.graphs[key] = graph
+
+    def enqueue(self, stream: int) -> bool:
+        """The engine on its bound addresses, enqueued on the stream of handle `stream`."""
+        return bool(self.context.execute_async_v3(stream))
 
     def close(self) -> None:
         from cuda.bindings import runtime as cudart
@@ -192,6 +184,35 @@ class Part:
             del self.context
             del self.engine
         check_cuda(cudart.cudaStreamDestroy(self._capture_handle))
+
+
+def capture_graph(
+    enqueue: Callable[[int], bool], part: Part, label: str
+) -> torch.cuda.CUDAGraph:
+    """The CUDA graph of `enqueue` (its work enqueued on a stream handle), captured on
+    `part`'s capture stream, after a run of the same work has finished. As inference.py
+    captures: this thread only, and not while TensorRT makes or frees a context or an
+    engine (which synchronizes every stream). The capture records and runs nothing; the
+    call's outputs are the run before it, and every replay is launched on the caller's
+    stream, in its order. No garbage collection meanwhile: it can free CUDA objects
+    (graphs, events, page-locked blocks) whose release ends a capture."""
+    graph = torch.cuda.CUDAGraph()
+    capture = part.capture_stream
+    with held(gpu_setup_lock), torch.cuda.stream(capture):
+        collecting = gc.isenabled()
+        gc.disable()
+        try:
+            graph.capture_begin(capture_error_mode="thread_local")
+            try:
+                captured = enqueue(capture.cuda_stream)
+            finally:
+                graph.capture_end()
+        finally:
+            if collecting:
+                gc.enable()
+    if not captured:
+        raise RuntimeError(f"{label} capture failed.")
+    return graph
 
 
 def tensor_bytes(tensors: Sequence[torch.Tensor]) -> int:
@@ -213,10 +234,17 @@ class SetSession(Generic[SlotT]):
     buffers are page-locked when the device is a GPU.
 
     A subclass names its ARCHITECTURE, makes a frame's slot (`new_slot`) and runs a
-    window in `_run`; its forward sweep writes the "output" binding of its "fwdcore"
-    part."""
+    window in `_run`; the "output" binding of its OUTPUT_PART part makes each output
+    (its forward sweep's "fwdcore" unless it names another)."""
 
     ARCHITECTURE: ClassVar[str]
+    OUTPUT_PART: ClassVar[str] = "fwdcore"
+    # Whether `convert` puts each frame on the device (else it stays on the host until
+    # a slot takes it), for the memory a window's frames take there
+    FRAMES_ON_DEVICE: ClassVar[bool] = True
+    # The ring's slots beyond a window's frames: one for the frame before the window,
+    # whose slot holds the state carried into it
+    CARRY_SLOTS: ClassVar[int] = 1
 
     def __init__(
         self,
@@ -248,7 +276,7 @@ class SetSession(Generic[SlotT]):
         )
         for part in parts.values():
             part.use_memory(self._workspace)
-        self._output = parts["fwdcore"].tensor("output", device)
+        self._output = parts[self.OUTPUT_PART].tensor("output", device)
         self.slots: list[SlotT] = []
         # The frame indices whose work a later window may reuse (by kind), and the first
         # frame of the window that would continue the last.
@@ -260,8 +288,10 @@ class SetSession(Generic[SlotT]):
             fixed=resident
             + 2 * output
             + tensor_bytes([self._workspace, self._output, *shared]),
-            per_frame=tensor_bytes(probe.tensors()) + 3 * self.height * self.width * 4,
+            per_frame=tensor_bytes(probe.tensors())
+            + (3 * self.height * self.width * 4 if self.FRAMES_ON_DEVICE else 0),
             carried=2 * tensor_bytes([state]),
+            extra_slots=self.CARRY_SLOTS,
         )
         del probe
 
@@ -272,14 +302,18 @@ class SetSession(Generic[SlotT]):
     def key(self) -> Hashable:
         return self._key
 
-    def convert(self, frame: np.ndarray) -> torch.Tensor:
-        """A BGR HWC float32 frame of the set's size -> RGB CHW in 0..1 on the GPU."""
+    def check_frame(self, frame: np.ndarray) -> None:
+        """Raises for a frame that is not BGR HWC of the set's size."""
         if frame.shape != (self.height, self.width, 3):
             raise ValueError(
                 f"This {self.ARCHITECTURE} engine set takes {self.width}x{self.height}"
                 f" frames, not {frame.shape[1]}x{frame.shape[0]}: build one for this"
                 " size."
             )
+
+    def convert(self, frame: np.ndarray) -> torch.Tensor:
+        """A BGR HWC float32 frame of the set's size -> RGB CHW in 0..1 on the GPU."""
+        self.check_frame(frame)
         with torch.cuda.stream(self.stream):
             return upload_frame(frame, self.device)
 
@@ -348,13 +382,19 @@ class SetSession(Generic[SlotT]):
             raise ValueError(f"A window of {count} frames cannot keep {keep}.")
         torch.cuda.set_device(self.device)
         try:
-            self._ensure_slots(count + 1)
+            self._ensure_slots(count + self.CARRY_SLOTS)
             with torch.no_grad():
                 return self._run(frames, keep, past, first)
-        except BaseException:
-            self._done = {}
-            self._next = None
+        except BaseException as error:
+            if not self._keeps_work(error):
+                self._done = {}
+                self._next = None
             raise
+
+    def _keeps_work(self, _error: BaseException) -> bool:
+        """Whether the work the ring holds stays valid after a window failed with
+        `_error` (a later window may then continue it); by default none does."""
+        return False
 
     def _run(
         self,
@@ -415,7 +455,9 @@ def open_set(
     parts: dict[str, Part] = {}
     try:
         for name in temporal.parts:
-            parts[name] = Part(runtime, data[name], name, architecture)
+            # A part whose name holds a dot is data the session reads (tfix_cut.LAYOUT)
+            if "." not in name:
+                parts[name] = Part(runtime, data[name], name, architecture)
         resident = free - torch.cuda.mem_get_info(gpu_index)[0]
         return session(
             parts,
@@ -455,6 +497,7 @@ __all__ = [
     "Part",
     "SetSession",
     "WindowMemory",
+    "capture_graph",
     "close_parts",
     "open_set",
     "set_fit",

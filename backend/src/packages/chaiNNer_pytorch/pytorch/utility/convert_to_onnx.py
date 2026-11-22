@@ -141,13 +141,14 @@ def _keep_export(
 
 # DUAL and the video models convert to TensorRT-only ONNX, of the TensorRT Shape inputs
 IS_DUAL = Condition.type(
-    0, 'PyTorchModel { arch: "DUAL" | "RDUAL" | "RSR" | "TFDAT" | "TFDATv2" }'
+    0,
+    'PyTorchModel { arch: "DUAL" | "RDUAL" | "RSR" | "SMoVSR" | "TFDAT" | "TFDATv2" }',
 )
 # Shown until the model is known to be DUAL or a video model
 NOT_DUAL = Condition.type(
     0,
     'PyTorchModel { arch: invStrSet("DUAL") & invStrSet("RDUAL") & invStrSet("RSR")'
-    ' & invStrSet("TFDAT") & invStrSet("TFDATv2") }',
+    ' & invStrSet("SMoVSR") & invStrSet("TFDAT") & invStrSet("TFDATv2") }',
     if_not_connected=True,
 )
 # The models with DUAL's expert routing (High Quality)
@@ -172,7 +173,7 @@ FP16_ARCH_NAMES = ", ".join(
         "The ONNX records its architecture and precision, so Build Engine and Build Program build it in that precision with no Precision to pick, also after it is saved and loaded again.",
         "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; the conversion reads its file again for its FP32 weights (if the file changed since, it exports the FP16 weights, and the log says so).",
         "A legacy DRFT model (LayerNorm, not i-LN) converts to a TensorRT-only ONNX with chaiNNer-C's DRFT TensorRT plugins, which ONNX Runtime cannot run: its precision is fixed and mixed (FP16 with BF16 attention, FP32 input and output), its opset is 20, it takes every input size from 64 px (twice the window for larger windows), and Opset and Verify do not apply to it.",
-        "An RDUAL model (a video model) converts to TensorRT-only ONNX parts for one frame size, with TensorRT Shape Fixed at the video's height and width (any size; Dynamic is refused). The four parts and their manifest are one ONNX model, which Build Engine builds into one engine set and Save Model writes as one file that only chaiNNer-C reads. An RSR model (a video model) converts the same way, into three parts in FP16 with FP32 images, and a TFDAT or TFDATv2 model (a video model reading a clip of frames around each one) into one part in FP16 with FP32 images.",
+        "An RDUAL model (a video model) converts to TensorRT-only ONNX parts for one frame size, with TensorRT Shape Fixed at the video's height and width (any size; Dynamic is refused). The four parts and their manifest are one ONNX model, which Build Engine builds into one engine set and Save Model writes as one file that only chaiNNer-C reads. An RSR or SMoVSR model (a video model) converts the same way, into three parts in FP16 with FP32 images, and a TFDAT or TFDATv2 model (a video model reading a clip of frames around each one) into one part in FP16 with FP32 images.",
         "It is recommended to save converted models as a separate step, then load the converted models instead of converting them every time you run the chain.",
         "Note: Converted models are not guaranteed to work with other programs that support ONNX models. This is for a variety of reasons and cannot be changed.",
     ],
@@ -230,7 +231,7 @@ FP16_ARCH_NAMES = ", ".join(
                 " at that size, padding smaller images. DUAL pools over its whole input,"
                 " so tiles and padding can change its output slightly against one whole"
                 " image.",
-                "RDUAL, RSR, TFDAT and TFDATv2 take Fixed only, at the video's frame size"
+                "RDUAL, RSR, SMoVSR, TFDAT and TFDATv2 take Fixed only, at the video's frame size"
                 " (any height and"
                 " width): their engines are built for one size.",
                 hint=True,
@@ -279,6 +280,7 @@ FP16_ARCH_NAMES = ", ".join(
                     "DUAL" => "mixed",
                     "RDUAL" => "mixed",
                     "RSR" => "fp16",
+                    "SMoVSR" => "fp16",
                     "TFDAT" => "fp16",
                     "TFDATv2" => "fp16",
                     "DRFT" => "mixed" | "fp32",
@@ -295,6 +297,7 @@ FP16_ARCH_NAMES = ", ".join(
                     "DUAL" => "opset20",
                     "RDUAL" => "opset20",
                     "RSR" => "opset20",
+                    "SMoVSR" => "opset20",
                     "TFDAT" => "opset20",
                     "TFDATv2" => "opset20",
                     _ => match opset {
@@ -353,7 +356,7 @@ def convert_to_onnx_node(
         _keep_export(model, context.node_id, key, _Export(result, verified=False))
         return result
 
-    if model.architecture.id in ("RDUAL", "RSR", "TFDAT", "TFDATv2"):
+    if model.architecture.id in ("RDUAL", "RSR", "SMoVSR", "TFDAT", "TFDATv2"):
         return _temporal_onnx(
             context, model, dual_shape, (dual_height, dual_width), dual_high_quality
         )
@@ -477,8 +480,8 @@ def _temporal_onnx(
     """A video model's ONNX bundle (rdual_bundle.py) of its parts for frames of `size`
     (height, width): rdual_export.py's, with `high_quality` the expert routing per
     position and the flow part traced on the settings' GPU if there is one, or
-    rsr_export.py's or tfdat_export.py's (traced there too; High Quality does not
-    apply)."""
+    rsr_export.py's, smovsr_export.py's or tfdat_export.py's (traced there too; High
+    Quality does not apply)."""
     architecture = model.architecture.id
     if architecture == "RSR" and is_aligned(model.model):
         raise ValueError("RSR's flow variant (aligned read) has no ONNX export yet.")
@@ -488,7 +491,7 @@ def _temporal_onnx(
             " Fixed with the video's height and width."
         )
     # The models whose parts are in FP16 with FP32 images, without expert routing
-    fp16 = architecture in ("RSR", "TFDAT", "TFDATv2")
+    fp16 = architecture in ("RSR", "SMoVSR", "TFDAT", "TFDATv2")
     key = (architecture, model.dtype, size, high_quality and not fp16)
     kept = _kept_export(model, context.node_id, key)
     if kept is not None:
@@ -504,6 +507,11 @@ def _temporal_onnx(
             from nodes.impl.tensorrt.rsr import export
 
             export(source, *size, folder, gpu_index, context)
+            opset = rsr_export.OPSET
+        elif architecture == "SMoVSR":
+            from nodes.impl.tensorrt import rsr_export, smovsr
+
+            smovsr.export(source, *size, folder, gpu_index, context)
             opset = rsr_export.OPSET
         elif fp16:
             from nodes.impl.tensorrt import tfdat, tfdat_export

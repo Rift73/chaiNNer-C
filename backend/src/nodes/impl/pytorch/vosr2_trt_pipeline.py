@@ -94,7 +94,7 @@ class FullSession:
         budget for activations; TensorRT streams the rest from host memory as it runs."""
         import tensorrt as trt
 
-        from nodes.impl.tensorrt.memory import gpu_setup_lock
+        from nodes.impl.gpu_setup import gpu_setup_lock
 
         check()
         if self.budget and reserve == self.reserve:

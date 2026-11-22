@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+from typing import Any
 
 import numpy as np
 import torch
@@ -125,10 +126,41 @@ def interpolate_models_node(
         state_dict = perform_interp(state_a, state_b, amount)
     with skip_random_init():
         model = ModelLoader(pytorch_device).load_from_state_dict(state_dict)
+    # By the module of the network's class, which every model has (spandrel before
+    # 0.4.2+c25 has no SMoVSR to import, and a descriptor's architecture is not read
+    # here otherwise).
+    if (
+        type(model.model).__module__
+        == "spandrel.architectures.SMoVSR.__arch.smovsr_arch"
+    ):
+        _keep_state_bound(model, model_a, model_b)
     # As Load Model does: Convert To ONNX traces the weights as constants, which
     # must not require grad.
     model.model.requires_grad_(False)
     return (model, 100 - amount, amount)
+
+
+def _keep_state_bound(
+    model: ModelDescriptor, model_a: ModelDescriptor, model_b: ModelDescriptor
+) -> None:
+    """An interpolated SMoVSR with the bound on its carried state both of its models
+    run with (Load Model reads it from their files; a state dict does not hold it)."""
+    # spandrel's SMoVSR, which its Module type does not name
+    network_a: Any = model_a.model
+    network_b: Any = model_b.model
+    bound_a = network_a.hyperparameters["h_clamp"]
+    bound_b = network_b.hyperparameters["h_clamp"]
+    if bound_a != bound_b:
+        raise ValueError(
+            "These SMoVSR models run with different bounds on their carried state"
+            f" ({bound_a} and {bound_b}) and cannot be interpolated together."
+        )
+    if bound_a is None:
+        return
+    network: Any = model.model
+    network.f_forward.h_clamp = network.f_backward.h_clamp = bound_a
+    network.hyperparameters["h_clamp"] = bound_a
+    model.tags.append(f"clamp{bound_a:g}")
 
 
 def _check_interp_state(interp_50: dict):

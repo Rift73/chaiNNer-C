@@ -51,7 +51,7 @@ from ..io.load_model import full_precision_source
 def convert_to_ncnn_node(
     context: NodeContext, model: ImageModelDescriptor, is_fp16: int
 ) -> tuple[NcnnModelWrapper, str]:
-    if model.architecture.id in ("RSR", "TFDAT", "TFDATv2"):
+    if model.architecture.id in ("RSR", "SMoVSR", "TFDAT", "TFDATv2"):
         # A plain export runs each frame on its own, without the frames around it.
         raise ValueError(
             f"{model.architecture.name} (a video model) does not convert to NCNN: its"

@@ -34,6 +34,7 @@ from .auto_engine import (
 )
 from .rdual_window import RDUALWindows
 from .rsr_window import RSRWindows, is_aligned
+from .smovsr_window import SMoVSRWindows
 from .temporal_models import runtime
 from .tfdat_window import TFDATWindows
 
@@ -101,7 +102,7 @@ def temporal_upscale_through_engine(
     img: np.ndarray,
     model: ImageModelDescriptor,
     device: torch.device,
-    windows: Callable[[], RDUALWindows | RSRWindows | TFDATWindows],
+    windows: Callable[[], RDUALWindows | RSRWindows | SMoVSRWindows | TFDATWindows],
     gpu_index: int,
     report: TileReport,
     padding: PaddingType,

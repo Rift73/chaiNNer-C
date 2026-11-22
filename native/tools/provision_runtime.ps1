@@ -193,7 +193,7 @@ if ($Relock) {
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
         # spandrel: the fork's build (DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR, GFISRv2), the wheel on its release
-        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c24/spandrel-0.4.2%2Bc24-py3-none-any.whl#sha256=26e2b4ec80ed78c5d1ab67a12fd0615b454569448fb16aac5bf8cf9401706128',
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c25/spandrel-0.4.2%2Bc25-py3-none-any.whl#sha256=27ea28912708b60e839f9d4a01baebe3517daf2620dda7bee44b3837a0c64d62',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
         $OnnxRuntimePin,
         'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
