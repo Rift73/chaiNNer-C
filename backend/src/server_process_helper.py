@@ -319,7 +319,9 @@ class WorkerServer:
             "/sse",
             headers=request.headers,
             data=request.body,
-            timeout=aiohttp.ClientTimeout(total=60 * 60, connect=5),
+            # The stream lasts as long as the worker: a total limit would cut it
+            # in the middle of a long run.
+            timeout=aiohttp.ClientTimeout(total=None, connect=5),
         ) as resp:
             self._manually_close.add(resp)
             try:

@@ -2,7 +2,9 @@
 its models load.
 
 The GPU driver readies each kernel the first time a process uses it, which took the grain
-pass's few dozen kernels 0.45 s against 0.05 s afterwards (RTX 5090, cache warm).
+pass's few dozen kernels 0.45 s against 0.05 s afterwards (RTX 5090, cache warm). The
+steps run in the capture turn (capture_lock): a synchronization or a kernel of theirs
+inside another thread's CUDA graph capture would end it.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import torch
 from torch.nn import functional
 
 from .. import background_work
+from ..gpu_setup import capture_lock
 from .vosr2_texture import Grain, TextureGuide, _add_grain
 from .vosr2_trt_pipeline import FullSession
 from .vosr2_trt_restore import gpu_colour
@@ -32,28 +35,29 @@ def ready_small_steps(device: torch.device, session: bool) -> None:
 
 @torch.inference_mode()
 def _ready(device: torch.device, session: bool) -> None:
-    field = np.full((_SIZE, _SIZE), 0.5, np.float32)
-    image = np.full((_SIZE, _SIZE, 3), 0.5, np.float32)
-    guide = TextureGuide(field, field, np.eye(3, dtype=np.float32), field)
-    _add_grain(image, 1, guide, Grain(0, 1), lambda: None, device)
-    if not session:
-        return
-    tensor = torch.from_numpy(image).to(device).permute(2, 0, 1)[None]
-    constants: dict[str, torch.Tensor] = {}
+    with capture_lock:
+        field = np.full((_SIZE, _SIZE), 0.5, np.float32)
+        image = np.full((_SIZE, _SIZE, 3), 0.5, np.float32)
+        guide = TextureGuide(field, field, np.eye(3, dtype=np.float32), field)
+        _add_grain(image, 1, guide, Grain(0, 1), lambda: None, device)
+        if not session:
+            return
+        tensor = torch.from_numpy(image).to(device).permute(2, 0, 1)[None]
+        constants: dict[str, torch.Tensor] = {}
 
-    def constant(key: str, value: torch.Tensor) -> torch.Tensor:
-        return constants.setdefault(key, value.to(device))
+        def constant(key: str, value: torch.Tensor) -> torch.Tensor:
+            return constants.setdefault(key, value.to(device))
 
-    gpu_colour(
-        cast(
-            FullSession,
-            SimpleNamespace(device=device, constants=constants, constant=constant),
-        ),
-        tensor * 2 - 1,
-        image,
-    )
-    conditioning = functional.interpolate(
-        tensor, size=(448, 448), mode="bicubic", align_corners=False
-    ).clamp_(0, 1)
-    torch.isfinite(conditioning).all()
-    torch.cuda.synchronize(device)
+        gpu_colour(
+            cast(
+                FullSession,
+                SimpleNamespace(device=device, constants=constants, constant=constant),
+            ),
+            tensor * 2 - 1,
+            image,
+        )
+        conditioning = functional.interpolate(
+            tensor, size=(448, 448), mode="bicubic", align_corners=False
+        ).clamp_(0, 1)
+        torch.isfinite(conditioning).all()
+        torch.cuda.synchronize(device)

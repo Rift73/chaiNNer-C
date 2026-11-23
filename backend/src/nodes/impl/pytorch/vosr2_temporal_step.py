@@ -11,7 +11,7 @@ generator pipeline (the Temporal Sequence node) yielded for the same restoration
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
@@ -21,8 +21,8 @@ import numpy as np
 
 from api import Aborted, NodeContext, NodeId
 from api.settings import SettingsParser
-from nodes.impl import numpy_pool
 
+from .vosr2_jobs import Jobs, process_threads
 from .vosr2_temporal import (
     Correspondence,
     RestoredFrame,
@@ -41,7 +41,7 @@ SCENE_START = 5
 Restore = Callable[[np.ndarray, NodeContext], np.ndarray]
 Peek = Callable[[int], object | None]
 Pair = tuple[Correspondence, Correspondence]
-# The CPU work's threads per item, besides the node's own. At 2560x1440, stabilize took
+# The CPU work's threads, besides the node's own. At 2560x1440, stabilize took
 # 536 ms on one thread, 458 ms with one more, 384 ms with two, and no less with three
 # or four.
 CPU_THREADS = 2
@@ -100,8 +100,8 @@ class _Item:
     context: NodeContext
     peek: Peek
     restore: Restore
-    pool: ThreadPoolExecutor | None
-    cpu: ThreadPoolExecutor
+    pool: Jobs | None
+    cpu: Jobs
     background: NodeContext
 
 
@@ -126,8 +126,8 @@ class _Unsettled:
 
     index: int
     stopped: Event
-    pool: ThreadPoolExecutor | None
-    cpu: ThreadPoolExecutor
+    pool: Jobs | None
+    cpu: Jobs
 
 
 def _is_cut(observation: TemporalObservation) -> bool:
@@ -148,9 +148,13 @@ class TemporalStep:
     With `overlap`, one later frame's restoration runs on a worker thread while the current
     output is computed on the CPU; it always finishes before the item's output is returned
     (settle, which the caller may leave for after the output's grain).
-    The CPU work itself uses CPU_THREADS more threads per item, also joined before the
-    output is returned: each motion pair starts once both frames' inputs are taken, and
-    stabilize runs its independent parts in parallel; the outputs are the same bit for bit.
+    The CPU work itself uses CPU_THREADS more threads, and the item's jobs on them also
+    finish before the output is returned: each motion pair starts once both frames' inputs
+    are taken, and stabilize runs its independent parts in parallel; the outputs are the
+    same bit for bit.
+    The worker threads are the process's, shared by every step, also at the same time
+    (vosr2_jobs says why that is safe): an item's jobs have all ended when its error is
+    raised and when its output is returned (or, without settle, at the caller's settle).
     """
 
     def __init__(
@@ -166,11 +170,14 @@ class TemporalStep:
         self.method = method
         self.strength = strength
         self.ahead = lookahead if lookahead >= frames_ahead(method) else 0
-        self.overlap = overlap
         self.inputs = inputs
         self.index: int | None = None
         self.sequence = _Sequence()
         self.unsettled: _Unsettled | None = None
+        # Never ended: a thread that ran the restoration's PyTorch CPU operators would
+        # strand its team of OpenMP threads (Windows), a team per frame, video or run.
+        self.pool = process_threads("vosr-restore", 1) if overlap else None
+        self.cpu = process_threads("vosr-temporal", CPU_THREADS)
 
     def frame(
         self,
@@ -194,20 +201,8 @@ class TemporalStep:
             self.sequence = _Sequence()
         self.index = index
         stopped = Event()
-        pool = (
-            ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="vosr-restore",
-                initializer=numpy_pool.install,
-            )
-            if self.overlap
-            else None
-        )
-        cpu = ThreadPoolExecutor(
-            max_workers=CPU_THREADS,
-            thread_name_prefix="vosr-temporal",
-            initializer=numpy_pool.install,
-        )
+        pool = None if self.pool is None else Jobs(self.pool)
+        cpu = Jobs(self.cpu)
         item = _Item(
             index,
             image,
@@ -247,9 +242,9 @@ class TemporalStep:
                 self.sequence.observations.pop(unsettled.index, None)
         finally:
             unsettled.stopped.set()
-            unsettled.cpu.shutdown(wait=True, cancel_futures=True)
+            unsettled.cpu.end(cancel=True)
             if unsettled.pool is not None:
-                unsettled.pool.shutdown(wait=True, cancel_futures=True)
+                unsettled.pool.end(cancel=True)
             # A restoration or pair that never started or that the item's stop ended (the
             # item failed) is made again if needed: its Aborted is not a later item's.
             for jobs in (self.sequence.frames, self.sequence.pairs):

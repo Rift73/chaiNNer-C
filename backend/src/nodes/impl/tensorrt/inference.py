@@ -35,7 +35,7 @@ from sanic.log import logger
 from api import NodeId, Progress
 from util import held, waiting
 
-from ..gpu_setup import gpu_setup_lock
+from ..gpu_setup import capture_lock, gpu_setup_lock
 from ..native_framework_images import (
     interleaved_to_bfloat_planes,
     planar_to_interleaved,
@@ -435,7 +435,7 @@ class TensorRTSession:
         mode = cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal
         enqueued = False
         graph: Any = None
-        with held(gpu_setup_lock):
+        with held(capture_lock), held(gpu_setup_lock):
             (error,) = cudart.cudaStreamBeginCapture(self._stream, mode)
             if error == cudart.cudaError_t.cudaSuccess:
                 try:

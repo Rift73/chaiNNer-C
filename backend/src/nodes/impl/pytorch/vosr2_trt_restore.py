@@ -45,6 +45,7 @@ class LowMemory:
 # resident than with 2 GiB (640x360 at 4x with others using 3.3 GiB: FP8 1.45 -> 1.28 s,
 # BF16 2.50 -> 2.06 s; same output).
 LOW_MEMORY = LowMemory(tile=512, reserve=5 * 1024**3 // 4)
+# With less free memory at admission than vosr2_trt_pipeline.LOW_MEMORY_FLOOR, Low refuses.
 
 
 @dataclass(frozen=True)

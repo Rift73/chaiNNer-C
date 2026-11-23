@@ -25,6 +25,7 @@
 #include "image_preview.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -47,6 +48,7 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <vector>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -542,38 +544,28 @@ private:
     const Run *previous_;
 };
 
-/* Python state for an engine thread, made once for its life: a thread state and NumPy's data-memory handler
- * (nodes/impl/numpy_pool.py), which a thread does not inherit; released when a service thread ends (not once the
- * interpreter finalizes, when no thread may take the GIL). */
-class PythonThread {
-public:
-    PythonThread() : state_(PyGILState_Ensure())
-    {
-        try {
-            py::module_::import("nodes.impl.numpy_pool").attr("install")();
-        } catch (py::error_already_set &error) {
-            error.discard_as_unraisable("chaiNNer-C engine thread setup");
-        }
-        thread_ = PyEval_SaveThread();
+/* Python state for an engine thread, made once and kept for the thread's life (engine threads never end): a thread
+ * state and NumPy's data-memory handler (nodes/impl/numpy_pool.py), which a thread does not inherit. */
+void enter_python_thread()
+{
+    PyGILState_Ensure();
+    try {
+        py::module_::import("nodes.impl.numpy_pool").attr("install")();
+    } catch (py::error_already_set &error) {
+        error.discard_as_unraisable("chaiNNer-C engine thread setup");
     }
-    ~PythonThread()
-    {
-        if (Py_IsFinalizing()) return;
-        PyEval_RestoreThread(thread_);
-        PyGILState_Release(state_);
-    }
-    PythonThread(const PythonThread &) = delete;
-    PythonThread &operator=(const PythonThread &) = delete;
-
-private:
-    PyGILState_STATE state_;
-    PyThreadState *thread_ = nullptr;
-};
+    PyEval_SaveThread();
+}
 
 /* The process's engine threads, shared by every run (and preview): workers, as many as the CPUs of the affinity
  * mask (cn_parallel_for's capacity: CHAINNER_C_ENGINE_THREADS overrides), that run the queued jobs of every run;
- * and service threads, reused for each run's driver, event pump, broadcaster and window producer, which end after
- * a while idle (a burst of previews leaves none behind).
+ * and service threads, reused for each run's driver, event pump, broadcaster and window producer, as many as the
+ * most services of their role ever in flight at once. No engine thread ends: on Windows a thread that ran PyTorch's
+ * CPU operators (a node on a run's driver) has a team of OpenMP threads that outlives it, so a thread ended after a
+ * while idle would strand a team per run. Each role has threads of its own, so that a driver never lands on a
+ * thread that only pumped events and starts a team there; and a service goes to the thread of its role that went
+ * idle last, so that runs one after another keep using one thread (and its team) rather than taking turns over all
+ * of them: the teams are as many as the most drivers (and producers) at once.
  * A run offers one token per job it queues; a worker takes a token, then a job from that run (none when it was
  * taken, dropped or paused meanwhile). The engine's lock is never held while taking a run's. */
 class Engine {
@@ -587,22 +579,36 @@ public:
     void offer(Run *run, size_t jobs = 1);
     /* Drops the run's tokens and waits until no worker is inside it. */
     void detach(Run *run);
-    std::future<void> service(std::function<void()> task);
+    enum class Role { driver, producer, events };
+    std::future<void> service(Role role, std::function<void()> task);
     int workers() const noexcept { return workers_; }
 
 private:
+    /* A service and the promise its caller waits on. */
+    struct Job {
+        std::function<void()> task;
+        std::promise<void> done;
+    };
+    /* A service thread's place while idle: the job handed to it wakes it. */
+    struct Slot {
+        std::condition_variable wake;
+        std::optional<Job> job;
+    };
+    /* The idle service threads of one role, the one idle last on top. */
+    struct Services {
+        std::vector<Slot *> idle;
+    };
+
     Engine();
     void work();
-    void serve();
+    void serve(Services &services, Job job);
 
     int workers_ = 1;
-    std::chrono::seconds idle_time_{30};  // a service thread's idle time before it ends (CHAINNER_C_ENGINE_IDLE_SECONDS)
     std::mutex mutex_;
-    std::condition_variable work_, idle_, services_changed_;
+    std::condition_variable work_, idle_;
     std::deque<Run *> tokens_;
     std::unordered_map<Run *, int> active_;
-    std::deque<std::packaged_task<void()>> services_;
-    int idle_services_ = 0;
+    std::array<Services, 3> services_;  // by Role
 };
 
 struct GeneratorRun {
@@ -751,6 +757,8 @@ private:
     int target_ = -1;
     std::future<void> driver_;
     std::thread::id driver_thread_;  // the driver's thread, set as drive() starts
+    bool finished_ = false;  // the driver handed the run's result to the hooks (its thread only)
+    bool cleaned_ = false;  // the driver started the chain cleanups (its thread only)
     bool started_ = false, closed_ = false;  // under mutex_
     // Cleared at close: a lazy input a Python node kept and reads later no longer reaches the run.
     std::shared_ptr<std::atomic<bool>> open_ = std::make_shared<std::atomic<bool>>(true);
@@ -792,6 +800,7 @@ private:
 
     // Driver
     void drive();
+    void finish_escaped(std::exception_ptr escaped);
     void suspend();
     void ensure(const CellRef &ref, bool commit = true);
     bool runs_pure(int node) const;
@@ -1185,7 +1194,7 @@ void Run::start(const std::string &mode, int target)
     Engine &engine = Engine::get();
     engine.attach(this);
     // A failed pump or broadcaster stops the run with its fault; their flushes no longer wait for them.
-    pump_ = engine.service([this] {
+    pump_ = engine.service(Engine::Role::events, [this] {
         Serving serving(this);
         try {
             pump();
@@ -1196,7 +1205,7 @@ void Run::start(const std::string &mode, int target)
             events_changed_.notify_all();
         }
     });
-    broadcaster_ = engine.service([this] {
+    broadcaster_ = engine.service(Engine::Role::events, [this] {
         Serving serving(this);
         try {
             broadcaster();
@@ -1207,9 +1216,13 @@ void Run::start(const std::string &mode, int target)
             broadcasts_changed_.notify_all();
         }
     });
-    driver_ = engine.service([this] {
+    driver_ = engine.service(Engine::Role::driver, [this] {
         Serving serving(this);
-        drive();
+        try {
+            drive();
+        } catch (...) {
+            finish_escaped(std::current_exception());
+        }
     });
 }
 
@@ -1251,8 +1264,16 @@ void Run::close()
         closed_ = true;
     }
     *open_ = false;
+    // What escaped the driver even after finish_escaped: raised once the run has released everything.
+    std::exception_ptr escaped;
     if (started_) {
-        if (driver_.valid()) driver_.wait();
+        if (driver_.valid()) {
+            try {
+                driver_.get();
+            } catch (...) {
+                escaped = std::current_exception();
+            }
+        }
         flush_broadcasts();
         Engine::get().detach(this);
         {
@@ -1285,6 +1306,7 @@ void Run::close()
     broadcast_order_.clear();
     events_.clear();
     release_deferred();
+    if (escaped) std::rethrow_exception(escaped);
 }
 
 /* An exception escaping an engine thread's job (an engine fault, an allocation outside any node): the run stops
@@ -2099,7 +2121,7 @@ void Run::decide(int64_t start)
     std::lock_guard<std::mutex> locked(mutex_);
     loop.active = true;
     loop.produced = start;
-    loop.producer = Engine::get().service([this] {
+    loop.producer = Engine::get().service(Engine::Role::producer, [this] {
         Serving serving(this);
         try {
             produce();
@@ -2935,12 +2957,22 @@ void Run::drive()
             node = fault_node_;
         }
         PythonSection section;
-        if (stopped) error = fault.empty() ? py_ref(hooks_.aborted_type()) : engine_failure(fault, node);
+        if (stopped) {
+            try {
+                error = fault.empty() ? py_ref(hooks_.aborted_type()) : engine_failure(fault, node);
+            } catch (py::error_already_set &failure) {
+                error = current_error(failure);  // the Stop's error could not be made: the run ends with this one
+            }
+        }
     }
     if (mode_ == "run") {
         try {
             flush_broadcasts();
-        } catch (...) {
+        } catch (const std::exception &failure) {
+            // Only the wait's mutex can throw here (std::system_error; a failed broadcaster stops the run through
+            // fault()): the run's error, unless it has one.
+            PythonSection section;
+            if (!error.handle) error = engine_failure(driver_fault(failure.what()), -1);
         }
         {
             std::lock_guard<std::mutex> locked(mutex_);
@@ -2951,6 +2983,7 @@ void Run::drive()
             slot_cells_.clear();
         }
         PythonSection section;
+        cleaned_ = true;
         try {
             hooks_.chain_cleanups(bool(error.handle));
         } catch (py::error_already_set &failure) {
@@ -2961,6 +2994,7 @@ void Run::drive()
     PythonSection section;
     py::handle error_object = error.handle ? py::handle(static_cast<PyObject *>(error.handle.get())) : py::none();
     py::handle result_object = result.handle ? py::handle(static_cast<PyObject *>(result.handle.get())) : py::none();
+    finished_ = true;
     try {
         hooks_.finish(error_object, result_object);
     } catch (py::error_already_set &failure) {
@@ -2968,6 +3002,39 @@ void Run::drive()
     }
     error = PyRef{};
     result = PyRef{};
+}
+
+/* An exception escaping drive() before it handed the run's result to the hooks: the run's error, as an engine
+ * failure, so that neither its request nor the runs that wait for a stopped run's end wait for it forever; a run's
+ * chain cleanups run first if they have not started. One that escapes later, or this report itself, stays in the
+ * driver's future: close() raises it. */
+void Run::finish_escaped(std::exception_ptr escaped)
+{
+    if (finished_) std::rethrow_exception(escaped);
+    std::string what;
+    try {
+        std::rethrow_exception(escaped);
+    } catch (const std::exception &failure) {
+        what = failure.what();
+    } catch (...) {
+        what = "an exception of an unknown type";
+    }
+    PythonSection section;
+    PyRef error = engine_failure(driver_fault(what.c_str()), scheduling_);
+    if (mode_ == "run" && !cleaned_) {
+        cleaned_ = true;
+        try {
+            hooks_.chain_cleanups(true);
+        } catch (py::error_already_set &failure) {
+            failure.discard_as_unraisable("chaiNNer-C engine chain cleanups");  // the run already has its error
+        }
+    }
+    finished_ = true;
+    try {
+        hooks_.finish(py::handle(static_cast<PyObject *>(error.handle.get())), py::none());
+    } catch (py::error_already_set &failure) {
+        failure.discard_as_unraisable("chaiNNer-C engine finish");
+    }
 }
 
 // Execution
@@ -3990,7 +4057,6 @@ Engine::Engine()
     if (unsigned affinity = cn_affinity_cpus()) cpus = affinity;
 #endif
     workers_ = environment_count("CHAINNER_C_ENGINE_THREADS", int(std::max(2u, cpus)));
-    idle_time_ = std::chrono::seconds(environment_count("CHAINNER_C_ENGINE_IDLE_SECONDS", 30));
     for (int i = 0; i < workers_; ++i) std::thread([this] { work(); }).detach();
 }
 
@@ -4021,25 +4087,30 @@ void Engine::detach(Run *run)
     active_.erase(run);
 }
 
-std::future<void> Engine::service(std::function<void()> task)
+std::future<void> Engine::service(Role role, std::function<void()> task)
 {
-    std::packaged_task<void()> job(std::move(task));
-    std::future<void> done = job.get_future();
-    bool spawn;
+    Services &services = services_[size_t(role)];
+    Job job{std::move(task), {}};
+    std::future<void> done = job.done.get_future();
+    Slot *slot = nullptr;
     {
         std::lock_guard<std::mutex> locked(mutex_);
-        services_.push_back(std::move(job));
-        spawn = idle_services_ < int(services_.size());
-        if (spawn) ++idle_services_;  // counted idle until it takes its first service
+        if (!services.idle.empty()) {
+            slot = services.idle.back();
+            services.idle.pop_back();
+            slot->job = std::move(job);
+        }
     }
-    if (spawn) std::thread([this] { serve(); }).detach();
-    services_changed_.notify_one();
+    if (slot)
+        slot->wake.notify_one();
+    else
+        std::thread([this, &services, job = std::move(job)]() mutable { serve(services, std::move(job)); }).detach();
     return done;
 }
 
 void Engine::work()
 {
-    PythonThread python;
+    enter_python_thread();
     for (;;) {
         Run *run;
         {
@@ -4062,24 +4133,32 @@ void Engine::work()
     }
 }
 
-void Engine::serve()
+void Engine::serve(Services &services, Job job)
 {
-    PythonThread python;
+    enter_python_thread();
+    Slot slot;
     for (;;) {
-        std::packaged_task<void()> job;
-        {
-            std::unique_lock<std::mutex> locked(mutex_);
-            if (!services_changed_.wait_for(locked, idle_time_, [&] { return !services_.empty(); })) {
-                --idle_services_;
-                return;
-            }
-            job = std::move(services_.front());
-            services_.pop_front();
-            --idle_services_;
+        std::exception_ptr error;
+        try {
+            job.task();
+        } catch (...) {
+            error = std::current_exception();
         }
-        job();
-        std::lock_guard<std::mutex> locked(mutex_);
-        ++idle_services_;
+        job.task = nullptr;  // what the service holds goes before its caller may free it
+        std::promise<void> done = std::move(job.done);
+        {
+            // Idle before the caller learns the service ended: a service it starts next finds this thread.
+            std::lock_guard<std::mutex> locked(mutex_);
+            services.idle.push_back(&slot);
+        }
+        if (error)
+            done.set_exception(error);
+        else
+            done.set_value();
+        std::unique_lock<std::mutex> locked(mutex_);
+        slot.wake.wait(locked, [&] { return slot.job.has_value(); });
+        job = std::move(*slot.job);
+        slot.job.reset();
     }
 }
 

@@ -56,6 +56,8 @@ export interface BackendExceptionResponse {
     message: string;
     source?: BackendExceptionSource | null;
     exception: string;
+    /** A failed run's traceback (/run's reply only), as its execution-error event has it. */
+    exceptionTrace?: string;
 }
 export interface BackendNoExecutorResponse {
     type: 'no-executor';

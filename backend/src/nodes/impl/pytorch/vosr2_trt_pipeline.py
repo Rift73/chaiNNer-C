@@ -7,22 +7,44 @@ from collections.abc import Callable, Hashable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from typing import NoReturn
 from weakref import WeakSet
 
 import torch
 
 from api import NodeContext, NodeId
 from gpu import get_vram_usage
+from nodes.impl.gpu_setup import capture_lock
 from nodes.impl.tensorrt.cache import SharedCache
 
+from .vosr2 import MemoryPlan, VosrMemoryMode
 from .vosr2_export import rotary_tables
-from .vosr2_memory import available_memory
+from .vosr2_memory import (
+    HEADROOM,
+    available_memory,
+    cap_from_limit,
+    chain_share,
+    in_use,
+    log_refusal,
+    short_of_memory,
+)
 from .vosr2_plan_file import compressed, plain
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin
 
 LANE_BYTES = 512 * 1024**2
+
+# Low memory's floor of free memory at admission (vosr2_trt_restore.LOW_MEMORY). RTX 5090,
+# 1920x1080 at 1x, TensorRT FP8: under the reserve every weight streams, with the same
+# pictures as a resident run, about three times slower per frame. 640 MiB ran out in a
+# stage on the first frame; 768 MiB was refused on a later frame, once the warm buffers
+# (694 MiB) left the budget less than vram_budget's 128 MiB; 800 MiB completed 20 frames
+# with 10 MiB of headroom over that check, 832 MiB 50 frames with 30 to 42 MiB, and up to
+# 1152 MiB completed. A run admitted between the floor and 800 MiB may still be refused on
+# a later frame, with the plain refusal. BF16 untested: no engine built; its warm buffers
+# are no smaller, so it is expected to need at least as much.
+LOW_MEMORY_FLOOR = 768 * 1024**2
 # A lane's pair lane: its windows' second predictions, which read its keys
 PAIRED = 8
 
@@ -50,6 +72,16 @@ class FullSession:
         self.logger = TRT_LOGGER
         self.stages: dict[str, Stage] = {}
         self.ropes: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        # Whether the stages are admitted (their contexts made), however much of their
+        # weights is resident: a Low admission may keep none (budget 0).
+        self.admitted = False
+        # Whether a Low budget gave its weights back for another node's memory (shrink):
+        # it then streams every weight for the rest of the run, never growing back.
+        self.streamed = False
+        # Whether a run that streamed has ended: the next prepare, in its own lease and
+        # budget turn, lets the weights onto the device again.
+        self.regrow = False
+        # The resident weights' bytes
         self.budget = 0
         # The activation reserve the weights were admitted with (None: all resident)
         self.reserve: int | None = None
@@ -79,14 +111,19 @@ class FullSession:
         """Before admission, drop warm weights admitted with another activation reserve
         (another memory mode: a Low budget would count them as another program's), or
         when the device is nearly full."""
-        if self.budget and reserve != self.reserve:
-            self.offload()
+        if self.admitted and reserve != self.reserve:
+            self._release()
+            self.streamed = self.regrow = False
             return
+        if self.regrow:
+            self.regrow = False
+            if self.admitted and self.budget == 0:
+                self._release()
         usage = get_vram_usage(self.device.index)
         if usage is None:
             raise RuntimeError("VOSR sessions require working GPU memory monitoring.")
         if usage.used >= usage.total - 1_200_000_000:
-            self.offload()
+            self._release()
 
     def activate(self, check: Callable[[], None], reserve: int | None = None) -> None:
         """Admit the stages with every weight on the device, or, given a `reserve` (Low
@@ -97,14 +134,14 @@ class FullSession:
         from nodes.impl.gpu_setup import gpu_setup_lock
 
         check()
-        if self.budget and reserve == self.reserve:
+        if self.admitted and reserve == self.reserve:
             return
-        if self.budget:
+        if self.admitted:
             # Admitted for another memory mode
-            self.offload()
+            self._release()
         engines = [stage.engine for stage in self.stages.values()]
         if any(engine is None for engine in engines):
-            raise RuntimeError("VOSR BF16 session is closed.")
+            raise RuntimeError("VOSR TensorRT session is closed.")
         streamable = sum(
             engine.streamable_weights_size for engine in engines if engine is not None
         )
@@ -113,10 +150,16 @@ class FullSession:
         budget = streamable
         if reserve is not None:
             free = int(total * previous) - torch.cuda.memory_allocated(self.device)
-            budget = max(0, min(streamable, free - reserve))
+            if free <= LOW_MEMORY_FLOOR:
+                # Streaming every weight would fail a later tile's admission or a
+                # stage: refuse before the first one runs.
+                self._refuse_low(free, LOW_MEMORY_FLOOR)
+            budget = 0 if self.streamed else max(0, min(streamable, free - reserve))
         cap = int(total * previous) - budget
         if cap <= torch.cuda.memory_allocated(self.device) + 512 * 1024**2:
-            raise RuntimeError("Insufficient memory to admit VOSR BF16 model stages.")
+            raise RuntimeError(
+                "Insufficient memory to admit VOSR TensorRT model stages."
+            )
         # The enclosing vram_budget restores the fraction. Warm weights are
         # already measured as external allocations on its next admission.
         torch.cuda.set_per_process_memory_fraction(cap / total, self.device)
@@ -154,14 +197,101 @@ class FullSession:
                     raise RuntimeError(f"VOSR could not allocate {stage.name} context.")
             self.budget = budget
             self.reserve = reserve
+            self.admitted = True
         except BaseException:
-            self.offload()
+            self._release()
             raise
+
+    def shrink(self) -> bool:
+        """Give back the resident weights of a Low admission, which another node's memory
+        left too little budget for: the next activate streams every weight. True when
+        weights left the device; TensorRT keeping them is logged (Stage.offload)."""
+        if not self.admitted or self.reserve is None or self.budget == 0:
+            return False
+        self._release()
+        self.streamed = all(
+            stage.engine.weight_streaming_budget_v2 == 0
+            for stage in self.stages.values()
+            if stage.engine is not None and stage.engine.streamable_weights_size
+        )
+        return self.streamed
+
+    def _release(self) -> None:
+        """Offload between images, beside other threads' work: offload's device-wide
+        synchronization would end another thread's CUDA graph capture, so it waits for
+        the capture turn (gpu_setup.py)."""
+        with capture_lock:
+            self.offload()
+
+    def held_bytes(self) -> int:
+        """The bytes of PyTorch's allocations this session keeps: its buffers, scratch,
+        constants and the DiT's keys."""
+        execution = self.execution
+        tensors = [
+            *execution.buffers.values(),
+            *execution.lane_memory.values(),
+            *self.constants.values(),
+            *(table for pair in self.ropes.values() for table in pair),
+        ]
+        if execution.memory is not None:
+            tensors.append(execution.memory)
+        if self.kv_tensor is not None:
+            tensors.append(self.kv_tensor)
+        return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
+
+    def end_run(self) -> None:
+        """At the end of a chain's run: a session that gave its weights back may keep
+        them again in the next run, which gives them back again if it must. Called as a
+        chain cleanup, outside the session's lease (a stopped run can end beside the
+        next one): only flags change here; the next prepare unloads."""
+        if self.streamed:
+            self.streamed = False
+            self.regrow = True
+
+    def _refuse_low(self, free: int, floor: int) -> NoReturn:
+        usage = get_vram_usage(self.device.index)
+        if usage is None:
+            raise RuntimeError("VOSR sessions require working GPU memory monitoring.")
+        external = max(0, usage.used - torch.cuda.memory_reserved(self.device))
+        chain = chain_share(self.device, self.held_bytes())
+        held = (
+            f", {chain / 1e9:.1f} GB of it held by this chain outside VOSR's loaded model,"
+            if chain >= 50_000_000
+            else ","
+        )
+        profile = MemoryPlan.for_mode(VosrMemoryMode.LOW).limit_bytes
+        limit = usage.total if profile is None else min(profile, usage.total)
+        cap = free + torch.cuda.memory_allocated(self.device)
+        log_refusal(
+            self.device,
+            "low memory floor",
+            lambda: usage,
+            external,
+            min(limit + usage.reserved, usage.total),
+            cap,
+        )
+        # In decimal GB, as the node promises its limit; the driver's figure is the one
+        # nvidia-smi shows, whoever holds it. The limit and margin are named only when
+        # they set the budget.
+        bound = (
+            f" under Low's {limit / 1e9:g} GB limit and its {HEADROOM / 1e9:g} GB margin"
+            if cap_from_limit()
+            else ""
+        )
+        raise RuntimeError(
+            short_of_memory(
+                VosrMemoryMode.LOW,
+                f" The GPU reports {in_use(usage) / 1e9:.1f} GB in use{held} which{bound}"
+                " leaves"
+                f" VOSR {free / 1e9:.2f} GB; Low needs more than {floor / 1e9:.2f} GB"
+                " to start.",
+            )
+        )
 
     def begin_image(self, height: int, width: int, seed: int) -> None:
         if not (512 <= height <= 2176 and 512 <= width <= 3840):
             raise ValueError(
-                "BF16 TensorRT supports padded outputs up to 2176 high by 3840 wide."
+                "VOSR TensorRT supports padded outputs up to 2176 high by 3840 wide."
             )
         geometry = (height, width, seed)
         if self.geometry is None or self.geometry[:2] != geometry[:2]:
@@ -336,6 +466,8 @@ class FullSession:
         return self.stage(name + "_post", feature, attention).float()
 
     def offload(self) -> None:
+        # Not admitted from its first step: an offload that fails half-way admits again
+        self.admitted = False
         self.execution.clear()
         self.constants.clear()
         self.kv_tensor = None

@@ -46,6 +46,7 @@ from linux_libraries import log_missing_libraries
 from native_executor import NativeExecutor, ending_runs, executor_kind
 from nodes.impl import background_work, native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
+from nodes.impl.gpu_setup import capture_lock
 from nodes.impl.tensorrt import cache as tensorrt_cache
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
 from process_temp import use_process_temp_folder
@@ -669,7 +670,7 @@ async def run(request: Request):
         # After this handler returns, so the error is unreferenced by then.
         asyncio.get_running_loop().call_soon(collect_failed_run, ctx)
         return json(
-            error_response("Error running nodes!", exception),
+            error_response("Error running nodes!", exception, trace=trace),
             status=500,
             headers=restart_headers(),
         )
@@ -714,20 +715,30 @@ def collect_failed_run(ctx: AppContext) -> None:
 def cuda_context_broken() -> bool:
     """Whether a GPU's CUDA context in this process has a sticky error (an illegal
     access, or an out-of-memory error inside a kernel). Every later CUDA call fails in
-    it, freeing memory included, so its memory stays taken until the process ends."""
+    it, freeing memory included, so its memory stays taken until the process ends.
+
+    Synchronizing a device inside another thread's CUDA graph capture (an individual run
+    beside this one) would end that capture and fail here as if the context were broken:
+    while the capture turn is taken the check is skipped, never waited for, and the next
+    response checks again."""
     torch = sys.modules.get("torch")
     if torch is None or not torch.cuda.is_initialized():
         return False
-    for device in range(torch.cuda.device_count()):
-        # Only devices this process used: synchronizing another would create a context.
-        if torch.cuda.memory_reserved(device) == 0:
-            continue
-        try:
-            torch.cuda.synchronize(device)
-        except Exception as error:
-            logger.error("The CUDA context of GPU %d is broken: %s", device, error)
-            return True
-    return False
+    if not capture_lock.acquire(blocking=False):
+        return False
+    try:
+        for device in range(torch.cuda.device_count()):
+            # Only devices this process used: synchronizing another would create a context.
+            if torch.cuda.memory_reserved(device) == 0:
+                continue
+            try:
+                torch.cuda.synchronize(device)
+            except Exception as error:
+                logger.error("The CUDA context of GPU %d is broken: %s", device, error)
+                return True
+        return False
+    finally:
+        capture_lock.release()
 
 
 # The releases that wait for stopped runs' nodes (the loop keeps weak references to tasks).

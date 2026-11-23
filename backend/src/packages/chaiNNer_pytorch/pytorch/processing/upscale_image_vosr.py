@@ -358,6 +358,8 @@ def _upscale(
         )
         with lease as session:
             release_bundle(context.node_id)
+            if low is not None:
+                context.add_cleanup(session.end_run)
             statistics = LatentStatistics.load(model)
             with vram_budget(
                 device,
@@ -365,6 +367,8 @@ def _upscale(
                 context,
                 settings.budget_limit,
                 prepare=lambda: session.prepare(None if low is None else low.reserve),
+                shrink=None if low is None else session.shrink,
+                own=session.held_bytes,
             ) as check:
                 return restore_with_texture(
                     lambda: restore(

@@ -14,6 +14,8 @@ from pathlib import Path
 import torch
 from sanic.log import logger
 
+from nodes.impl.gpu_setup import capture_lock, gpu_setup_lock
+
 
 @dataclass
 class _Captured:
@@ -68,8 +70,9 @@ class Replays:
         torch.cuda.empty_cache()
         graph = torch.cuda.CUDAGraph()
         try:
-            with torch.cuda.stream(self.stream):
-                # Only this thread's calls can spoil the capture.
+            # Only this thread's calls can spoil the capture, and not while TensorRT makes
+            # or frees a context or the warm-up runs (the turns).
+            with capture_lock, gpu_setup_lock, torch.cuda.stream(self.stream):
                 graph.capture_begin(self.pool, capture_error_mode="thread_local")
                 try:
                     output = self.function(*inputs)

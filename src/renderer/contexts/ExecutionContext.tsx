@@ -344,8 +344,14 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const previewRef = useRef<Promise<void>>();
     const runAskedRef = useRef(false);
     const previewFailureRef = useRef<string>();
-    // Error events of renders that ended before their event came.
+    // Error events of renders and runs that ended before their event came.
     const lateFailuresRef = useRef(0);
+    // The run of the chain this window started last, while its request is in flight: whether its
+    // error event came, and the alert it tells unless the user stopped the run.
+    const chainRunRef = useRef<{
+        errorCame: boolean;
+        error?: { message: string; trace: string };
+    }>();
     // Per node, the last render by itself started (renderAlone): the JSON of its input values,
     // whether it is in flight, whether it showed its frame, and whether with every preview (not
     // only those of the views on screen).
@@ -609,14 +615,20 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const [eventSource, eventSourceStatus] = useBackendEventSource(url, isBackendReady);
     useRegisterNodeEvents(eventSource, nodeEventBacklog, takeOwn);
 
-    useBackendEventSourceListener(eventSource, 'execution-error', (data) => {
-        if (data) {
-            const formatted = formatExecutionErrorMessage(
-                data,
+    const formatError = useCallback(
+        (error: Pick<BackendEventMap['execution-error'], 'exception' | 'source'>) =>
+            formatExecutionErrorMessage(
+                error,
                 schemata,
                 (label, value) => `• ${label}: ${value}`,
                 (nodeId) => getNodes().find((n) => n.id === nodeId)?.data.nodeName
-            );
+            ),
+        [schemata, getNodes]
+    );
+
+    useBackendEventSourceListener(eventSource, 'execution-error', (data) => {
+        if (data) {
+            const formatted = formatError(data);
             // The backend sends the errors of its runs in their order: while a render that ended
             // before its event came waits for it, the next error is that render's, not the one
             // of a render in flight.
@@ -629,16 +641,26 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 previewFailureRef.current = formatted;
                 return;
             }
+            // A run this window started is alerted by its reply, which says all the event does: the
+            // event comes before the reply, after it, or not at all (lost with a broken stream).
+            const run = chainRunRef.current;
+            if (run !== undefined) run.errorCame = true;
             if (statusRef.current === ExecutionStatus.KILLING) {
                 // Stop is still ending this run, and the user asked for it to end.
                 log.warn(`A stopped run failed: ${data.exception}`);
                 return;
             }
-            sendAlert({
-                type: AlertType.ERROR,
-                message: formatted,
-                trace: data.exceptionTrace,
-            });
+            if (run !== undefined) {
+                // for a reply that does not come (its request cancelled by a restart)
+                run.error = { message: formatted, trace: data.exceptionTrace };
+            } else {
+                // a run this window did not start (one started before a reload of the window)
+                sendAlert({
+                    type: AlertType.ERROR,
+                    message: formatted,
+                    trace: data.exceptionTrace,
+                });
+            }
             clearNodeStatusMap();
             setLocalStatus(ExecutionStatus.READY);
         }
@@ -652,6 +674,9 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     });
 
     useBackendEventSourceListener(eventSource, 'chain-start', (data) => {
+        // The backend sends the events of its runs in their order: an earlier run's error event
+        // has come by now, or never will.
+        lateFailuresRef.current = 0;
         if (data && statusRef.current !== ExecutionStatus.READY) {
             clearNodeStatusMap();
             setNodeStatus(NodeExecutionStatus.YET_TO_RUN, data.nodes);
@@ -672,8 +697,9 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     useEffect(() => {
         if (ownsBackend && !backendDownRef.current && eventSourceStatus === 'error') {
             log.warn('The backend event source errored.');
-            // Their frames would not come: the first one's failure is alerted (once, by its seek
-            // bar), the others end without a frame.
+            // Their frames may not come (the event in flight when the stream broke is lost), and
+            // a reply that says its frame was sent waits for it: the first one's failure is
+            // alerted (once, by its seek bar), the others end without a frame.
             [...aloneRendersRef.current.values()].forEach((render, index) =>
                 render.settle(
                     index === 0
@@ -687,8 +713,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                         : { kind: 'skipped' }
                 )
             );
-            clearNodeStatusMap();
-            setLocalStatus(ExecutionStatus.READY);
+            // The stream reconnects by itself and the backend keeps the events made meanwhile: a
+            // run this window started goes on, and ends with the reply to its request (also when
+            // the backend goes down).
+            if (runsInFlightRef.current === 0) {
+                clearNodeStatusMap();
+                setLocalStatus(ExecutionStatus.READY);
+            }
         }
     }, [eventSourceStatus, clearNodeStatusMap, backendDownRef, ownsBackend, setLocalStatus]);
 
@@ -855,9 +886,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 reducedShownRef.current.add(shownNodeId);
             }
 
+            const run: NonNullable<typeof chainRunRef.current> = { errorCame: false };
             runsInFlightRef.current += 1;
             try {
-                if (!isPreview) setLocalStatus(ExecutionStatus.RUNNING);
+                if (!isPreview) {
+                    chainRunRef.current = run;
+                    setLocalStatus(ExecutionStatus.RUNNING);
+                }
 
                 const data = toBackendJson(nodes, edges, schemata);
                 const response = await backend.run({
@@ -866,7 +901,6 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     sendBroadcastData: true,
                     ...(previewSizes === undefined ? {} : { previewSizes: [...previewSizes] }),
                 });
-                // An 'error' reply needs no alert here: the execution-error event reports it.
                 if (response.type === 'already-running') {
                     fail(
                         i18n.t(
@@ -878,6 +912,18 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     // its event may come after the reply: it is the render's too
                     if (previewFailureRef.current === undefined) lateFailuresRef.current += 1;
                     failure ??= previewFailureRef.current ?? response.exception;
+                } else if (response.type === 'error') {
+                    // The reply reports the failure, with its trace; its event, if it comes
+                    // after the reply, is dropped. A run the user stopped reports none.
+                    if (!run.errorCame) lateFailuresRef.current += 1;
+                    if (statusRef.current !== ExecutionStatus.KILLING) {
+                        const { exception, source = null, exceptionTrace } = response;
+                        const message =
+                            formatError({ exception, source }) ||
+                            i18n.t('execution.unexpectedError', 'An unexpected error occurred.');
+                        failure ??= message;
+                        sendAlert({ type: AlertType.ERROR, message, trace: exceptionTrace });
+                    }
                 }
             } catch (err: unknown) {
                 if (!(err instanceof CancelError)) {
@@ -888,15 +934,26 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                             { error: String(err) }
                         )
                     );
+                } else if (run.error !== undefined && backendDownRef.current) {
+                    // A restart of the backend cancelled the request of a run that had failed
+                    // (Stop cancels it with the backend up): its reply will not tell, its event does.
+                    failure ??= run.error.message;
+                    sendAlert({ type: AlertType.ERROR, ...run.error });
                 }
             } finally {
                 runsInFlightRef.current -= 1;
+                // A run started after this one (once this one's error event ended its display)
+                // keeps its own display.
+                const isCurrent = chainRunRef.current === run;
+                if (isCurrent) chainRunRef.current = undefined;
                 nodeEventBacklog.processAll();
                 overriddenNodesRef.current = EMPTY_SET;
                 shownNodeRef.current = undefined;
                 if (!isPreview) {
-                    clearNodeStatusMap();
-                    setLocalStatus(ExecutionStatus.READY);
+                    if (isCurrent) {
+                        clearNodeStatusMap();
+                        setLocalStatus(ExecutionStatus.READY);
+                    }
                     clearManualTypes(iteratorNodeIds);
                 }
             }
@@ -920,6 +977,8 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             nodeEventBacklog,
             clearManualTypes,
             setLocalStatus,
+            formatError,
+            backendDownRef,
         ]
     );
 

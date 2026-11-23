@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
+from sanic.log import logger
 
 if TYPE_CHECKING:
     import tensorrt as trt
@@ -70,6 +71,16 @@ class Stage:
         self.context_taken = False
         if self.engine is not None and self.engine.streamable_weights_size:
             self.engine.weight_streaming_budget_v2 = 0
+            # TensorRT refuses the change while an execution context of the engine lives,
+            # as when an error's traceback still holds one: say what stays on the GPU.
+            kept = self.engine.weight_streaming_budget_v2
+            if kept != 0:
+                logger.warning(
+                    "TensorRT kept %d MiB of VOSR %s weights on the GPU: one of its"
+                    " execution contexts is still alive.",
+                    kept // 1024**2,
+                    self.name,
+                )
 
     def close(self) -> None:
         self.offload()
@@ -215,7 +226,7 @@ class StageExecution:
         name = stage.name
         engine = stage.engine
         if engine is None or stage.context is None:
-            raise RuntimeError("VOSR BF16 session is not activated.")
+            raise RuntimeError("VOSR TensorRT session is not activated.")
         if len(arguments) != len(stage.inputs):
             raise ValueError(f"Wrong input count for VOSR {name}.")
         key = (
@@ -225,7 +236,7 @@ class StageExecution:
         fresh = False
         entry = self.graphs.get(key)
         if entry is None:
-            from nodes.impl.gpu_setup import gpu_setup_lock
+            from nodes.impl.gpu_setup import capture_lock, gpu_setup_lock
 
             if stage.context_taken:
                 with gpu_setup_lock:
@@ -302,14 +313,16 @@ class StageExecution:
                 raise RuntimeError(f"VOSR {name} graph initialization failed.")
             stream.synchronize()
             # What torch.cuda.graph does, without its garbage collection and empty
-            # cache; only this thread's calls can spoil the capture.
+            # cache; only this thread's calls can spoil the capture, and not while
+            # TensorRT makes or frees a context or the warm-up runs (the turns).
             graph = torch.cuda.CUDAGraph()
-            graph.capture_begin(capture_error_mode="thread_local")
-            try:
-                if not context.execute_async_v3(stream.cuda_stream):
-                    raise RuntimeError(f"VOSR {name} capture failed.")
-            finally:
-                graph.capture_end()
+            with capture_lock, gpu_setup_lock:
+                graph.capture_begin(capture_error_mode="thread_local")
+                try:
+                    if not context.execute_async_v3(stream.cuda_stream):
+                        raise RuntimeError(f"VOSR {name} capture failed.")
+                finally:
+                    graph.capture_end()
             entry = CapturedStage(stage, context, values, graph)
             self.graphs[key] = entry
             fresh = True

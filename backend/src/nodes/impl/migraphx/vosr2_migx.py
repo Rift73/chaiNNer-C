@@ -185,6 +185,8 @@ class MigraphxSession(FullSession):
         self.stages = {}
         self.ropes = {}
         self.budget = 0
+        # Never admitted for a memory mode: its programs hold every weight (activate)
+        self.admitted = False
         self.reserve = None
         self.execution = StageExecution(self.device, self.stream)
         self.geometry = None

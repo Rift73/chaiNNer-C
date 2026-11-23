@@ -8,18 +8,18 @@ not a learned defocus classifier or exact whole-image DiT inference.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple, cast
 
 import numpy as np
 import torch
+from sanic.log import logger
 from torch import nn
 from torch.nn import functional
 
 from api import Progress
-from nodes.impl import numpy_pool
 from vendor.vosr2.lightningdit import LightningDiT, LightningDiTBlock
 
 from .vosr2 import (
@@ -33,6 +33,7 @@ from .vosr2 import (
     finite,
     gaussian_weights,
 )
+from .vosr2_jobs import Jobs, process_threads
 from .vosr2_memory import available_memory, unreserved_memory
 from .vosr2_replay import Replays
 from .vosr2_scene import Layout, WindowPlan, face_feather, pad_image, scene_routing
@@ -401,6 +402,45 @@ def context_denoise(
     return noise - velocity
 
 
+@contextmanager
+def _windows_jobs() -> Iterator[Jobs]:
+    """The call's jobs on the process's two vosr-windows threads, for the CPU work on the
+    input (window_work) and the models' load ahead; on leaving, every one of them has
+    ended (also after a failure: a job runs to its end, as a pool's shutdown let it).
+
+    The threads are never ended: window_work runs PyTorch's CPU operators, and ending a
+    thread that ran them strands its team of OpenMP threads (Windows), a team per image
+    or run."""
+    jobs = Jobs(process_threads("vosr-windows", 2))
+    try:
+        yield jobs
+    except BaseException as error:
+        jobs.end(cancel=False)
+        # The call's error goes on; a job's own error that nobody read is logged.
+        for future in jobs.futures:
+            failure = None if future.cancelled() else future.exception()
+            if failure is not None and not _caused(error, failure):
+                logger.error(
+                    "VOSR: a scene windows job failed beside the call's own error",
+                    exc_info=failure,
+                )
+        raise
+    else:
+        jobs.end(cancel=False)
+
+
+def _caused(error: BaseException, failure: BaseException) -> bool:
+    """Whether `failure` is `error` or in its chain of causes and contexts."""
+    seen: BaseException | None = error
+    visited: set[int] = set()
+    while seen is not None and id(seen) not in visited:
+        if seen is failure:
+            return True
+        visited.add(id(seen))
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
 @torch.inference_mode()
 def upscale_scene_focus(
     bundle: VosrBundle,
@@ -459,11 +499,7 @@ def upscale_scene_focus(
     finished = False
     try:
         check()
-        with ThreadPoolExecutor(
-            max_workers=2,
-            thread_name_prefix="vosr-windows",
-            initializer=numpy_pool.install,
-        ) as pool:
+        with _windows_jobs() as pool:
             # The CPU work on the input overlaps the VAE on the GPU.
             pending = pool.submit(window_work, image, seed, windows)
             if not optimized or device.type != "cuda":

@@ -45,6 +45,13 @@ class MemoryUsage:
     total: int
     used: int
     free: int
+    reserved: int = 0
+    """Of `used`, what the driver reserves for itself: NVML's older reading counts it as
+    used, nvidia-smi and Task Manager do not. 0 where the driver does not say."""
+
+
+# Whether a device's version-2 memory reading failed once in this process
+_reserve_unread: list[bool] = []
 
 
 @dataclass(frozen=True)
@@ -90,7 +97,22 @@ class NvDevice:
 
     def get_current_vram_usage(self) -> MemoryUsage:
         info = nv.nvmlDeviceGetMemoryInfo(self.handle)
-        return MemoryUsage(info.total, info.used, info.free)  # type: ignore
+        usage = MemoryUsage(int(info.total), int(info.used), int(info.free))
+        try:
+            detail = nv.nvmlDeviceGetMemoryInfo(self.handle, version=nv.nvmlMemory_v2)
+        except nv.NVMLError:
+            # A driver without the version-2 reading (an old one, a partial NVML): no
+            # reserve is known, and the version-1 reading stands. Said once.
+            if not _reserve_unread:
+                _reserve_unread.append(True)
+                logger.warning(
+                    "NVML's version-2 memory reading failed; the driver's reserve"
+                    " counts as used.",
+                    exc_info=True,
+                )
+            return usage
+        usage.reserved = int(detail.reserved)
+        return usage
 
 
 class NvInfo:

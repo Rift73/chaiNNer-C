@@ -28,6 +28,7 @@ from sanic.log import logger
 
 from api import NodeId, Progress
 
+from ..gpu_setup import capture_lock, gpu_setup_lock
 from .cache import SharedCache, engines
 from .drft import load_plugins
 from .model import TensorRTEngine
@@ -118,7 +119,9 @@ class RunnerSession:
     upscales a whole image)."""
 
     def __init__(self, engine: TensorRTEngine, gpu_index: int) -> None:
-        self.runner = native().Runner(engine.bytes, gpu_index, NODE_STREAMS)
+        # It deserializes the engine and makes its contexts: TensorRT's setup.
+        with gpu_setup_lock:
+            self.runner = native().Runner(engine.bytes, gpu_index, NODE_STREAMS)
         self._warned = False
         # One image at a time: the runner upscales a whole image.
         self.lock = threading.Lock()
@@ -149,10 +152,24 @@ class RunnerSession:
         outputs = [out] if out.ndim == 2 else [out[:, :, c] for c in range(out_c)[::-1]]
 
         def on_tile(done: int, tiles: int) -> None:
-            progress.check_aborted()
-            progress.set_progress(done / tiles)
+            # Between tiles, so no capture is open: the turns are given back meanwhile, for
+            # a pause too, and taken again in order before the next tile.
+            gpu_setup_lock.release()
+            capture_lock.release()
+            try:
+                progress.check_aborted()
+                progress.set_progress(done / tiles)
+            finally:
+                capture_lock.acquire()
+                gpu_setup_lock.acquire()
 
-        runner.upscale(inputs, outputs, on_tile=on_tile)
+        # The runner captures a tile shape's enqueue when it runs a shape seen before that
+        # has no graph (its cache keeps four), on its own timing: the whole call runs in
+        # the capture turn and the GPU setup turn, taken in that order as every capture
+        # takes them, so that no synchronization or TensorRT setup of another thread lands
+        # inside one of its captures, nor one of its captures inside another's.
+        with capture_lock, gpu_setup_lock:
+            runner.upscale(inputs, outputs, on_tile=on_tile)
         progress.set_progress(1)
         failure = runner.capture_failure()
         if failure and not self._warned:
@@ -163,7 +180,9 @@ class RunnerSession:
         return out
 
     def close(self) -> None:
-        self.runner.close()
+        # It destroys the contexts and the engine: TensorRT's setup.
+        with gpu_setup_lock:
+            self.runner.close()
 
 
 _sessions: SharedCache[RunnerSession] = SharedCache(

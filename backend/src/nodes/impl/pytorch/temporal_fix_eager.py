@@ -22,7 +22,7 @@ from util import held
 from vendor.temporalfix import temporalfix_arch as arch_module
 from vendor.temporalfix.temporalfix_arch import temporalfix_arch
 
-from ..gpu_setup import gpu_setup_lock
+from ..gpu_setup import capture_lock, gpu_setup_lock
 from .temporal_fix import RADIUS, LevelCache
 from .temporal_fix_parts import FramePart, WindowPart
 from .temporal_fix_pipeline import Pipelined, Ticket, device_streams
@@ -210,7 +210,7 @@ class GraphedParts:
         # TensorRT makes or frees an engine or a context (gpu_setup_lock), and no garbage
         # collection meanwhile (it can free CUDA objects whose release ends a capture).
         # The stream context is left on every path, a failed capture's included.
-        with held(gpu_setup_lock), torch.cuda.stream(side):
+        with held(capture_lock), held(gpu_setup_lock), torch.cuda.stream(side):
             collecting = gc.isenabled()
             gc.disable()
             try:

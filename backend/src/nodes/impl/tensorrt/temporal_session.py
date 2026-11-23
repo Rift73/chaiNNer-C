@@ -24,7 +24,7 @@ import torch
 
 from util import held
 
-from ..gpu_setup import gpu_setup_lock
+from ..gpu_setup import capture_lock, gpu_setup_lock
 from ..pytorch.utils import Output, host_image, to_host, upload_frame
 from ..upscale.temporal_window import Fit
 from ..upscale.tiler import NoTiling
@@ -198,7 +198,7 @@ def capture_graph(
     (graphs, events, page-locked blocks) whose release ends a capture."""
     graph = torch.cuda.CUDAGraph()
     capture = part.capture_stream
-    with held(gpu_setup_lock), torch.cuda.stream(capture):
+    with held(capture_lock), held(gpu_setup_lock), torch.cuda.stream(capture):
         collecting = gc.isenabled()
         gc.disable()
         try:

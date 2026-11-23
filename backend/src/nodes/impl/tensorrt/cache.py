@@ -17,6 +17,7 @@ or not the TensorRT package is installed.
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
 from threading import Condition, Lock, local
@@ -26,6 +27,7 @@ from weakref import WeakSet, WeakValueDictionary
 from sanic.log import logger
 
 from api import NodeId
+from nodes.impl.gpu_setup import gpu_setup_lock
 from util import held, waiting
 
 from .model import TensorRTEngine
@@ -81,6 +83,23 @@ class _Entry(Generic[T]):
         self.sharers = 0
         self.given_up = False
         self.closed = Condition(self.lock)
+
+
+def _clear_failed_frames(error: BaseException) -> None:
+    """Clear the locals of the finished frames of `error` and of the errors it was raised
+    from or during (an out-of-memory error inside a stage becomes a budget error): the
+    frames still running are left as they are. What they free may be a TensorRT context,
+    whose destruction synchronizes the GPU: it takes the GPU setup turn."""
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [error]
+    with held(gpu_setup_lock):
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            traceback.clear_frames(current.__traceback__)
+            pending += [current.__cause__, current.__context__]
 
 
 class SharedCache(Generic[T]):
@@ -206,7 +225,10 @@ class SharedCache(Generic[T]):
                         entry.value = create()
                     try:
                         yield entry.value
-                    except BaseException:
+                    except BaseException as error:
+                        # The failed frames still hold what the value lent them (a
+                        # TensorRT context keeps its engine's weights): free it first.
+                        _clear_failed_frames(error)
                         value, entry.value = entry.value, None
                         self._close_value(value)
                         raise
@@ -232,7 +254,9 @@ class SharedCache(Generic[T]):
             entry.sharers += 1
         try:
             yield value
-        except BaseException:
+        except BaseException as error:
+            # Its last user closes the value: the failed frames let go of it first.
+            _clear_failed_frames(error)
             with entry.lock:
                 entry.given_up = True
             raise

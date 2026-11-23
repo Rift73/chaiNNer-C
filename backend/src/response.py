@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from sanic.exceptions import ServerError
 
@@ -27,6 +27,9 @@ class ErrorResponse(TypedDict):
     message: str
     exception: str
     source: ExecutionErrorSource | None
+    # A failed run's traceback, as its execution-error event has it: the reply can reach the
+    # window before the event, or without it.
+    exceptionTrace: NotRequired[str]
 
 
 class NoExecutorResponse(TypedDict):
@@ -46,6 +49,7 @@ def error_response(
     message: str,
     exception: str | Exception,
     source: ExecutionErrorSource | None = None,
+    trace: str | None = None,
 ) -> ErrorResponse:
     # Imported here: the host imports this module at its start, and the executor's
     # module (with NumPy, about 100 ms) is the worker's.
@@ -57,12 +61,15 @@ def error_response(
             "schemaId": exception.node_data.schema_id,
             "inputs": exception.inputs,
         }
-    return {
+    response: ErrorResponse = {
         "type": "error",
         "message": message,
         "exception": str(exception),
         "source": source,
     }
+    if trace is not None:
+        response["exceptionTrace"] = trace
+    return response
 
 
 def no_executor_response() -> NoExecutorResponse:
